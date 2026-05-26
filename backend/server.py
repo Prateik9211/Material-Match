@@ -843,7 +843,8 @@ async def run_match(
         })
 
     # Deterministic mock: same project + zone always yields same 5 matches
-    seed_int = int(hashlib.md5(f"{project_id}-{zone}".encode()).hexdigest()[:8], 16)
+    # Using sha256 (truncated to 8 hex chars) as a non-cryptographic seed
+    seed_int = int(hashlib.sha256(f"{project_id}-{zone}".encode()).hexdigest()[:8], 16)
     category = _category_for(selected)
 
     candidates = [p for p in MOCK_PRODUCT_LIBRARY if p["category"] == category]
