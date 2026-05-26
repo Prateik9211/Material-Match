@@ -68,7 +68,7 @@ export default function Dashboard() {
           {[
             { label: "Active projects", value: projects.length, icon: Sparkles },
             { label: "Completed reports", value: reports.length, icon: FileText },
-            { label: "Match accuracy", value: "AI", icon: ArrowUpRight, sub: "Powered by Claude" },
+            { label: "Match accuracy", value: "Mock", icon: ArrowUpRight, sub: "Demo mode" },
           ].map((s, i) => (
             <div key={s.label} className="bg-white border border-black/5 rounded-2xl p-6 shadow-soft" data-testid={`stat-card-${i}`}>
               <div className="flex items-start justify-between mb-6">

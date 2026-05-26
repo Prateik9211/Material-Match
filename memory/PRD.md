@@ -28,13 +28,18 @@ Build a modern AI SaaS web application called "MaterialMatch AI" that helps arch
 - ✅ Landing page (hero, workflow, pricing, footer)
 - ✅ Auth page (login/register, Google placeholder)
 - ✅ Dashboard (stats, recent projects grid, recent reports)
-- ✅ New Project page (name, client, notes)
-- ✅ Upload page (drag/drop ref image + catalogue PDF/images + prompt)
-- ✅ Analysis page (live polling, sticky reference card, palette, materials, matches grid)
-- ✅ Report page (multi-page PDF download, print-friendly)
 - ✅ All 26 backend tests passing (auth, projects, uploads, analysis pipeline, reports)
-- ✅ Claude Sonnet 4.5 vision integration end-to-end verified
-- ✅ Background task for AI analysis with status polling
+- ✅ Claude Sonnet 4.5 vision integration end-to-end verified (still wired; currently unhooked from main UI flow)
+
+## Simplified MVP Flow (2026-02-26 — current active path)
+- ✅ **New Project flow** simplified to one screen: name + optional client + reference image upload, "Create & continue" button disabled until both name and image are present
+- ✅ **Material Analysis page** with reference image + "Analyse Materials" CTA
+- ✅ **Mock analysis** backed by deterministic server-side library (`/api/projects/{id}/mock-analyze`), 5–8 rows, schema: `zone, material_type, color, texture, finish, design_style, keywords, confidence`
+- ✅ Mock analysis persisted on project (`project.mock_analysis`) and survives reload/revisit
+- ✅ Re-analyse button returns same stable rows per project ID
+- ✅ Auth guard (401) + missing-reference guard (400) + cross-user 404 all enforced
+- ✅ Dashboard cards route directly to `/projects/:id/analysis`
+- ✅ 6/6 backend pytest pass + 100% frontend Playwright E2E pass
 
 ## Prioritized Backlog
 
