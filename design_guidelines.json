@@ -1,0 +1,105 @@
+{
+  "brand_name": "MaterialMatch AI",
+  "theme": "light",
+  "archetype": "Swiss & High-Contrast (Architectural Minimalist Variant)",
+  "emotional_tone": "Premium, tangible, precise, trustworthy, and visually quiet so the imagery speaks.",
+  "colors": {
+    "background": "#F9F9F8",
+    "surface": "#FFFFFF",
+    "surface_muted": "#F3F2EE",
+    "text_primary": "#111111",
+    "text_secondary": "#71717A",
+    "border": "#E5E5E4",
+    "primary": "#111111",
+    "primary_foreground": "#FFFFFF",
+    "accent_success": "#2D3748",
+    "tag_bg": "#F3F2EE",
+    "tag_text": "#4A4A4A"
+  },
+  "typography": {
+    "heading_font": "Cabinet Grotesk, sans-serif",
+    "body_font": "Satoshi, sans-serif",
+    "import_url": "https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@800,500,700,400&f[]=satoshi@900,700,500,400&display=swap",
+    "rules": {
+      "h1": "text-5xl sm:text-6xl tracking-tight leading-[1.1] font-bold text-text_primary",
+      "h2": "text-3xl sm:text-4xl tracking-tight leading-snug font-semibold text-text_primary",
+      "h3": "text-xl sm:text-2xl font-medium tracking-tight text-text_primary",
+      "body": "text-base leading-relaxed text-text_secondary",
+      "overline": "text-xs font-semibold tracking-[0.2em] uppercase text-text_secondary"
+    }
+  },
+  "spacing_and_layout": {
+    "philosophy": "Generous spacing. The UI is a frame for the materials. Use p-8 to p-12 for containers.",
+    "container_radius": "rounded-2xl",
+    "shadows": {
+      "soft": "shadow-[0_8px_30px_rgb(0,0,0,0.04)]",
+      "hover": "shadow-[0_20px_40px_rgb(0,0,0,0.08)]"
+    },
+    "grids": {
+      "bento_dashboard": "grid-cols-1 md:grid-cols-3 gap-6 md:gap-8",
+      "bento_analysis": "grid-cols-1 lg:grid-cols-12 gap-8"
+    }
+  },
+  "component_strategies": {
+    "header": {
+      "style": "Glassmorphism: backdrop-blur-xl bg-white/70, sticky z-50, border-b border-black/5"
+    },
+    "cards": {
+      "style": "bg-white border border-black/5 rounded-2xl shadow-soft hover:shadow-hover transition-all duration-300 overflow-hidden"
+    },
+    "buttons": {
+      "primary": "bg-primary text-primary_foreground hover:bg-black/80 rounded-full px-6 py-3 font-medium transition-colors",
+      "secondary": "bg-white text-primary border border-black/10 hover:bg-black/5 rounded-full px-6 py-3 font-medium transition-colors"
+    },
+    "inputs_and_uploads": {
+      "drag_drop_zone": "border-2 border-dashed border-black/10 rounded-2xl bg-surface_muted/50 hover:bg-surface_muted transition-colors flex flex-col items-center justify-center p-12 min-h-[240px]",
+      "standard_input": "bg-white border border-black/10 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all"
+    },
+    "tags": {
+      "style": "inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-tag_bg text-tag_text"
+    }
+  },
+  "motion": {
+    "philosophy": "Smooth, deliberate, unhurried.",
+    "page_transitions": "opacity 0.3s ease-in-out",
+    "list_stagger": "Use framer-motion staggerChildren: 0.1 for loading material cards",
+    "hover_effects": "Transform -translate-y-1 on cards, subtle scale 1.05 on images inside overflow-hidden wrappers"
+  },
+  "media_urls": {
+    "hero_3d_composition": "https://static.prod-images.emergentagent.com/jobs/243bdfe7-d1ad-4c8d-b40f-efeb3df04de7/images/75129edc20e7065d166de2a7582fc059ce6a0b999d44a91c21a32e3ef929a94b.png",
+    "abstract_background": "https://static.prod-images.emergentagent.com/jobs/243bdfe7-d1ad-4c8d-b40f-efeb3df04de7/images/684a05474c26cc78bc1c687dce4a90c450290de85041e6377aebf782b9b77873.png",
+    "interior_reference_1": "https://images.unsplash.com/photo-1771371097061-3befd4b71b59?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MjJ8MHwxfHNlYXJjaHw0fHxtaW5pbWFsaXN0JTIwaW50ZXJpb3IlMjBsaXZpbmclMjByb29tJTIwYnJpZ2h0fGVufDB8fHx8MTc3OTgxNDY0OHww&ixlib=rb-4.1.0&q=85",
+    "interior_reference_2": "https://images.unsplash.com/photo-1759722668087-efcc63c91ed2?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MjJ8MHwxfHNlYXJjaHwxfHxtaW5pbWFsaXN0JTIwaW50ZXJpb3IlMjBsaXZpbmclMjByb29tJTIwYnJpZ2h0fGVufDB8fHx8MTc3OTgxNDY0OHww&ixlib=rb-4.1.0&q=85",
+    "material_wood_stone": "https://images.unsplash.com/photo-1768320837734-02390d59dfea?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Nzd8MHwxfHNlYXJjaHwzfHxhcmNoaXRlY3R1cmFsJTIwbWF0ZXJpYWwlMjB0ZXh0dXJlJTIwd29vZCUyMHN0b25lfGVufDB8fHx8MTc3OTgxNDY0OHww&ixlib=rb-4.1.0&q=85",
+    "material_close_up": "https://images.unsplash.com/photo-1772423945486-8e941a5c01a9?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Nzd8MHwxfHNlYXJjaHwyfHxhcmNoaXRlY3R1cmFsJTIwbWF0ZXJpYWwlMjB0ZXh0dXJlJTIwd29vZCUyMHN0b25lfGVufDB8fHx8MTc3OTgxNDY0OHww&ixlib=rb-4.1.0&q=85",
+    "material_door_stone": "https://images.unsplash.com/photo-1760341841961-2ef454d38725?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Nzd8MHwxfHNlYXJjaHwxfHxhcmNoaXRlY3R1cmFsJTIwbWF0ZXJpYWwlMjB0ZXh0dXJlJTIwd29vZCUyMHN0b25lfGVufDB8fHx8MTc3OTgxNDY0OHww&ixlib=rb-4.1.0&q=85"
+  },
+  "page_guidelines": {
+    "landing_page": {
+      "hero": "Center-aligned content over the abstract_background, or a split 50/50 with the hero_3d_composition on the right. Massive typography. Clear CTA to 'Start Matching'.",
+      "workflow": "3-step grid. Very minimal icons (use lucide-react with stroke-width 1.5). Large numbering.",
+      "pricing": "2-column bento style, not traditional rigid pricing tables."
+    },
+    "dashboard": {
+      "layout": "Welcome header with user name. A grid of 'Recent Projects' using the interior_reference images as thumbnails. A floating action button or prominent card to 'Upload New Project'."
+    },
+    "new_project": {
+      "layout": "Simple modal or clean focused page. Form inputs for Project Name, Client, Notes. Standardized input design."
+    },
+    "upload_page": {
+      "layout": "Two massive drag-and-drop zones side-by-side or stacked. 1) Reference Inspiration Image. 2) Catalogue PDF / Product Images. Add a text area for an optional prompt (e.g., 'Prefer sustainable materials'). Include a simulated loading state (mocked) for AI Analysis."
+    },
+    "analysis_results": {
+      "layout": "Bento Grid (lg:grid-cols-12). Left column (col-span-4): Sticky container showing the uploaded reference image, tags, and summary. Right column (col-span-8): Grid of extracted materials showing thumbnail, name, match percentage (e.g., 94%), and a short 'Why it matches' explanation. Use the material_wood_stone images for mock results."
+    },
+    "report_page": {
+      "layout": "Print-optimized view. Very stark, monochrome feel with high-res images. A 'Download PDF' button at the top right. Hide sidebars/nav when in print mode."
+    }
+  },
+  "instructions_to_main_agent": {
+    "styling": "Use pure Tailwind classes. Inject the Fontshare import into index.css. Do NOT use standard Shadcn Card component if it restricts layout, build custom divs with the exact shadow/border rules provided.",
+    "testing": "MANDATORY: Add data-testid to ALL interactive elements (e.g., data-testid='upload-reference-image', data-testid='start-analysis-btn').",
+    "icons": "Use lucide-react for all iconography. Keep stroke-width at 1.5 or 1.25 for a more delicate, architectural feel.",
+    "mocking": "Since this is an MVP without a real backend AI yet, MOCK the AI analysis flow with a setTimeout loading screen that transitions to the Analysis Results page after 3 seconds. Use the provided unsplash material urls as the 'matched products'."
+  }
+}
