@@ -3,7 +3,7 @@ import { useParams, useSearchParams, Link } from "react-router-dom";
 import Header from "@/components/Header";
 import UploadZone from "@/components/UploadZone";
 import DemoModeBanner from "@/components/DemoModeBanner";
-import api, { formatApiError } from "@/lib/api";
+import api, { formatApiError, useConfig } from "@/lib/api";
 import { ArrowLeft, Sparkles, RefreshCw, AlertTriangle, CheckCircle2, Layers } from "lucide-react";
 import { toast } from "sonner";
 
@@ -27,6 +27,8 @@ export default function Match() {
   const { id } = useParams();
   const [searchParams] = useSearchParams();
   const zone = searchParams.get("zone") || "";
+  const config = useConfig();
+  const realMatchActive = !!config?.enable_real_match;
 
   const [project, setProject] = useState(null);
   const [refImg, setRefImg] = useState(null);
@@ -112,7 +114,7 @@ export default function Match() {
     }
   };
 
-  const hasResults = result?.matches?.length > 0;
+  const hasResults = !!result && (result.matches?.length > 0 || (result.warnings && result.warnings.length > 0));
 
   if (loading) {
     return (
@@ -281,7 +283,9 @@ export default function Match() {
                 {busy && progressStep && (
                   <div className="text-sm text-neutral-500" data-testid="match-progress">{progressStep}</div>
                 )}
-                <span className="text-xs text-neutral-400 ml-auto">Mock matching</span>
+                <span className="text-xs text-neutral-400 ml-auto" data-testid="match-mode-label">
+                  {realMatchActive ? "AI matching" : "Mock matching"}
+                </span>
               </div>
             </div>
 
@@ -316,6 +320,27 @@ export default function Match() {
                     </span>
                   )}
                 </div>
+
+                {result.warnings && result.warnings.length > 0 && (
+                  <div
+                    className="bg-amber-50 border border-amber-100 text-amber-900 rounded-2xl px-4 py-3 text-sm space-y-1"
+                    data-testid="match-warnings"
+                  >
+                    {result.warnings.map((w, i) => (
+                      <div key={`w-${i}`} className="flex items-start gap-2">
+                        <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" strokeWidth={1.75} />
+                        <span>{w}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {result.matches.length === 0 && (
+                  <div className="bg-white border border-dashed border-black/10 rounded-2xl p-10 text-center" data-testid="match-no-results">
+                    <AlertTriangle className="w-8 h-8 text-amber-500 mx-auto mb-3" strokeWidth={1.25} />
+                    <p className="text-sm text-neutral-500">No candidates met the similarity threshold. Try uploading more product images.</p>
+                  </div>
+                )}
 
                 {result.matches.map((m, i) => (
                   <article

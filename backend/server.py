@@ -960,6 +960,330 @@ def _score_label(pct: int) -> str:
     return "Low Match"
 
 
+# ============================================================================
+# Real Catalogue Match (OpenAI vision, batched scoring)
+# ============================================================================
+ENABLE_REAL_MATCH = os.environ.get("ENABLE_REAL_MATCH", "false").lower() == "true"
+LLM_MODEL_MATCH = os.environ.get("LLM_MODEL_MATCH", "gpt-4o-mini")
+MATCH_MAX_PRODUCT_IMAGES = int(os.environ.get("MATCH_MAX_PRODUCT_IMAGES", "20"))
+MATCH_MAX_FILE_BYTES = int(os.environ.get("MATCH_MAX_FILE_BYTES", "5242880"))
+MATCH_RESIZE_MAX_PX = int(os.environ.get("MATCH_RESIZE_MAX_PX", "1024"))
+MATCH_BATCH_SIZE = int(os.environ.get("MATCH_BATCH_SIZE", "4"))
+LLM_MATCH_TIMEOUT_S = int(os.environ.get("LLM_MATCH_TIMEOUT_S", "35"))
+LLM_MATCH_MAX_RETRIES = int(os.environ.get("LLM_MATCH_MAX_RETRIES", "1"))
+LLM_MATCH_CONCURRENCY = int(os.environ.get("LLM_MATCH_CONCURRENCY", "4"))
+LLM_MATCH_DAILY_USER_BUDGET = int(os.environ.get("LLM_MATCH_DAILY_USER_BUDGET", "50"))
+MATCH_DEDUP_WINDOW_S = int(os.environ.get("MATCH_DEDUP_WINDOW_S", "600"))
+MATCH_MIN_THRESHOLD = int(os.environ.get("MATCH_MIN_THRESHOLD", "40"))
+
+REASON_CATEGORIES = ["color", "texture", "finish", "material_family", "style"]
+
+MATCH_SYSTEM_PROMPT = (
+    "You are a materials expert who compares interior-design reference specs to "
+    "candidate product photos. Be calibrated and honest — do NOT inflate scores. "
+    "Reply with ONLY a valid JSON object. No markdown fences, no prose outside JSON."
+)
+
+MATCH_BATCH_USER_PROMPT_TEMPLATE = (
+    "Reference material spec (target):\n{spec_json}\n\n"
+    "{manual_prompt_block}"
+    "You will be shown {n} candidate product images in order (indexed 0 to {n_minus_1}). "
+    "Score each candidate against the reference along five dimensions: color, texture, "
+    "finish, material_family, style. Then output a single integer match_percent (0–100).\n\n"
+    "Scoring calibration — use these bands honestly:\n"
+    "  • 82–92  Excellent match across most dimensions\n"
+    "  • 68–81  Good match with minor differences\n"
+    "  • 50–67  Partial match — some dimensions align, others don't\n"
+    "  • below 50  Weak or wrong material family\n"
+    "Do NOT exceed 92. Reserve 90+ only for truly excellent matches. Most products "
+    "should land 60–85.\n\n"
+    "Return ONLY this JSON shape:\n"
+    "{{\n"
+    '  "batch_results": [\n'
+    "    {{\n"
+    '      "candidate_index": 0,\n'
+    '      "match_percent": 75,\n'
+    '      "reasons": [\n'
+    '        {{"category": "color", "text": "short reason ≤ 80 chars"}},\n'
+    '        {{"category": "texture", "text": "short reason ≤ 80 chars"}},\n'
+    '        {{"category": "finish", "text": "short reason ≤ 80 chars"}}\n'
+    "      ],\n"
+    '      "disqualifier": null\n'
+    "    }}\n"
+    "  ]\n"
+    "}}\n\n"
+    "Rules:\n"
+    "- batch_results must contain exactly {n} entries, one per candidate, indexed 0..{n_minus_1}.\n"
+    "- match_percent is an INTEGER 0–100. Never exceed 92.\n"
+    "- Exactly 3 reasons per candidate; each category MUST be one of: " + ", ".join(REASON_CATEGORIES) + ".\n"
+    "- Prefer covering different categories across the 3 reasons.\n"
+    "- disqualifier: a short sentence (≤ 120 chars) when there's a real concern (wrong category, "
+    "tonal mismatch, etc.), else null. Use sparingly.\n"
+    "- Reply with ONLY the JSON object."
+)
+
+MATCH_RETRY_NUDGE = (
+    "Your previous reply was not valid JSON for the requested schema. "
+    "Reply with ONLY the JSON object. Ensure match_percent is integer 0–100 (≤92) "
+    "and reasons[].category is one of the listed enum values."
+)
+
+
+def _normalize_image_to_b64(content: bytes) -> str | None:
+    """Resize/recompress an image to max edge MATCH_RESIZE_MAX_PX, JPEG q85. Returns base64 or None on failure."""
+    try:
+        from PIL import Image
+        im = Image.open(io.BytesIO(content))
+        if im.mode != "RGB":
+            im = im.convert("RGB")
+        w, h = im.size
+        if max(w, h) > MATCH_RESIZE_MAX_PX:
+            scale = MATCH_RESIZE_MAX_PX / max(w, h)
+            im = im.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=85, optimize=True)
+        return base64.b64encode(buf.getvalue()).decode("utf-8")
+    except Exception:
+        logger.exception("normalize_image failed")
+        return None
+
+
+def _validate_batch_result(data, expected_n: int) -> list:
+    """Validate a batched LLM response. Raises ValueError. Returns clean entries."""
+    if not isinstance(data, dict) or "batch_results" not in data:
+        raise ValueError("missing 'batch_results'")
+    items = data["batch_results"]
+    if not isinstance(items, list) or len(items) != expected_n:
+        raise ValueError(f"batch_results len {len(items) if isinstance(items, list) else 'N/A'} != {expected_n}")
+    cleaned = []
+    seen_idx = set()
+    for it in items:
+        if not isinstance(it, dict):
+            raise ValueError("entry not object")
+        idx = it.get("candidate_index")
+        if not isinstance(idx, int) or not (0 <= idx < expected_n):
+            raise ValueError(f"bad candidate_index {idx}")
+        if idx in seen_idx:
+            raise ValueError(f"duplicate candidate_index {idx}")
+        seen_idx.add(idx)
+        pct = it.get("match_percent")
+        if isinstance(pct, bool):
+            raise ValueError("match_percent is bool")
+        try:
+            pct_int = int(round(float(pct)))
+        except (TypeError, ValueError):
+            raise ValueError("match_percent not numeric")
+        pct_int = max(0, min(100, pct_int))
+        reasons_raw = it.get("reasons") or []
+        if not isinstance(reasons_raw, list) or len(reasons_raw) != 3:
+            raise ValueError("reasons not list of 3")
+        reasons = []
+        for r in reasons_raw:
+            if not isinstance(r, dict):
+                raise ValueError("reason not object")
+            cat = r.get("category")
+            txt = r.get("text")
+            if cat not in REASON_CATEGORIES:
+                raise ValueError(f"reason category '{cat}' not in enum")
+            if not isinstance(txt, str) or not txt.strip():
+                raise ValueError("reason text empty")
+            reasons.append({"category": cat, "text": txt.strip()[:120]})
+        disq = it.get("disqualifier")
+        if disq is not None and (not isinstance(disq, str) or not disq.strip()):
+            disq = None
+        if isinstance(disq, str):
+            disq = disq.strip()[:160]
+        cleaned.append({"candidate_index": idx, "match_percent": pct_int, "reasons": reasons, "disqualifier": disq})
+    cleaned.sort(key=lambda x: x["candidate_index"])
+    return cleaned
+
+
+def _format_reasons_for_storage(structured_reasons: list) -> list:
+    """Convert [{category, text}, ...] → ['Color: text', ...] for backward-compatible frontend rendering."""
+    label_map = {"color": "Color", "texture": "Texture", "finish": "Finish",
+                 "material_family": "Family", "style": "Style"}
+    return [f"{label_map.get(r['category'], r['category'].title())}: {r['text']}" for r in structured_reasons]
+
+
+def _calibrate_percent(p: int) -> int:
+    """Server-side anti-inflation clamp."""
+    if p > 92:
+        return 92
+    if p < 0:
+        return 0
+    return p
+
+
+def _candidate_hash(items: list) -> str:
+    """SHA-256 of sorted (name, size) tuples — used for the dedup window."""
+    parts = sorted(f"{x['name']}|{x['size']}" for x in items)
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:16]
+
+
+async def _score_one_batch(
+    project_id: str,
+    batch_idx: int,
+    selected_spec_json: str,
+    manual_prompt: str,
+    candidate_b64s: list,
+) -> list:
+    """Call the LLM once for a batch of up to MATCH_BATCH_SIZE candidates. Returns per-candidate result list (length = len(candidate_b64s))."""
+    import asyncio
+    n = len(candidate_b64s)
+    manual_block = f"User preferences:\n{manual_prompt}\n\n" if manual_prompt else ""
+    user_text = MATCH_BATCH_USER_PROMPT_TEMPLATE.format(
+        spec_json=selected_spec_json,
+        manual_prompt_block=manual_block,
+        n=n,
+        n_minus_1=n - 1,
+    )
+    last_raw = ""
+    last_err = ""
+    for attempt in range(LLM_MATCH_MAX_RETRIES + 1):
+        try:
+            chat = LlmChat(
+                api_key=EMERGENT_LLM_KEY,
+                session_id=f"match-{project_id}-b{batch_idx}-{secrets.token_hex(3)}",
+                system_message=MATCH_SYSTEM_PROMPT,
+            ).with_model("openai", LLM_MODEL_MATCH)
+            text = user_text if attempt == 0 else user_text + "\n\n" + MATCH_RETRY_NUDGE
+            file_contents = [ImageContent(image_base64=b) for b in candidate_b64s]
+            msg = UserMessage(text=text, file_contents=file_contents)
+            raw = await asyncio.wait_for(chat.send_message(msg), timeout=LLM_MATCH_TIMEOUT_S)
+            last_raw = raw
+            parsed = _parse_json(raw)
+            cleaned = _validate_batch_result(parsed, n)
+            return cleaned
+        except (ValueError, asyncio.TimeoutError) as e:
+            last_err = str(e)
+            logger.warning(
+                f"match batch={batch_idx} attempt={attempt} project={project_id} "
+                f"err={type(e).__name__}:{e} raw_excerpt={last_raw[:150]!r}"
+            )
+            continue
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {e}"
+            logger.exception(f"match batch={batch_idx} upstream-fail attempt={attempt}")
+            await asyncio.sleep(0.5 * (3 ** attempt))
+            continue
+    # All retries exhausted — return zeroed entries so candidates are dropped below threshold
+    logger.warning(f"match batch={batch_idx} all retries failed err={last_err}")
+    return [{"candidate_index": i, "match_percent": 0, "reasons": [
+        {"category": "color", "text": "Could not score (LLM error)"},
+        {"category": "texture", "text": "Could not score (LLM error)"},
+        {"category": "finish", "text": "Could not score (LLM error)"},
+    ], "disqualifier": "Scoring failed for this candidate."} for i in range(n)]
+
+
+async def _run_real_match(
+    project_id: str,
+    user_id: str,
+    selected: dict,
+    manual_prompt: str,
+    catalogue_files: list,
+    existing_match: dict,
+) -> dict:
+    """Phase-1 real catalogue match: uploaded product images only, batched scoring."""
+    import asyncio
+    warnings: list = []
+
+    # 1. Filter, size-cap, normalize candidates
+    raw_candidates = []
+    for f in catalogue_files:
+        content = await f.read()
+        if not content:
+            continue
+        mime = f.content_type or ""
+        if mime not in ("image/jpeg", "image/png", "image/webp"):
+            warnings.append(f"Skipped non-image file: {f.filename}")
+            continue
+        if len(content) > MATCH_MAX_FILE_BYTES:
+            warnings.append(f"Skipped oversized file (>5 MiB): {f.filename}")
+            continue
+        b64 = _normalize_image_to_b64(content)
+        if not b64:
+            warnings.append(f"Could not decode: {f.filename}")
+            continue
+        raw_candidates.append({
+            "name": f.filename or "untitled",
+            "size": len(content),
+            "b64": b64,
+        })
+    if len(raw_candidates) == 0:
+        raise HTTPException(status_code=400, detail="No valid product images provided. Upload JPEG/PNG/WEBP files under 5 MiB.")
+    if len(raw_candidates) > MATCH_MAX_PRODUCT_IMAGES:
+        raise HTTPException(status_code=422, detail=f"Too many images. Maximum {MATCH_MAX_PRODUCT_IMAGES} per match.")
+
+    # 2. Dedup check — same uploads + same zone within window
+    cand_hash = _candidate_hash([{"name": c["name"], "size": c["size"]} for c in raw_candidates])
+    if existing_match and existing_match.get("candidate_hash") == cand_hash and existing_match.get("version", "").startswith("real-"):
+        try:
+            gen_at = datetime.fromisoformat(existing_match["generated_at"].replace("Z", "+00:00"))
+            if (datetime.now(timezone.utc) - gen_at).total_seconds() < MATCH_DEDUP_WINDOW_S:
+                logger.info(f"match dedup-hit project={project_id}")
+                return existing_match
+        except Exception:
+            pass
+
+    # 3. Build batches + concurrent dispatch
+    selected_spec_json = json.dumps({k: selected.get(k) for k in
+                                     ("zone", "material_family", "material_type", "color",
+                                      "texture", "finish", "design_style", "keywords")}, ensure_ascii=False)
+    batches = [raw_candidates[i:i + MATCH_BATCH_SIZE] for i in range(0, len(raw_candidates), MATCH_BATCH_SIZE)]
+    sem = asyncio.Semaphore(LLM_MATCH_CONCURRENCY)
+
+    async def _do_batch(bi, batch):
+        async with sem:
+            return await _score_one_batch(project_id, bi, selected_spec_json, manual_prompt, [c["b64"] for c in batch])
+
+    batch_results = await asyncio.gather(*[_do_batch(bi, b) for bi, b in enumerate(batches)])
+
+    # 4. Aggregate global candidates with calibration
+    scored = []
+    for bi, (batch, results) in enumerate(zip(batches, batch_results)):
+        for r in results:
+            cand = batch[r["candidate_index"]]
+            pct = _calibrate_percent(r["match_percent"])
+            if pct < MATCH_MIN_THRESHOLD:
+                continue
+            scored.append({
+                "name": cand["name"],
+                "size": cand["size"],
+                "match_percent": pct,
+                "reasons": r["reasons"],
+                "disqualifier": r["disqualifier"],
+            })
+    if not scored:
+        warnings.append(f"No products met the minimum {MATCH_MIN_THRESHOLD}% similarity bar.")
+
+    scored.sort(key=lambda x: (-x["match_percent"], x["name"]))
+    top = scored[:5]
+
+    # 5. Shape result
+    matches = []
+    for i, s in enumerate(top):
+        product_name = os.path.splitext(s["name"])[0].replace("_", " ").replace("-", " ").strip().title() or s["name"]
+        matches.append({
+            "id": f"match_{i + 1}",
+            "product_name": product_name,
+            "catalogue_ref": s["name"],
+            "match_percent": s["match_percent"],
+            "score_label": _score_label(s["match_percent"]),
+            "reasons": _format_reasons_for_storage(s["reasons"]),
+            "disqualifier": s["disqualifier"],
+            "thumbnail_color": "#" + hashlib.sha256(s["name"].encode()).hexdigest()[:6],
+        })
+
+    return {
+        "matches": matches,
+        "warnings": warnings,
+        "candidate_hash": cand_hash,
+        "batch_count": len(batches),
+        "candidate_count": len(raw_candidates),
+        "version": f"real-openai-{LLM_MODEL_MATCH}-v1",
+    }
+
+
 @api_router.post("/projects/{project_id}/match")
 async def run_match(
     project_id: str,
@@ -976,6 +1300,72 @@ async def run_match(
     selected = next((r for r in rows if r.get("zone") == zone), None)
     if not selected:
         raise HTTPException(status_code=400, detail=f"Zone '{zone}' not found in analysis — analyse materials first")
+
+    # ---------- Real catalogue match branch ----------
+    if ENABLE_REAL_MATCH and EMERGENT_LLM_KEY and len(catalogue) > 0:
+        # Quota check
+        day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        quota_doc = await db.usage_counters.find_one_and_update(
+            {"user_id": user["id"], "day": day_key},
+            {"$inc": {"match_count": 1},
+             "$setOnInsert": {"created_at": datetime.now(timezone.utc)}},
+            upsert=True,
+            return_document=True,
+        )
+        if (quota_doc or {}).get("match_count", 1) > LLM_MATCH_DAILY_USER_BUDGET:
+            await db.usage_counters.update_one(
+                {"user_id": user["id"], "day": day_key},
+                {"$inc": {"match_count": -1}},
+            )
+            raise HTTPException(
+                status_code=429,
+                detail=f"Daily match quota exceeded ({LLM_MATCH_DAILY_USER_BUDGET} per day).",
+            )
+
+        existing_match = (doc.get("match_results") or {}).get(zone)
+        started = datetime.now(timezone.utc)
+        try:
+            real_result = await _run_real_match(
+                project_id, user["id"], selected, manual_prompt, catalogue, existing_match,
+            )
+        except HTTPException:
+            await db.usage_counters.update_one(
+                {"user_id": user["id"], "day": day_key},
+                {"$inc": {"match_count": -1}},
+            )
+            raise
+
+        elapsed_ms = (datetime.now(timezone.utc) - started).total_seconds() * 1000
+        logger.info(
+            f"ai_call provider=openai model={LLM_MODEL_MATCH} kind=match project={project_id} "
+            f"user={user['id']} ms={elapsed_ms:.0f} matches={len(real_result['matches'])} "
+            f"batches={real_result.get('batch_count')} candidates={real_result.get('candidate_count')}"
+        )
+
+        # Compose & persist (same schema as mock + extra fields)
+        result = {
+            "zone": zone,
+            "selected_material": selected,
+            "manual_prompt": manual_prompt,
+            "uploaded_files": [{"name": c.filename, "type": c.content_type or "", "size": 0} for c in catalogue],
+            "category": _category_for(selected),
+            "matches": real_result["matches"],
+            "warnings": real_result["warnings"],
+            "candidate_hash": real_result["candidate_hash"],
+            "candidate_count": real_result["candidate_count"],
+            "batch_count": real_result["batch_count"],
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "version": real_result["version"],
+        }
+        await db.projects.update_one(
+            {"_id": ObjectId(project_id)},
+            {"$set": {
+                f"match_results.{zone}": result,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }}
+        )
+        return result
+    # ---------- Fallback: existing mock-match path ----------
 
     # Collect filename / type / size only — no actual parsing or byte storage (mock mode)
     uploaded_files = []
@@ -1070,7 +1460,9 @@ async def get_client_config():
     """Public, no-auth config flags the frontend uses to switch UI copy."""
     return {
         "enable_real_analysis": ENABLE_REAL_ANALYSIS and bool(EMERGENT_LLM_KEY),
+        "enable_real_match": ENABLE_REAL_MATCH and bool(EMERGENT_LLM_KEY),
         "real_analysis_model": LLM_MODEL_ANALYSIS if ENABLE_REAL_ANALYSIS else None,
+        "real_match_model": LLM_MODEL_MATCH if ENABLE_REAL_MATCH else None,
     }
 
 
