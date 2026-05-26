@@ -178,7 +178,7 @@ def test_upload_reference(session):
     r = session.post(f"{API}/projects/{state['project_id']}/reference", files=files)
     assert r.status_code == 200, r.text
     data = r.json()
-    assert data["ok"] is True
+    assert data["ok"]
     assert data["mime"] == "image/jpeg"
 
 

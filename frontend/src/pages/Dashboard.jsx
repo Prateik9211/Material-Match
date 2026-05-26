@@ -40,6 +40,62 @@ export default function Dashboard() {
 
   const projectRoute = (p) => `/projects/${p.id}/analysis`;
 
+  const renderProjectsSection = () => {
+    if (loading) {
+      return (
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="aspect-[4/3] rounded-2xl shimmer"></div>
+          ))}
+        </div>
+      );
+    }
+    if (projects.length === 0) {
+      return (
+        <div className="bg-white border border-dashed border-black/10 rounded-2xl p-12 text-center" data-testid="empty-projects">
+          <Sparkles className="w-8 h-8 text-neutral-300 mx-auto mb-3" strokeWidth={1.25} />
+          <p className="text-neutral-500 mb-4">No projects yet — kick off your first material match.</p>
+          <Link
+            to="/projects/new"
+            className="inline-flex items-center gap-2 bg-black text-white hover:bg-black/80 rounded-full px-5 py-2.5 text-sm font-medium"
+            data-testid="empty-new-project-btn"
+          >
+            <Plus className="w-4 h-4" strokeWidth={1.5} /> Create project
+          </Link>
+        </div>
+      );
+    }
+    return (
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+        {projects.map((p) => (
+          <button
+            key={p.id}
+            onClick={() => navigate(projectRoute(p))}
+            className="text-left bg-white border border-black/5 rounded-2xl overflow-hidden shadow-soft hover:shadow-hover hover:-translate-y-1 transition-all duration-300"
+            data-testid={`project-card-${p.id}`}
+          >
+            <div className="aspect-[16/10] bg-[#F3F2EE] relative grain">
+              <div className="absolute inset-0 grid place-items-center">
+                <div className="text-overline">{p.name?.slice(0, 2).toUpperCase() || "PR"}</div>
+              </div>
+              <span className={`absolute top-3 left-3 text-[10px] px-2 py-1 rounded-full font-medium ${statusColor[p.status] || statusColor.draft}`}>
+                {p.status || "draft"}
+              </span>
+            </div>
+            <div className="p-5">
+              <h3 className="font-display font-semibold text-base mb-1 truncate">{p.name}</h3>
+              <p className="text-xs text-neutral-500 truncate">{p.client_name || "No client"}</p>
+              <div className="mt-3 flex items-center gap-1 text-xs text-neutral-400">
+                <Clock className="w-3 h-3" strokeWidth={1.5} />
+                {new Date(p.created_at).toLocaleDateString()}
+              </div>
+            </div>
+          </button>
+        ))}
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-screen bg-[#F9F9F8]" data-testid="dashboard-page">
       <Header />
@@ -87,53 +143,7 @@ export default function Dashboard() {
             <h2 className="font-display text-2xl font-semibold">Recent projects</h2>
           </div>
 
-          {loading ? (
-            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
-              {[0, 1, 2].map((i) => (
-                <div key={i} className="aspect-[4/3] rounded-2xl shimmer"></div>
-              ))}
-            </div>
-          ) : projects.length === 0 ? (
-            <div className="bg-white border border-dashed border-black/10 rounded-2xl p-12 text-center" data-testid="empty-projects">
-              <Sparkles className="w-8 h-8 text-neutral-300 mx-auto mb-3" strokeWidth={1.25} />
-              <p className="text-neutral-500 mb-4">No projects yet — kick off your first material match.</p>
-              <Link
-                to="/projects/new"
-                className="inline-flex items-center gap-2 bg-black text-white hover:bg-black/80 rounded-full px-5 py-2.5 text-sm font-medium"
-                data-testid="empty-new-project-btn"
-              >
-                <Plus className="w-4 h-4" strokeWidth={1.5} /> Create project
-              </Link>
-            </div>
-          ) : (
-            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
-              {projects.map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => navigate(projectRoute(p))}
-                  className="text-left bg-white border border-black/5 rounded-2xl overflow-hidden shadow-soft hover:shadow-hover hover:-translate-y-1 transition-all duration-300"
-                  data-testid={`project-card-${p.id}`}
-                >
-                  <div className="aspect-[16/10] bg-[#F3F2EE] relative grain">
-                    <div className="absolute inset-0 grid place-items-center">
-                      <div className="text-overline">{p.name?.slice(0, 2).toUpperCase() || "PR"}</div>
-                    </div>
-                    <span className={`absolute top-3 left-3 text-[10px] px-2 py-1 rounded-full font-medium ${statusColor[p.status] || statusColor.draft}`}>
-                      {p.status || "draft"}
-                    </span>
-                  </div>
-                  <div className="p-5">
-                    <h3 className="font-display font-semibold text-base mb-1 truncate">{p.name}</h3>
-                    <p className="text-xs text-neutral-500 truncate">{p.client_name || "No client"}</p>
-                    <div className="mt-3 flex items-center gap-1 text-xs text-neutral-400">
-                      <Clock className="w-3 h-3" strokeWidth={1.5} />
-                      {new Date(p.created_at).toLocaleDateString()}
-                    </div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
+          {renderProjectsSection()}
         </section>
 
         {/* Recent reports */}

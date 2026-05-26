@@ -36,6 +36,9 @@ export default function Auth() {
     }
   };
 
+  let submitLabel = mode === "login" ? "Sign in" : "Create account";
+  if (busy) submitLabel = "Working…";
+
   return (
     <div className="min-h-screen bg-[#F9F9F8] flex flex-col" data-testid="auth-page">
       <div className="px-6 py-6">
@@ -135,7 +138,7 @@ export default function Auth() {
                 className="w-full bg-black text-white hover:bg-black/80 rounded-full py-3.5 font-medium transition-colors inline-flex items-center justify-center gap-2 disabled:opacity-60"
                 data-testid="auth-submit-btn"
               >
-                {busy ? "Working…" : mode === "login" ? "Sign in" : "Create account"}
+                {submitLabel}
                 {!busy && <ArrowRight className="w-4 h-4" strokeWidth={1.5} />}
               </button>
 

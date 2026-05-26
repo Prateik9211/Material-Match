@@ -7,9 +7,7 @@ import Landing from "@/pages/Landing";
 import Auth from "@/pages/Auth";
 import Dashboard from "@/pages/Dashboard";
 import NewProject from "@/pages/NewProject";
-import UploadPage from "@/pages/Upload";
 import Analysis from "@/pages/Analysis";
-import Report from "@/pages/Report";
 
 function App() {
   return (
@@ -36,26 +34,10 @@ function App() {
             }
           />
           <Route
-            path="/projects/:id/upload"
-            element={
-              <ProtectedRoute>
-                <UploadPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
             path="/projects/:id/analysis"
             element={
               <ProtectedRoute>
                 <Analysis />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/projects/:id/report"
-            element={
-              <ProtectedRoute>
-                <Report />
               </ProtectedRoute>
             }
           />
