@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import Header from "@/components/Header";
+import DemoModeBanner from "@/components/DemoModeBanner";
 import api, { formatApiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Plus, FileText, ArrowUpRight, Sparkles, Clock } from "lucide-react";
@@ -118,6 +119,8 @@ export default function Dashboard() {
             New project
           </Link>
         </div>
+
+        <DemoModeBanner className="mb-12" />
 
         {/* Stat cards */}
         <div className="grid sm:grid-cols-3 gap-6 mb-12">

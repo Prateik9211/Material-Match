@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import Header from "@/components/Header";
+import DemoModeBanner from "@/components/DemoModeBanner";
 import api, { formatApiError } from "@/lib/api";
 import { ArrowLeft, Sparkles, RefreshCw, ArrowUpRight } from "lucide-react";
 import { toast } from "sonner";
@@ -50,6 +51,7 @@ export default function Analysis() {
     }
   };
 
+  const [imgError, setImgError] = useState(false);
   const rows = project?.mock_analysis?.rows || [];
   const hasAnalysis = rows.length > 0;
 
@@ -75,52 +77,65 @@ export default function Analysis() {
         </div>
 
         {loading ? (
-          <div className="grid lg:grid-cols-12 gap-8">
-            <div className="lg:col-span-5 aspect-[4/5] rounded-2xl shimmer"></div>
-            <div className="lg:col-span-7 h-96 rounded-2xl shimmer"></div>
+          <div className="space-y-8">
+            <div className="h-40 rounded-2xl shimmer"></div>
+            <div className="h-96 rounded-2xl shimmer"></div>
           </div>
         ) : (
-          <div className="grid lg:grid-cols-12 gap-8">
-            {/* Reference image card */}
-            <aside className="lg:col-span-5">
-              <div className="lg:sticky lg:top-24 space-y-6">
-                <div className="bg-white border border-black/5 rounded-2xl overflow-hidden shadow-soft" data-testid="reference-card">
-                  {refImg ? (
-                    <img src={refImg} alt="Reference" className="w-full aspect-[4/5] object-cover" />
+          <div className="space-y-8">
+            <DemoModeBanner />
+
+            {/* Reference image — horizontal hero card */}
+            <div className="bg-white border border-black/5 rounded-2xl shadow-soft overflow-hidden" data-testid="reference-card">
+              <div className="grid sm:grid-cols-12 gap-0">
+                <div className="sm:col-span-4 lg:col-span-3 bg-[#F3F2EE] aspect-square sm:aspect-auto relative">
+                  {refImg && !imgError ? (
+                    <img
+                      src={refImg}
+                      alt="Reference"
+                      className="absolute inset-0 w-full h-full object-cover"
+                      onError={() => setImgError(true)}
+                    />
                   ) : (
-                    <div className="w-full aspect-[4/5] bg-[#F3F2EE] grid place-items-center text-overline">No reference</div>
+                    <div className="absolute inset-0 grid place-items-center text-overline">
+                      {imgError ? "Image unavailable" : "No reference"}
+                    </div>
                   )}
-                  <div className="p-5">
+                </div>
+                <div className="sm:col-span-8 lg:col-span-9 p-6 sm:p-8 flex flex-col justify-between gap-6">
+                  <div>
                     <div className="text-overline mb-2">Reference</div>
-                    <p className="text-sm text-neutral-700">
-                      Your uploaded inspiration image.
-                    </p>
+                    <h3 className="font-display text-2xl font-semibold mb-1">{project?.name}</h3>
+                    {project?.client_name && (
+                      <p className="text-sm text-neutral-500">{project.client_name}</p>
+                    )}
                     {project?.mock_analysis?.generated_at && (
                       <p className="text-xs text-neutral-400 mt-2" data-testid="analysis-generated-at">
                         Analysed {new Date(project.mock_analysis.generated_at).toLocaleString()}
                       </p>
                     )}
                   </div>
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <button
+                      onClick={analyse}
+                      disabled={busy}
+                      className="inline-flex items-center justify-center gap-2 bg-black text-white hover:bg-black/80 rounded-full px-6 py-3 text-sm font-medium transition-colors disabled:opacity-60"
+                      data-testid="analyse-materials-btn"
+                    >
+                      {hasAnalysis ? (
+                        <><RefreshCw className={`w-4 h-4 ${busy ? "animate-spin" : ""}`} strokeWidth={1.5} /> {busy ? "Re-analysing…" : "Re-analyse materials"}</>
+                      ) : (
+                        <><Sparkles className={`w-4 h-4 ${busy ? "animate-pulse" : ""}`} strokeWidth={1.5} /> {busy ? "Analysing…" : "Analyse Materials"}</>
+                      )}
+                    </button>
+                    <span className="text-xs text-neutral-400">Mock analysis</span>
+                  </div>
                 </div>
-
-                <button
-                  onClick={analyse}
-                  disabled={busy}
-                  className="w-full inline-flex items-center justify-center gap-2 bg-black text-white hover:bg-black/80 rounded-full py-3.5 font-medium transition-colors disabled:opacity-60"
-                  data-testid="analyse-materials-btn"
-                >
-                  {hasAnalysis ? (
-                    <><RefreshCw className={`w-4 h-4 ${busy ? "animate-spin" : ""}`} strokeWidth={1.5} /> {busy ? "Re-analysing…" : "Re-analyse materials"}</>
-                  ) : (
-                    <><Sparkles className={`w-4 h-4 ${busy ? "animate-pulse" : ""}`} strokeWidth={1.5} /> {busy ? "Analysing…" : "Analyse Materials"}</>
-                  )}
-                </button>
-                <p className="text-xs text-neutral-400 text-center">Demo mode · mock analysis</p>
               </div>
-            </aside>
+            </div>
 
-            {/* Results table */}
-            <section className="lg:col-span-7">
+            {/* Results table — full width */}
+            <section>
               {!hasAnalysis ? (
                 <div className="bg-white border border-dashed border-black/10 rounded-2xl p-12 text-center" data-testid="analysis-empty">
                   <Sparkles className="w-10 h-10 text-neutral-300 mx-auto mb-4" strokeWidth={1.25} />

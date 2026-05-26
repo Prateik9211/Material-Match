@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { useParams, useSearchParams, Link } from "react-router-dom";
 import Header from "@/components/Header";
 import UploadZone from "@/components/UploadZone";
+import DemoModeBanner from "@/components/DemoModeBanner";
 import api, { formatApiError } from "@/lib/api";
 import { ArrowLeft, Sparkles, RefreshCw, AlertTriangle, CheckCircle2, Layers } from "lucide-react";
 import { toast } from "sonner";
@@ -37,6 +38,8 @@ export default function Match() {
   const [busy, setBusy] = useState(false);
   const [progressStep, setProgressStep] = useState("");
   const [result, setResult] = useState(null);
+
+  const [imgError, setImgError] = useState(false);
 
   const fetchAll = useCallback(async () => {
     try {
@@ -170,10 +173,17 @@ export default function Match() {
           <aside className="lg:col-span-5">
             <div className="lg:sticky lg:top-24 space-y-6">
               <div className="bg-white border border-black/5 rounded-2xl overflow-hidden shadow-soft" data-testid="match-reference-card">
-                {refImg ? (
-                  <img src={refImg} alt="Reference" className="w-full aspect-[4/3] object-cover" />
+                {refImg && !imgError ? (
+                  <img
+                    src={refImg}
+                    alt="Reference"
+                    className="w-full aspect-[4/3] object-cover"
+                    onError={() => setImgError(true)}
+                  />
                 ) : (
-                  <div className="w-full aspect-[4/3] bg-[#F3F2EE] grid place-items-center text-overline">No reference</div>
+                  <div className="w-full aspect-[4/3] bg-[#F3F2EE] grid place-items-center text-overline">
+                    {imgError ? "Image unavailable" : "No reference"}
+                  </div>
                 )}
                 <div className="p-5">
                   <div className="text-overline mb-2">Reference</div>
@@ -217,61 +227,62 @@ export default function Match() {
 
           {/* RIGHT — controls + results */}
           <section className="lg:col-span-7 space-y-6">
-            <div className="bg-white border border-black/5 rounded-2xl p-6 shadow-soft">
-              <label className="text-overline">Optional prompt</label>
-              <textarea
-                rows={3}
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                placeholder="e.g. Prefer FSC-certified options under £80/m². Avoid glossy finishes."
-                className="mt-2 w-full bg-white border border-black/10 rounded-xl px-4 py-3.5 focus:outline-none focus:ring-2 focus:ring-black/20 transition-all text-sm resize-none"
-                data-testid="match-prompt-input"
-              />
-            </div>
+            <DemoModeBanner />
 
-            <div className="bg-white border border-black/5 rounded-2xl p-6 shadow-soft">
-              <UploadZone
-                label="Catalogue PDF"
-                description="Drop your supplier catalogue here (PDF, optional)"
-                accept="application/pdf"
-                multiple
-                files={pdfFiles}
-                onFiles={handlePdfs}
-                onRemove={(i) => setPdfFiles((prev) => prev.filter((_, idx) => idx !== i))}
-                testid="match-upload-pdf"
-              />
-            </div>
+            <div className="bg-white border border-black/5 rounded-2xl p-6 shadow-soft space-y-6" data-testid="match-controls-panel">
+              <div>
+                <label className="text-overline">Optional prompt</label>
+                <textarea
+                  rows={3}
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  placeholder="e.g. Prefer FSC-certified options under £80/m². Avoid glossy finishes."
+                  className="mt-2 w-full bg-white border border-black/10 rounded-xl px-4 py-3.5 focus:outline-none focus:ring-2 focus:ring-black/20 transition-all text-sm resize-none"
+                  data-testid="match-prompt-input"
+                />
+              </div>
 
-            <div className="bg-white border border-black/5 rounded-2xl p-6 shadow-soft">
-              <UploadZone
-                label="Product images"
-                description="Drop product photos (JPEG / PNG / WEBP, optional)"
-                accept="image/jpeg,image/png,image/webp"
-                multiple
-                files={imgFiles}
-                onFiles={handleImgs}
-                onRemove={(i) => setImgFiles((prev) => prev.filter((_, idx) => idx !== i))}
-                testid="match-upload-images"
-              />
-            </div>
+              <div className="grid sm:grid-cols-2 gap-6">
+                <UploadZone
+                  label="Catalogue PDF"
+                  description="Optional · PDF only"
+                  accept="application/pdf"
+                  multiple
+                  files={pdfFiles}
+                  onFiles={handlePdfs}
+                  onRemove={(i) => setPdfFiles((prev) => prev.filter((_, idx) => idx !== i))}
+                  testid="match-upload-pdf"
+                />
+                <UploadZone
+                  label="Product images"
+                  description="Optional · JPEG / PNG / WEBP"
+                  accept="image/jpeg,image/png,image/webp"
+                  multiple
+                  files={imgFiles}
+                  onFiles={handleImgs}
+                  onRemove={(i) => setImgFiles((prev) => prev.filter((_, idx) => idx !== i))}
+                  testid="match-upload-images"
+                />
+              </div>
 
-            <div className="flex items-center gap-3">
-              <button
-                onClick={runMatch}
-                disabled={busy}
-                className="inline-flex items-center justify-center gap-2 bg-black text-white hover:bg-black/80 rounded-full px-7 py-3.5 font-medium transition-colors disabled:opacity-60"
-                data-testid="run-match-btn"
-              >
-                {hasResults ? (
-                  <><RefreshCw className={`w-4 h-4 ${busy ? "animate-spin" : ""}`} strokeWidth={1.5} /> {busy ? "Re-matching…" : "Re-run match"}</>
-                ) : (
-                  <><Sparkles className={`w-4 h-4 ${busy ? "animate-pulse" : ""}`} strokeWidth={1.5} /> {busy ? "Matching…" : "Run Match"}</>
+              <div className="flex items-center gap-3 pt-2 border-t border-black/5">
+                <button
+                  onClick={runMatch}
+                  disabled={busy}
+                  className="inline-flex items-center justify-center gap-2 bg-black text-white hover:bg-black/80 rounded-full px-7 py-3.5 font-medium transition-colors disabled:opacity-60"
+                  data-testid="run-match-btn"
+                >
+                  {hasResults ? (
+                    <><RefreshCw className={`w-4 h-4 ${busy ? "animate-spin" : ""}`} strokeWidth={1.5} /> {busy ? "Re-matching…" : "Re-run match"}</>
+                  ) : (
+                    <><Sparkles className={`w-4 h-4 ${busy ? "animate-pulse" : ""}`} strokeWidth={1.5} /> {busy ? "Matching…" : "Run Match"}</>
+                  )}
+                </button>
+                {busy && progressStep && (
+                  <div className="text-sm text-neutral-500" data-testid="match-progress">{progressStep}</div>
                 )}
-              </button>
-              {busy && progressStep && (
-                <div className="text-sm text-neutral-500" data-testid="match-progress">{progressStep}</div>
-              )}
-              <span className="text-xs text-neutral-400 ml-auto">Demo mode · mock matching</span>
+                <span className="text-xs text-neutral-400 ml-auto">Mock matching</span>
+              </div>
             </div>
 
             {/* Loading skeleton */}
