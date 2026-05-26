@@ -31,6 +31,21 @@ Build a modern AI SaaS web application called "MaterialMatch AI" that helps arch
 - ✅ All 26 backend tests passing (auth, projects, uploads, analysis pipeline, reports)
 - ✅ Claude Sonnet 4.5 vision integration end-to-end verified (still wired; currently unhooked from main UI flow)
 
+## Live AI Material Analysis (2026-02-26)
+- ✅ **Real AI** via `POST /api/projects/{id}/analyze` using OpenAI **gpt-4o-mini** vision through Emergent Universal Key + `emergentintegrations.LlmChat`
+- ✅ Feature flag `ENABLE_REAL_ANALYSIS` (env), falls back to mock when off
+- ✅ Strict schema validator with retry-with-nudge for malformed JSON (`_validate_analysis_payload`)
+- ✅ New schema: `confidence` is integer 0–100, new `material_family` enum (14 values), variable row count (1–12) — no padding
+- ✅ Per-user daily quota (`usage_counters` Mongo collection, TTL-cleaned after 32 days)
+- ✅ Dedup window (10 min) returns cached result without new LLM call
+- ✅ In-progress 409 guard (60s)
+- ✅ 5 MiB image cap (413)
+- ✅ 45s timeout (504), 2 retries with exponential backoff
+- ✅ Quota rolled back on failure
+- ✅ Saved analyses readable forever via version-discriminated `mock_analysis` field
+- ✅ Frontend `Analysis.jsx` updated for integer % display, `material_family` pill, retuned confidence thresholds
+- ✅ DemoModeBanner copy updated: "Live AI analysis · Catalogue matching still in demo mode"
+
 ## Simplified MVP Flow (2026-02-26 — current active path)
 - ✅ **New Project flow** simplified to one screen: name + optional client + reference image upload, "Create & continue" button disabled until both name and image are present
 - ✅ **Material Analysis page** with reference image + "Analyse Materials" CTA

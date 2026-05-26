@@ -11,9 +11,9 @@ export default function DemoModeBanner({ className = "" }) {
         <Sparkles className="w-3.5 h-3.5" strokeWidth={1.75} />
       </div>
       <div className="flex-1 min-w-0">
-        <div className="text-xs font-semibold tracking-wider uppercase">Demo mode active</div>
+        <div className="text-xs font-semibold tracking-wider uppercase">Live AI analysis</div>
         <div className="text-xs text-white/70 mt-0.5">
-          Mock material analysis &amp; catalogue matching · Real AI integration coming next.
+          Material analysis powered by OpenAI vision · Catalogue matching is still in demo mode.
         </div>
       </div>
     </div>

@@ -572,83 +572,91 @@ def _parse_json(text: str) -> dict:
 MOCK_MATERIAL_LIBRARY = [
     {
         "zone": "Floor",
+        "material_family": "wood",
         "material_type": "Engineered Oak Plank",
         "color": "Warm Walnut Brown",
         "texture": "Visible natural grain",
         "finish": "Matte oiled",
         "design_style": "Scandinavian",
         "keywords": ["wood", "warm", "natural", "matte", "plank"],
-        "confidence": 0.92,
+        "confidence": 92,
     },
     {
         "zone": "Walls",
+        "material_family": "wall",
         "material_type": "Lime Plaster",
         "color": "Bone White",
         "texture": "Slightly mottled",
         "finish": "Matte chalky",
         "design_style": "Wabi-sabi",
         "keywords": ["plaster", "minimal", "soft", "chalky"],
-        "confidence": 0.87,
+        "confidence": 87,
     },
     {
         "zone": "Ceiling",
+        "material_family": "ceiling",
         "material_type": "Painted Drywall",
         "color": "Off-white",
         "texture": "Smooth",
         "finish": "Eggshell",
         "design_style": "Modern Minimalist",
         "keywords": ["ceiling", "smooth", "neutral", "paint"],
-        "confidence": 0.81,
+        "confidence": 81,
     },
     {
         "zone": "Sofa",
+        "material_family": "upholstery",
         "material_type": "Bouclé Upholstery",
         "color": "Cream Beige",
         "texture": "Looped, fluffy",
         "finish": "Soft matte",
         "design_style": "Contemporary Mid-century",
         "keywords": ["fabric", "bouclé", "cozy", "neutral", "textured"],
-        "confidence": 0.89,
+        "confidence": 89,
     },
     {
         "zone": "Coffee Table",
+        "material_family": "stone",
         "material_type": "Travertine Stone",
         "color": "Sandy Cream",
         "texture": "Open-pore, banded",
         "finish": "Honed",
         "design_style": "Organic Modern",
         "keywords": ["stone", "travertine", "honed", "earthy"],
-        "confidence": 0.84,
+        "confidence": 84,
     },
     {
         "zone": "Lighting",
+        "material_family": "metal",
         "material_type": "Brushed Brass",
         "color": "Warm Gold",
         "texture": "Linear brush marks",
         "finish": "Brushed satin",
         "design_style": "Modern Luxe",
         "keywords": ["metal", "brass", "warm", "accent"],
-        "confidence": 0.78,
+        "confidence": 78,
     },
     {
         "zone": "Rug",
+        "material_family": "textile",
         "material_type": "Hand-tufted Wool",
         "color": "Sand & Ivory",
         "texture": "Loop-pile",
         "finish": "Natural fibre",
         "design_style": "Japandi",
         "keywords": ["rug", "wool", "neutral", "layered"],
-        "confidence": 0.86,
+        "confidence": 86,
     },
     {
         "zone": "Accent Wall",
+        "material_family": "wood",
         "material_type": "Vertical Slatted Oak",
         "color": "Mid-tone Honey",
         "texture": "Linear ribbed",
         "finish": "Lacquered satin",
         "design_style": "Japandi",
         "keywords": ["wood", "slatted", "linear", "warm"],
-        "confidence": 0.83,
+        "confidence": 83,
     },
 ]
 
@@ -673,7 +681,7 @@ async def mock_analyze(project_id: str, user: dict = Depends(get_current_user)):
     mock_analysis = {
         "rows": rows,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "version": "mock-v1",
+        "version": "mock-v2",
     }
 
     await db.projects.update_one(
@@ -685,6 +693,286 @@ async def mock_analyze(project_id: str, user: dict = Depends(get_current_user)):
         }}
     )
     return mock_analysis
+
+
+# ============================================================================
+# Real AI Material Analysis (OpenAI gpt-4o-mini vision)
+# ============================================================================
+ENABLE_REAL_ANALYSIS = os.environ.get("ENABLE_REAL_ANALYSIS", "false").lower() == "true"
+LLM_PROVIDER_ANALYSIS = os.environ.get("LLM_PROVIDER_ANALYSIS", "openai")
+LLM_MODEL_ANALYSIS = os.environ.get("LLM_MODEL_ANALYSIS", "gpt-4o-mini")
+LLM_ANALYSIS_TIMEOUT_S = int(os.environ.get("LLM_ANALYSIS_TIMEOUT_S", "45"))
+LLM_ANALYSIS_MAX_RETRIES = int(os.environ.get("LLM_ANALYSIS_MAX_RETRIES", "2"))
+LLM_ANALYSIS_DAILY_USER_BUDGET = int(os.environ.get("LLM_ANALYSIS_DAILY_USER_BUDGET", "20"))
+LLM_ANALYSIS_REF_IMAGE_MAX_BYTES = int(os.environ.get("LLM_ANALYSIS_REF_IMAGE_MAX_BYTES", "5242880"))
+LLM_ANALYSIS_DEDUP_WINDOW_S = int(os.environ.get("LLM_ANALYSIS_DEDUP_WINDOW_S", "600"))
+
+MATERIAL_FAMILIES = [
+    "flooring", "wall", "ceiling", "window", "door",
+    "furniture", "upholstery", "textile", "stone", "metal",
+    "wood", "decor", "lighting", "other",
+]
+
+ANALYSIS_SYSTEM_PROMPT_V2 = (
+    "You are an expert interior design materials analyst. You inspect interior "
+    "reference images and identify materials, finishes, colors, and textures with "
+    "precision suitable for architects and interior designers. Be conservative — "
+    "only report zones whose material you can clearly identify from the image. "
+    "Always respond with ONLY a valid JSON object. No markdown fences, no prose, "
+    "no commentary outside the JSON."
+)
+
+ANALYSIS_USER_PROMPT = (
+    "Analyse this interior reference image. For each clearly identifiable material "
+    "zone, return one entry. Do NOT pad the list — quality over quantity. If a zone "
+    "is ambiguous or occluded, omit it.\n\n"
+    "Return ONLY this JSON shape:\n"
+    "{\n"
+    '  "rows": [\n'
+    "    {\n"
+    '      "zone": "string — e.g. Floor, Walls, Ceiling, Sofa, Coffee Table",\n'
+    '      "material_family": "one of: ' + ", ".join(MATERIAL_FAMILIES) + '",\n'
+    '      "material_type": "concise product-category, e.g. Engineered Oak",\n'
+    '      "color": "short descriptive colour name",\n'
+    '      "texture": "short texture descriptor",\n'
+    '      "finish": "short finish descriptor",\n'
+    '      "design_style": "short style label, e.g. Scandinavian",\n'
+    '      "keywords": ["3-6 short lowercase tags"],\n'
+    '      "confidence": 0\n'
+    "    }\n"
+    "  ]\n"
+    "}\n\n"
+    "Rules:\n"
+    "- confidence is an INTEGER between 0 and 100, NOT a float between 0 and 1.\n"
+    "- material_family MUST be one of the listed enum values.\n"
+    "- Return 1 to 12 rows. Prefer fewer high-confidence rows over many guesses.\n"
+    "- Reply with ONLY the JSON object."
+)
+
+ANALYSIS_RETRY_NUDGE = (
+    "Your previous response was not valid JSON for the requested schema. "
+    "Reply with ONLY the JSON object — no markdown, no commentary. "
+    "Ensure confidence is an integer 0-100 and material_family is one of the enum values."
+)
+
+
+def _validate_analysis_payload(data) -> list:
+    """Strictly validate the LLM payload. Raises ValueError on any deviation. Returns clean rows."""
+    if not isinstance(data, dict) or "rows" not in data or not isinstance(data["rows"], list):
+        raise ValueError("payload missing 'rows' array")
+    raw_rows = data["rows"]
+    if not (1 <= len(raw_rows) <= 12):
+        raise ValueError(f"row count {len(raw_rows)} outside 1-12")
+
+    required_str = ["zone", "material_type", "color", "texture", "finish", "design_style"]
+    cleaned = []
+    for i, r in enumerate(raw_rows):
+        if not isinstance(r, dict):
+            raise ValueError(f"row {i} not an object")
+        for k in required_str:
+            v = r.get(k)
+            if not isinstance(v, str) or not v.strip():
+                raise ValueError(f"row {i} field '{k}' missing or not non-empty string")
+        family = r.get("material_family")
+        if family not in MATERIAL_FAMILIES:
+            raise ValueError(f"row {i} material_family '{family}' not in enum")
+        kws = r.get("keywords") or []
+        if not isinstance(kws, list) or not all(isinstance(k, str) for k in kws):
+            raise ValueError(f"row {i} keywords not list[str]")
+        conf = r.get("confidence")
+        if isinstance(conf, bool):
+            raise ValueError(f"row {i} confidence is bool")
+        if isinstance(conf, float) and conf <= 1.0:
+            raise ValueError(f"row {i} confidence {conf} looks like 0-1 scale, expected 0-100")
+        try:
+            conf_int = int(round(float(conf)))
+        except (TypeError, ValueError):
+            raise ValueError(f"row {i} confidence not numeric")
+        if not (0 <= conf_int <= 100):
+            raise ValueError(f"row {i} confidence {conf_int} outside 0-100")
+
+        cleaned.append({
+            "zone": r["zone"].strip(),
+            "material_family": family,
+            "material_type": r["material_type"].strip(),
+            "color": r["color"].strip(),
+            "texture": r["texture"].strip(),
+            "finish": r["finish"].strip(),
+            "design_style": r["design_style"].strip(),
+            "keywords": [k.strip().lower() for k in kws[:6] if k.strip()],
+            "confidence": conf_int,
+        })
+    return cleaned
+
+
+async def _check_and_increment_quota(user_id: str) -> int:
+    """Returns current count after increment. Raises HTTPException 429 if over budget."""
+    day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    doc = await db.usage_counters.find_one_and_update(
+        {"user_id": user_id, "day": day_key},
+        {"$inc": {"analyze_count": 1},
+         "$setOnInsert": {"created_at": datetime.now(timezone.utc)}},
+        upsert=True,
+        return_document=True,
+    )
+    count = (doc or {}).get("analyze_count", 1)
+    if count > LLM_ANALYSIS_DAILY_USER_BUDGET:
+        await db.usage_counters.update_one(
+            {"user_id": user_id, "day": day_key},
+            {"$inc": {"analyze_count": -1}},
+        )
+        raise HTTPException(
+            status_code=429,
+            detail=f"Daily AI analysis quota exceeded ({LLM_ANALYSIS_DAILY_USER_BUDGET} per day). Try again tomorrow.",
+        )
+    return count
+
+
+async def run_real_analysis(project_id: str, user_id: str, ref_b64: str) -> dict:
+    """Call OpenAI vision and return validated payload. Raises HTTPException on failure."""
+    import asyncio
+
+    last_error = ""
+    last_raw = ""
+    for attempt in range(LLM_ANALYSIS_MAX_RETRIES + 1):
+        try:
+            chat = LlmChat(
+                api_key=EMERGENT_LLM_KEY,
+                session_id=f"analyze-{project_id}-{secrets.token_hex(4)}",
+                system_message=ANALYSIS_SYSTEM_PROMPT_V2,
+            ).with_model(LLM_PROVIDER_ANALYSIS, LLM_MODEL_ANALYSIS)
+
+            ref_img = ImageContent(image_base64=ref_b64)
+            user_text = ANALYSIS_USER_PROMPT if attempt == 0 else ANALYSIS_USER_PROMPT + "\n\n" + ANALYSIS_RETRY_NUDGE
+            msg = UserMessage(text=user_text, file_contents=[ref_img])
+
+            raw = await asyncio.wait_for(
+                chat.send_message(msg),
+                timeout=LLM_ANALYSIS_TIMEOUT_S,
+            )
+            last_raw = raw
+            parsed = _parse_json(raw)
+            cleaned = _validate_analysis_payload(parsed)
+            return {
+                "rows": cleaned,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "version": f"real-openai-{LLM_MODEL_ANALYSIS}-v1",
+            }
+        except asyncio.TimeoutError:
+            last_error = f"timeout after {LLM_ANALYSIS_TIMEOUT_S}s"
+            logger.warning(f"analyze timeout attempt={attempt} project={project_id}")
+            if attempt < LLM_ANALYSIS_MAX_RETRIES:
+                await asyncio.sleep(0.5 * (3 ** attempt))
+                continue
+            raise HTTPException(status_code=504, detail="AI analysis timed out. Please try again.")
+        except ValueError as ve:
+            last_error = f"schema: {ve}"
+            logger.warning(
+                f"analyze schema-fail attempt={attempt} project={project_id} err={ve} raw_excerpt={last_raw[:200]!r}"
+            )
+            if attempt < LLM_ANALYSIS_MAX_RETRIES:
+                continue
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "message": "AI returned a malformed analysis. Please retry.",
+                    "error": str(ve),
+                    "raw_excerpt": last_raw[:200],
+                },
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            last_error = f"upstream: {type(e).__name__}: {e}"
+            logger.exception(f"analyze upstream-fail attempt={attempt} project={project_id}")
+            if attempt < LLM_ANALYSIS_MAX_RETRIES:
+                await asyncio.sleep(0.5 * (3 ** attempt))
+                continue
+            raise HTTPException(status_code=502, detail=f"AI service error: {last_error}")
+    raise HTTPException(status_code=500, detail="Unexpected analysis state")
+
+
+@api_router.post("/projects/{project_id}/analyze")
+async def real_analyze(project_id: str, user: dict = Depends(get_current_user)):
+    """Real-AI material analysis endpoint. Falls back to mock when ENABLE_REAL_ANALYSIS is off."""
+    if not ENABLE_REAL_ANALYSIS or not EMERGENT_LLM_KEY:
+        return await mock_analyze(project_id, user)
+
+    doc = await db.projects.find_one({"_id": ObjectId(project_id), "user_id": user["id"]})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    ref_b64 = doc.get("reference_image_b64")
+    if not ref_b64:
+        raise HTTPException(status_code=400, detail="Upload a reference image first")
+
+    ref_bytes_len = (len(ref_b64) * 3) // 4
+    if ref_bytes_len > LLM_ANALYSIS_REF_IMAGE_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Reference image exceeds {LLM_ANALYSIS_REF_IMAGE_MAX_BYTES // (1024 * 1024)} MiB AI-analysis limit.",
+        )
+
+    existing = doc.get("mock_analysis") or {}
+    if existing.get("version", "").startswith("real-") and existing.get("generated_at"):
+        try:
+            gen_at = datetime.fromisoformat(existing["generated_at"].replace("Z", "+00:00"))
+            age = (datetime.now(timezone.utc) - gen_at).total_seconds()
+            if age < LLM_ANALYSIS_DEDUP_WINDOW_S:
+                logger.info(f"analyze dedup-hit project={project_id} age={age:.1f}s")
+                return existing
+        except Exception:
+            pass
+
+    if doc.get("status") == "analyzing":
+        updated_at = doc.get("updated_at")
+        try:
+            up = datetime.fromisoformat((updated_at or "").replace("Z", "+00:00"))
+            if (datetime.now(timezone.utc) - up).total_seconds() < 60:
+                raise HTTPException(status_code=409, detail="Analysis already in progress")
+        except (TypeError, ValueError):
+            pass
+
+    await _check_and_increment_quota(user["id"])
+
+    await db.projects.update_one(
+        {"_id": ObjectId(project_id)},
+        {"$set": {"status": "analyzing", "updated_at": datetime.now(timezone.utc).isoformat()}}
+    )
+
+    started = datetime.now(timezone.utc)
+    try:
+        analysis = await run_real_analysis(project_id, user["id"], ref_b64)
+    except HTTPException:
+        day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        await db.usage_counters.update_one(
+            {"user_id": user["id"], "day": day_key},
+            {"$inc": {"analyze_count": -1}},
+        )
+        await db.projects.update_one(
+            {"_id": ObjectId(project_id)},
+            {"$set": {"status": "completed" if existing else "draft",
+                      "updated_at": datetime.now(timezone.utc).isoformat()}}
+        )
+        raise
+
+    elapsed_ms = (datetime.now(timezone.utc) - started).total_seconds() * 1000
+    logger.info(
+        f"ai_call provider={LLM_PROVIDER_ANALYSIS} model={LLM_MODEL_ANALYSIS} "
+        f"project={project_id} user={user['id']} ms={elapsed_ms:.0f} rows={len(analysis['rows'])}"
+    )
+
+    await db.projects.update_one(
+        {"_id": ObjectId(project_id)},
+        {"$set": {
+            "mock_analysis": analysis,
+            "status": "completed",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }}
+    )
+    return analysis
+
+
 
 
 # ============================================================================
@@ -958,6 +1246,9 @@ async def startup_event():
         await db.users.create_index("email", unique=True)
         await db.projects.create_index([("user_id", 1), ("created_at", -1)])
         await db.reports.create_index([("user_id", 1), ("created_at", -1)])
+        await db.usage_counters.create_index([("user_id", 1), ("day", 1)], unique=True)
+        # auto-expire counters after 32 days
+        await db.usage_counters.create_index("created_at", expireAfterSeconds=32 * 86400)
     except Exception:
         logger.exception("Index creation failed")
 

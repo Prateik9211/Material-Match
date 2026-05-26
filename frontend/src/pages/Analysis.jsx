@@ -7,9 +7,9 @@ import { ArrowLeft, Sparkles, RefreshCw, ArrowUpRight } from "lucide-react";
 import { toast } from "sonner";
 
 function confidenceColor(c) {
-  if (c >= 0.9) return "bg-emerald-600";
-  if (c >= 0.8) return "bg-emerald-500";
-  if (c >= 0.7) return "bg-amber-500";
+  if (c >= 90) return "bg-emerald-600";
+  if (c >= 80) return "bg-emerald-500";
+  if (c >= 70) return "bg-amber-500";
   return "bg-neutral-400";
 }
 
@@ -41,7 +41,7 @@ export default function Analysis() {
   const analyse = async () => {
     setBusy(true);
     try {
-      const { data } = await api.post(`/projects/${id}/mock-analyze`);
+      const { data } = await api.post(`/projects/${id}/analyze`);
       setProject((prev) => ({ ...(prev || {}), mock_analysis: data, status: "completed" }));
       toast.success("Materials analysed");
     } catch (err) {
@@ -128,7 +128,7 @@ export default function Analysis() {
                         <><Sparkles className={`w-4 h-4 ${busy ? "animate-pulse" : ""}`} strokeWidth={1.5} /> {busy ? "Analysing…" : "Analyse Materials"}</>
                       )}
                     </button>
-                    <span className="text-xs text-neutral-400">Mock analysis</span>
+                    <span className="text-xs text-neutral-400">Live AI analysis</span>
                   </div>
                 </div>
               </div>
@@ -171,7 +171,16 @@ export default function Analysis() {
                           return (
                           <tr key={`row-${r.zone}-${i}`} className="hover:bg-[#F3F2EE]/30 transition-colors" data-testid={`analysis-row-${i}`}>
                             <td className="px-6 py-4 font-medium text-neutral-900 whitespace-nowrap">{r.zone}</td>
-                            <td className="px-3 py-4 text-neutral-700">{r.material_type}</td>
+                            <td className="px-3 py-4 text-neutral-700">
+                              <div className="space-y-1">
+                                <div>{r.material_type}</div>
+                                {r.material_family && (
+                                  <span className="inline-flex text-[10px] px-2 py-0.5 rounded-full bg-black text-white uppercase tracking-wider">
+                                    {r.material_family}
+                                  </span>
+                                )}
+                              </div>
+                            </td>
                             <td className="px-3 py-4 text-neutral-700">{r.color}</td>
                             <td className="px-3 py-4 text-neutral-700">{r.texture}</td>
                             <td className="px-3 py-4 text-neutral-700">{r.finish}</td>
@@ -184,8 +193,8 @@ export default function Analysis() {
                               </div>
                             </td>
                             <td className="px-3 py-4 text-right whitespace-nowrap">
-                              <span className={`inline-flex items-center gap-1.5 ${confidenceColor(r.confidence)} text-white text-xs font-mono font-semibold px-2.5 py-1 rounded-full`}>
-                                {Math.round((r.confidence || 0) * 100)}%
+                              <span className={`inline-flex items-center gap-1.5 ${confidenceColor(r.confidence || 0)} text-white text-xs font-mono font-semibold px-2.5 py-1 rounded-full`}>
+                                {r.confidence || 0}%
                               </span>
                             </td>
                             <td className="px-6 py-4 text-right whitespace-nowrap">
