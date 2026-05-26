@@ -145,7 +145,7 @@ export default function Analysis() {
                           <th className="px-3 py-3 text-overline font-semibold">Finish</th>
                           <th className="px-3 py-3 text-overline font-semibold">Style</th>
                           <th className="px-3 py-3 text-overline font-semibold">Keywords</th>
-                          <th className="px-6 py-3 text-overline font-semibold text-right">Conf.</th>
+                          <th className="px-6 py-3 text-overline font-semibold text-right">Confidence</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-black/5">
