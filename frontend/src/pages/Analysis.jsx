@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import Header from "@/components/Header";
 import DemoModeBanner from "@/components/DemoModeBanner";
-import api, { formatApiError } from "@/lib/api";
+import api, { formatApiError, useConfig } from "@/lib/api";
 import { ArrowLeft, Sparkles, RefreshCw, ArrowUpRight } from "lucide-react";
 import { toast } from "sonner";
 
@@ -16,6 +16,8 @@ function confidenceColor(c) {
 export default function Analysis() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const config = useConfig();
+  const realAnalysisActive = !!config?.enable_real_analysis;
   const [project, setProject] = useState(null);
   const [refImg, setRefImg] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -128,7 +130,9 @@ export default function Analysis() {
                         <><Sparkles className={`w-4 h-4 ${busy ? "animate-pulse" : ""}`} strokeWidth={1.5} /> {busy ? "Analysing…" : "Analyse Materials"}</>
                       )}
                     </button>
-                    <span className="text-xs text-neutral-400">Live AI analysis</span>
+                    <span className="text-xs text-neutral-400" data-testid="analysis-mode-label">
+                      {realAnalysisActive ? "AI analysis" : "Mock analysis"}
+                    </span>
                   </div>
                 </div>
               </div>

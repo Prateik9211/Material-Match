@@ -400,152 +400,8 @@ async def get_reference_image(project_id: str, user: dict = Depends(get_current_
 
 
 # ============================================================================
-# AI Analysis - Claude Sonnet 4.5 Vision
+# JSON helper (used by real-AI analysis below)
 # ============================================================================
-ANALYSIS_SYSTEM_PROMPT = """You are an expert interior design materials analyst. You analyze interior reference images and identify materials, finishes, colors, and textures with precision suitable for architects and interior designers.
-
-Always respond with ONLY valid JSON matching the requested schema. Do not include markdown code fences, prose, or any text outside the JSON object."""
-
-
-async def run_analysis(project_id: str, user_id: str, custom_prompt: str = ""):
-    """Run the LLM analysis: detect materials in ref image, then match each catalogue item."""
-    doc = await db.projects.find_one({"_id": ObjectId(project_id), "user_id": user_id})
-    if not doc:
-        return
-    ref_b64 = doc.get("reference_image_b64")
-    if not ref_b64:
-        await db.projects.update_one(
-            {"_id": ObjectId(project_id)},
-            {"$set": {"status": "error", "analysis_error": "No reference image"}})
-        return
-
-    await db.projects.update_one(
-        {"_id": ObjectId(project_id)},
-        {"$set": {"status": "analyzing"}}
-    )
-
-    catalogue = doc.get("catalogue_items", [])
-
-    # === Step 1: Analyze reference image ===
-    user_focus = f"\nUser focus / preferences: {custom_prompt}" if custom_prompt else ""
-    analyze_prompt = f"""Analyze this interior design reference image. Identify the key materials, finishes, colors, textures, and design style.{user_focus}
-
-Return ONLY this JSON shape:
-{{
-  "summary": "1-2 sentence overall description of the space and design style",
-  "style_tags": ["modern", "minimalist", "scandinavian", ...],
-  "color_palette": [{{"name": "Warm Oak", "hex": "#A07856"}}, ...],
-  "materials": [
-    {{
-      "name": "White Oak Flooring",
-      "category": "Wood",
-      "finish": "Matte natural",
-      "location": "Floor",
-      "confidence": 0.92
-    }}
-  ]
-}}
-
-Provide 4-8 materials, 4-6 colors, 3-5 style tags. Confidence is 0.0-1.0."""
-
-    try:
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=f"analyze-{project_id}",
-            system_message=ANALYSIS_SYSTEM_PROMPT,
-        ).with_model(LLM_PROVIDER, LLM_MODEL)
-
-        ref_img = ImageContent(image_base64=ref_b64)
-        msg = UserMessage(text=analyze_prompt, file_contents=[ref_img])
-        resp = await chat.send_message(msg)
-        ref_analysis = _parse_json(resp)
-    except Exception as e:
-        logger.exception("Reference analysis failed")
-        await db.projects.update_one(
-            {"_id": ObjectId(project_id)},
-            {"$set": {"status": "error", "analysis_error": str(e)}}
-        )
-        return
-
-    # === Step 2: Match each catalogue item ===
-    matches = []
-    for idx, item in enumerate(catalogue):
-        try:
-            match_chat = LlmChat(
-                api_key=EMERGENT_LLM_KEY,
-                session_id=f"match-{project_id}-{idx}",
-                system_message=ANALYSIS_SYSTEM_PROMPT,
-            ).with_model(LLM_PROVIDER, LLM_MODEL)
-
-            match_prompt = f"""You are shown two images. The FIRST is the reference inspiration image. The SECOND is a candidate material/product (named: "{item['name']}").
-
-Given the reference image's identified materials: {json.dumps(ref_analysis.get('materials', []))}
-
-Return ONLY this JSON shape:
-{{
-  "match_score": 0.0,
-  "matched_material": "name of the reference material it best matches, or null",
-  "explanation": "1-2 sentence reasoning explaining visual similarity in texture, color, finish, and style",
-  "tags": ["wood", "matte", "warm tone"]
-}}
-
-match_score is 0.0-1.0. Be honest — score low if there's no real match."""
-
-            ref_img = ImageContent(image_base64=ref_b64)
-            cand_img = ImageContent(image_base64=item["image_b64"])
-            match_msg = UserMessage(text=match_prompt, file_contents=[ref_img, cand_img])
-            match_resp = await match_chat.send_message(match_msg)
-            parsed = _parse_json(match_resp)
-            matches.append({
-                "name": item["name"],
-                "index": idx,
-                "score": float(parsed.get("match_score", 0)),
-                "matched_material": parsed.get("matched_material"),
-                "explanation": parsed.get("explanation", ""),
-                "tags": parsed.get("tags", []),
-            })
-        except Exception as e:
-            logger.exception(f"Match failed for item {idx}")
-            matches.append({
-                "name": item["name"],
-                "index": idx,
-                "score": 0.0,
-                "matched_material": None,
-                "explanation": f"Analysis error: {str(e)[:100]}",
-                "tags": [],
-            })
-
-    matches.sort(key=lambda m: m["score"], reverse=True)
-
-    analysis = {
-        "summary": ref_analysis.get("summary", ""),
-        "style_tags": ref_analysis.get("style_tags", []),
-        "color_palette": ref_analysis.get("color_palette", []),
-        "materials": ref_analysis.get("materials", []),
-        "matches": matches,
-        "custom_prompt": custom_prompt,
-        "completed_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-    await db.projects.update_one(
-        {"_id": ObjectId(project_id)},
-        {"$set": {"status": "completed", "analysis": analysis,
-                  "updated_at": datetime.now(timezone.utc).isoformat()}}
-    )
-
-    # Also save as a report
-    await db.reports.insert_one({
-        "user_id": user_id,
-        "project_id": project_id,
-        "project_name": doc.get("name", "Untitled"),
-        "client_name": doc.get("client_name", ""),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "summary": analysis["summary"],
-        "match_count": len(matches),
-        "top_score": matches[0]["score"] if matches else 0,
-    })
-
-
 def _parse_json(text: str) -> dict:
     """Strip code fences and parse JSON."""
     text = text.strip()
@@ -1187,35 +1043,6 @@ async def run_match(
 
 
 
-@api_router.post("/projects/{project_id}/analyze")
-async def start_analysis(project_id: str, background: BackgroundTasks,
-                         prompt: str = Form(""),
-                         user: dict = Depends(get_current_user)):
-    doc = await db.projects.find_one({"_id": ObjectId(project_id), "user_id": user["id"]})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Project not found")
-    if not doc.get("reference_image_b64"):
-        raise HTTPException(status_code=400, detail="Upload a reference image first")
-    if not doc.get("catalogue_items"):
-        raise HTTPException(status_code=400, detail="Upload catalogue items first")
-
-    await db.projects.update_one(
-        {"_id": ObjectId(project_id)},
-        {"$set": {"status": "queued", "custom_prompt": prompt, "analysis": None}}
-    )
-    background.add_task(run_analysis, project_id, user["id"], prompt)
-    return {"ok": True, "status": "queued"}
-
-
-@api_router.get("/projects/{project_id}/status")
-async def analysis_status(project_id: str, user: dict = Depends(get_current_user)):
-    doc = await db.projects.find_one(
-        {"_id": ObjectId(project_id), "user_id": user["id"]},
-        {"status": 1, "analysis_error": 1}
-    )
-    if not doc:
-        raise HTTPException(status_code=404, detail="Not found")
-    return {"status": doc.get("status", "draft"), "error": doc.get("analysis_error")}
 
 
 # ============================================================================
@@ -1231,11 +1058,20 @@ async def list_reports(user: dict = Depends(get_current_user)):
 
 
 # ============================================================================
-# Health
+# Health & client config
 # ============================================================================
 @api_router.get("/")
 async def root():
     return {"app": "MaterialMatch AI", "status": "ok"}
+
+
+@api_router.get("/config")
+async def get_client_config():
+    """Public, no-auth config flags the frontend uses to switch UI copy."""
+    return {
+        "enable_real_analysis": ENABLE_REAL_ANALYSIS and bool(EMERGENT_LLM_KEY),
+        "real_analysis_model": LLM_MODEL_ANALYSIS if ENABLE_REAL_ANALYSIS else None,
+    }
 
 
 # ============================================================================
