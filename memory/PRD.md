@@ -41,6 +41,15 @@ Build a modern AI SaaS web application called "MaterialMatch AI" that helps arch
 - ✅ Dashboard cards route directly to `/projects/:id/analysis`
 - ✅ 6/6 backend pytest pass + 100% frontend Playwright E2E pass
 
+## Catalogue Match Flow (2026-02-26 — mock)
+- ✅ **Find Matches** button per row on Analysis table (9th "Action" column) → `/projects/:id/match?zone={zone}`
+- ✅ **Match page** shows: project summary, reference image preview, selected material details card, optional manual prompt textarea, optional PDF + product image uploads, Run Match CTA
+- ✅ **Mock match engine** (`POST /api/projects/{id}/match`) generates deterministic top-5 candidates from `MOCK_PRODUCT_LIBRARY` (32 products across wood/stone/fabric/metal/plaster/rug). Files accepted but only `name/type/size` metadata stored — **no PDF parsing**
+- ✅ Each match card: product name, catalogue ref, match % (50–98), score label (Strong/Good/Partial/Low), 3 reasons, optional disqualifier (cards 4–5), colored thumbnail block
+- ✅ Persisted under `project.match_results.<zone>` — revisit auto-loads saved cards
+- ✅ Find Matches button text toggles to "View matches" once that zone has saved results
+- ✅ 7/7 backend pytest pass + 100% frontend E2E pass
+
 ## Prioritized Backlog
 
 ### P1
