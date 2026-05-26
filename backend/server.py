@@ -941,6 +941,7 @@ async def real_analyze(project_id: str, user: dict = Depends(get_current_user)):
     )
 
     started = datetime.now(timezone.utc)
+    analysis = None
     try:
         analysis = await run_real_analysis(project_id, user["id"], ref_b64)
     except HTTPException:
