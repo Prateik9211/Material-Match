@@ -4,6 +4,7 @@ load_dotenv()
 import os
 import io
 import base64
+import hashlib
 import json
 import logging
 import secrets
@@ -684,6 +685,215 @@ async def mock_analyze(project_id: str, user: dict = Depends(get_current_user)):
         }}
     )
     return mock_analysis
+
+
+# ============================================================================
+# Mock Catalogue Match (MVP — no real AI, no PDF parsing)
+# ============================================================================
+MOCK_PRODUCT_LIBRARY = [
+    # wood
+    {"name": "White Oak Plank — Natural Matte", "ref": "Havwoods HW-291", "category": "wood", "color": "#a07856"},
+    {"name": "Engineered Walnut 190mm Wide", "ref": "Forbo Catalogue 2024 · p.42", "category": "wood", "color": "#7a5a40"},
+    {"name": "European Oak — Smoked Brushed", "ref": "Bjelin BJ-118", "category": "wood", "color": "#8e6d4f"},
+    {"name": "Reclaimed Pine — Heritage Plank", "ref": "Element7 EL-RP-220", "category": "wood", "color": "#b08864"},
+    {"name": "Maple Stripe Parquet 22mm", "ref": "Junckers JU-MAPLE-22", "category": "wood", "color": "#c8a878"},
+    {"name": "Vertical Slatted Oak Panel", "ref": "Naturewall NW-SO-12", "category": "wood", "color": "#9b7a55"},
+    # stone
+    {"name": "Honed Travertine 600x600", "ref": "Mandarin Stone TR-CR-60", "category": "stone", "color": "#d6c4a3"},
+    {"name": "Crema Limestone Tile", "ref": "Lapicida LP-CRM-300", "category": "stone", "color": "#cabd9d"},
+    {"name": "Calacatta Viola Marble Slab", "ref": "Salvatori SVT-CV-01", "category": "stone", "color": "#e6dccd"},
+    {"name": "Sandblasted Sandstone Pavers", "ref": "Stone Federation SF-SBS-450", "category": "stone", "color": "#c8b58e"},
+    {"name": "Pietra Serena — Honed", "ref": "Cotto d'Este CT-PS-HON", "category": "stone", "color": "#9a9388"},
+    # fabric
+    {"name": "Bouclé Cream Upholstery", "ref": "Romo Bouclé Z2003", "category": "fabric", "color": "#e8dcc6"},
+    {"name": "Looped Linen Weave", "ref": "Kvadrat KV-LL-04", "category": "fabric", "color": "#d6c8ad"},
+    {"name": "Wool Curl Performance Fabric", "ref": "Maharam MH-WC-117", "category": "fabric", "color": "#cebda0"},
+    {"name": "Soft Velvet — Sand", "ref": "Dedar DD-VLV-S-08", "category": "fabric", "color": "#c4a780"},
+    {"name": "Nubby Tweed Upholstery", "ref": "Designtex DTX-NB-422", "category": "fabric", "color": "#bba888"},
+    # metal
+    {"name": "Brushed Brass Wall Sconce", "ref": "Astro AST-1112", "category": "metal", "color": "#c8a464"},
+    {"name": "Antique Bronze Hardware Set", "ref": "Joseph Giles JG-AB-122", "category": "metal", "color": "#9c7c4a"},
+    {"name": "Satin Champagne Trim Profile", "ref": "Buster + Punch BP-SC-22", "category": "metal", "color": "#d6b87a"},
+    {"name": "Patinated Copper Cladding", "ref": "TECU CU-PAT-1.5", "category": "metal", "color": "#b06d4a"},
+    {"name": "Blackened Steel Frame", "ref": "Crittall CR-BK-60", "category": "metal", "color": "#3a3a3a"},
+    # plaster
+    {"name": "Bone White Lime Plaster", "ref": "Bauwerk BW-04", "category": "plaster", "color": "#ece4d5"},
+    {"name": "Tadelakt Marrakech Cream", "ref": "Clayworks CW-TDL-12", "category": "plaster", "color": "#e0d3bd"},
+    {"name": "Polished Plaster — Calce", "ref": "Marmorino MM-PC-44", "category": "plaster", "color": "#e6dccc"},
+    {"name": "Microcement Wall Coating", "ref": "Topciment TC-MCM-08", "category": "plaster", "color": "#d8c9b0"},
+    {"name": "Chalk Paint — Old White", "ref": "Annie Sloan AS-CP-OW", "category": "plaster", "color": "#ece5d3"},
+    # rug
+    {"name": "Hand-tufted Wool Rug — Sand", "ref": "Armadillo AM-09", "category": "rug", "color": "#cdbb95"},
+    {"name": "Loop Pile Wool Carpet", "ref": "Brintons BR-LP-203", "category": "rug", "color": "#b8a679"},
+    {"name": "Jute & Wool Blend Runner", "ref": "Floor Story FS-JW-90", "category": "rug", "color": "#b89870"},
+    {"name": "Berber Wool Rug — Beni Ourain", "ref": "Beni Ourain BO-BR-200", "category": "rug", "color": "#e2d4ba"},
+    {"name": "Vintage Persian — Muted", "ref": "Nazmiyal NAZ-VP-12", "category": "rug", "color": "#9c7b5c"},
+]
+
+MATCH_REASONS_LIBRARY = {
+    "wood": [
+        "Natural grain pattern aligns with the reference",
+        "Warm tone matches the detected colour palette",
+        "Matte-oiled finish replicates the reference sheen",
+        "Plank width sits within typical Scandinavian/Japandi spec",
+        "Sustainability rating is compatible with the brief",
+        "Tonal value within ±5% of detected colour",
+    ],
+    "stone": [
+        "Veining and pore pattern match the texture description",
+        "Tone and warmth aligned with detected palette",
+        "Honed finish matches the reference surface sheen",
+        "Format size suits residential floor application",
+        "Available in matching skirting and accent pieces",
+    ],
+    "fabric": [
+        "Loop / pile structure matches the detected texture",
+        "Colour tone within the target warm-neutral range",
+        "Performance rating suits residential seating",
+        "Hand feel category aligns with the design intent",
+        "Available width supports custom upholstery dimensions",
+    ],
+    "metal": [
+        "Brushed finish replicates the reference reflectivity",
+        "Warm tone matches the detected accent colour",
+        "Patina depth suits the design style",
+        "Available in matching adjacent hardware family",
+    ],
+    "plaster": [
+        "Soft chalky finish matches the detected surface",
+        "Off-white tone within 2 LRV of the reference",
+        "Texture mottling consistent with the inspiration",
+        "Compatible base coats available for the substrate",
+    ],
+    "rug": [
+        "Sand / ivory tone aligned with the palette",
+        "Loop-pile texture matches the detected weave",
+        "Wool blend suits the design style",
+        "Available in size variants for the room scale",
+    ],
+}
+
+DISQUALIFIER_LIBRARY = [
+    "Minimum order quantity may exceed project scope.",
+    "Lead time of 8–10 weeks; confirm against project timeline.",
+    "Slight tonal variation possible between batches.",
+    "Subject to availability — confirm with supplier before specifying.",
+]
+
+
+def _category_for(material: dict) -> str:
+    parts = [
+        material.get("material_type", ""),
+        material.get("color", ""),
+        material.get("texture", ""),
+        material.get("finish", ""),
+    ]
+    parts += material.get("keywords", []) or []
+    blob = " ".join(parts).lower()
+    aliases = {
+        "marble": "stone", "travertine": "stone", "limestone": "stone", "sandstone": "stone",
+        "bouclé": "fabric", "boucle": "fabric", "velvet": "fabric", "linen": "fabric", "wool curl": "fabric",
+        "brass": "metal", "bronze": "metal", "copper": "metal", "steel": "metal",
+        "wool": "rug", "carpet": "rug", "rug": "rug",
+        "plaster": "plaster", "paint": "plaster", "tadelakt": "plaster", "microcement": "plaster",
+        "wood": "wood", "oak": "wood", "walnut": "wood", "pine": "wood", "maple": "wood",
+        "stone": "stone",
+    }
+    for keyword, cat in aliases.items():
+        if keyword in blob:
+            return cat
+    return "wood"
+
+
+def _score_label(pct: int) -> str:
+    if pct >= 90:
+        return "Strong Match"
+    if pct >= 75:
+        return "Good Match"
+    if pct >= 60:
+        return "Partial Match"
+    return "Low Match"
+
+
+@api_router.post("/projects/{project_id}/match")
+async def run_match(
+    project_id: str,
+    zone: str = Form(...),
+    manual_prompt: str = Form(""),
+    catalogue: List[UploadFile] = File(default=[]),
+    user: dict = Depends(get_current_user),
+):
+    doc = await db.projects.find_one({"_id": ObjectId(project_id), "user_id": user["id"]})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    rows = (doc.get("mock_analysis") or {}).get("rows", [])
+    selected = next((r for r in rows if r.get("zone") == zone), None)
+    if not selected:
+        raise HTTPException(status_code=400, detail=f"Zone '{zone}' not found in analysis — analyse materials first")
+
+    # Collect filename / type / size only — no actual parsing or byte storage (mock mode)
+    uploaded_files = []
+    for f in catalogue:
+        content = await f.read()
+        uploaded_files.append({
+            "name": f.filename or "untitled",
+            "type": f.content_type or "application/octet-stream",
+            "size": len(content),
+        })
+
+    # Deterministic mock: same project + zone always yields same 5 matches
+    seed_int = int(hashlib.md5(f"{project_id}-{zone}".encode()).hexdigest()[:8], 16)
+    category = _category_for(selected)
+
+    candidates = [p for p in MOCK_PRODUCT_LIBRARY if p["category"] == category]
+    if len(candidates) < 5:
+        candidates += [p for p in MOCK_PRODUCT_LIBRARY if p["category"] != category]
+
+    start = seed_int % len(candidates)
+    chosen = [candidates[(start + i) % len(candidates)] for i in range(5)]
+
+    base_pcts = [92, 86, 79, 71, 63]
+    reason_pool = MATCH_REASONS_LIBRARY.get(category, MATCH_REASONS_LIBRARY["wood"])
+    matches = []
+    for i, product in enumerate(chosen):
+        jitter = ((seed_int >> (i * 3)) & 0x7) - 3  # ±3
+        pct = max(50, min(98, base_pcts[i] + jitter))
+        r_start = (seed_int + i * 7) % len(reason_pool)
+        reasons = [reason_pool[(r_start + j) % len(reason_pool)] for j in range(3)]
+        disqualifier = DISQUALIFIER_LIBRARY[(seed_int + i) % len(DISQUALIFIER_LIBRARY)] if i >= 3 else None
+        matches.append({
+            "id": f"match_{i + 1}",
+            "product_name": product["name"],
+            "catalogue_ref": product["ref"],
+            "match_percent": pct,
+            "score_label": _score_label(pct),
+            "reasons": reasons,
+            "disqualifier": disqualifier,
+            "thumbnail_color": product["color"],
+        })
+
+    result = {
+        "zone": zone,
+        "selected_material": selected,
+        "manual_prompt": manual_prompt,
+        "uploaded_files": uploaded_files,
+        "category": category,
+        "matches": matches,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "version": "mock-match-v1",
+    }
+
+    await db.projects.update_one(
+        {"_id": ObjectId(project_id)},
+        {"$set": {
+            f"match_results.{zone}": result,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }}
+    )
+    return result
+
+
 
 
 

@@ -8,6 +8,7 @@ import Auth from "@/pages/Auth";
 import Dashboard from "@/pages/Dashboard";
 import NewProject from "@/pages/NewProject";
 import Analysis from "@/pages/Analysis";
+import Match from "@/pages/Match";
 
 function App() {
   return (
@@ -38,6 +39,14 @@ function App() {
             element={
               <ProtectedRoute>
                 <Analysis />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/projects/:id/match"
+            element={
+              <ProtectedRoute>
+                <Match />
               </ProtectedRoute>
             }
           />

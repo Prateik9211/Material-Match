@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import Header from "@/components/Header";
 import api, { formatApiError } from "@/lib/api";
-import { ArrowLeft, Sparkles, RefreshCw } from "lucide-react";
+import { ArrowLeft, Sparkles, RefreshCw, ArrowUpRight } from "lucide-react";
 import { toast } from "sonner";
 
 function confidenceColor(c) {
@@ -14,6 +14,7 @@ function confidenceColor(c) {
 
 export default function Analysis() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const [project, setProject] = useState(null);
   const [refImg, setRefImg] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -145,11 +146,14 @@ export default function Analysis() {
                           <th className="px-3 py-3 text-overline font-semibold">Finish</th>
                           <th className="px-3 py-3 text-overline font-semibold">Style</th>
                           <th className="px-3 py-3 text-overline font-semibold">Keywords</th>
-                          <th className="px-6 py-3 text-overline font-semibold text-right">Confidence</th>
+                          <th className="px-3 py-3 text-overline font-semibold text-right">Confidence</th>
+                          <th className="px-6 py-3 text-overline font-semibold text-right">Action</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-black/5">
-                        {rows.map((r, i) => (
+                        {rows.map((r, i) => {
+                          const savedMatch = project?.match_results?.[r.zone];
+                          return (
                           <tr key={`row-${r.zone}-${i}`} className="hover:bg-[#F3F2EE]/30 transition-colors" data-testid={`analysis-row-${i}`}>
                             <td className="px-6 py-4 font-medium text-neutral-900 whitespace-nowrap">{r.zone}</td>
                             <td className="px-3 py-4 text-neutral-700">{r.material_type}</td>
@@ -164,13 +168,24 @@ export default function Analysis() {
                                 ))}
                               </div>
                             </td>
-                            <td className="px-6 py-4 text-right whitespace-nowrap">
+                            <td className="px-3 py-4 text-right whitespace-nowrap">
                               <span className={`inline-flex items-center gap-1.5 ${confidenceColor(r.confidence)} text-white text-xs font-mono font-semibold px-2.5 py-1 rounded-full`}>
                                 {Math.round((r.confidence || 0) * 100)}%
                               </span>
                             </td>
+                            <td className="px-6 py-4 text-right whitespace-nowrap">
+                              <button
+                                onClick={() => navigate(`/projects/${id}/match?zone=${encodeURIComponent(r.zone)}`)}
+                                className="inline-flex items-center gap-1.5 bg-black text-white hover:bg-black/80 rounded-full px-3 py-1.5 text-xs font-medium transition-colors"
+                                data-testid={`find-matches-btn-${i}`}
+                              >
+                                {savedMatch ? "View matches" : "Find Matches"}
+                                <ArrowUpRight className="w-3 h-3" strokeWidth={1.75} />
+                              </button>
+                            </td>
                           </tr>
-                        ))}
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
