@@ -88,11 +88,11 @@ export default function Landing() {
             { n: "01", icon: Camera, title: "Upload reference", body: "Drop a Pinterest pin or photograph of an interior you love. Add a prompt to focus the analysis if needed." },
             { n: "02", icon: Layers, title: "Drop your catalogue", body: "Upload a PDF catalogue or a folder of product photos. We'll parse and index every material." },
             { n: "03", icon: Palette, title: "Get matches & report", body: "AI ranks the closest materials by visual similarity, explains why, and exports a polished PDF." },
-          ].map((s, i) => (
+          ].map((s) => (
             <div
-              key={i}
+              key={s.n}
               className="bg-white border border-black/5 rounded-2xl p-8 shadow-soft hover:shadow-hover transition-all hover:-translate-y-1 duration-300"
-              data-testid={`workflow-step-${i + 1}`}
+              data-testid={`workflow-step-${s.n}`}
             >
               <div className="flex items-start justify-between mb-6">
                 <span className="font-display text-5xl text-neutral-200 font-bold">{s.n}</span>
@@ -120,8 +120,8 @@ export default function Landing() {
               Specify materials your client will love — backed by visual evidence. Cut hours of catalogue flipping and material library searches into a single workflow.
             </p>
             <ul className="space-y-3">
-              {["Detected materials with confidence scores", "Side-by-side visual reasoning", "Branded client-ready PDF reports"].map((b, i) => (
-                <li key={i} className="flex items-start gap-3 text-sm text-neutral-700">
+              {["Detected materials with confidence scores", "Side-by-side visual reasoning", "Branded client-ready PDF reports"].map((b) => (
+                <li key={b} className="flex items-start gap-3 text-sm text-neutral-700">
                   <Check className="w-4 h-4 mt-0.5 text-black" strokeWidth={2} />
                   {b}
                 </li>
@@ -146,7 +146,7 @@ export default function Landing() {
             { name: "Practice", price: "$49", cadence: "/month", features: ["Unlimited projects", "Priority AI analysis", "Up to 500 catalogue items per project", "Branded reports", "Team workspaces"], cta: "Start 14-day trial", highlight: true },
           ].map((p, i) => (
             <div
-              key={i}
+              key={p.name}
               className={`rounded-3xl p-10 transition-all ${
                 p.highlight ? "bg-black text-white" : "bg-white border border-black/5 shadow-soft"
               }`}
@@ -161,8 +161,8 @@ export default function Landing() {
                 <span className={`text-sm ${p.highlight ? "text-neutral-400" : "text-neutral-500"}`}>{p.cadence}</span>
               </div>
               <ul className="space-y-3 mb-8">
-                {p.features.map((f, j) => (
-                  <li key={j} className={`flex items-start gap-2 text-sm ${p.highlight ? "text-neutral-200" : "text-neutral-700"}`}>
+                {p.features.map((f) => (
+                  <li key={f} className={`flex items-start gap-2 text-sm ${p.highlight ? "text-neutral-200" : "text-neutral-700"}`}>
                     <Check className="w-4 h-4 mt-0.5" strokeWidth={2} />
                     {f}
                   </li>

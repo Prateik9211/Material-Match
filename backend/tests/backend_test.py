@@ -25,7 +25,7 @@ API = f"{BASE_URL}/api"
 
 UNIQUE = uuid.uuid4().hex[:8]
 TEST_EMAIL = f"test_user_{UNIQUE}@test.com"
-TEST_PASSWORD = "TestPass2026!"
+TEST_PASSWORD = os.environ.get("TEST_USER_PASSWORD", "TestPass2026!")
 TEST_NAME = "TEST_User"
 
 # Shared state across tests

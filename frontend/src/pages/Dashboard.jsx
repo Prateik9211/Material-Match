@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import Header from "@/components/Header";
 import api, { formatApiError } from "@/lib/api";
@@ -21,7 +21,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       const [pr, rp] = await Promise.all([
         api.get("/projects"),
@@ -34,9 +34,9 @@ export default function Dashboard() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  useEffect(() => { fetchData(); }, []);
+  useEffect(() => { fetchData(); }, [fetchData]);
 
   const projectRoute = (p) => {
     if (p.status === "completed") return `/projects/${p.id}/analysis`;
@@ -73,7 +73,7 @@ export default function Dashboard() {
             { label: "Completed reports", value: reports.length, icon: FileText },
             { label: "Match accuracy", value: "AI", icon: ArrowUpRight, sub: "Powered by Claude" },
           ].map((s, i) => (
-            <div key={i} className="bg-white border border-black/5 rounded-2xl p-6 shadow-soft" data-testid={`stat-card-${i}`}>
+            <div key={s.label} className="bg-white border border-black/5 rounded-2xl p-6 shadow-soft" data-testid={`stat-card-${i}`}>
               <div className="flex items-start justify-between mb-6">
                 <span className="text-overline">{s.label}</span>
                 <s.icon className="w-5 h-5 text-neutral-400" strokeWidth={1.25} />

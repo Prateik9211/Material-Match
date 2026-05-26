@@ -282,6 +282,7 @@ async def list_projects(user: dict = Depends(get_current_user)):
 
 @api_router.get("/projects/{project_id}")
 async def get_project(project_id: str, user: dict = Depends(get_current_user)):
+    doc = None
     try:
         doc = await db.projects.find_one({"_id": ObjectId(project_id), "user_id": user["id"]})
     except Exception:
@@ -355,7 +356,7 @@ async def upload_catalogue(project_id: str,
                         "mime": "image/png",
                     })
                 pdf.close()
-            except Exception as e:
+            except Exception:
                 logger.exception("PDF parse failed")
                 raise HTTPException(status_code=400, detail=f"Failed to parse PDF: {f.filename}")
         elif mime in ("image/jpeg", "image/png", "image/webp"):

@@ -183,7 +183,7 @@ export default function Report() {
                 <div className="text-overline mb-4">Color Palette</div>
                 <div className="grid grid-cols-3 sm:grid-cols-6 gap-4">
                   {analysis.color_palette.map((c, i) => (
-                    <div key={i}>
+                    <div key={`color-${c.hex || c.name || i}`}>
                       <div className="aspect-square rounded-xl border border-black/5" style={{ background: c.hex }}></div>
                       <div className="text-xs mt-2 font-medium">{c.name}</div>
                       <div className="text-[10px] text-neutral-500 font-mono">{c.hex}</div>
@@ -199,7 +199,7 @@ export default function Report() {
                 <div className="text-overline mb-4">Detected Materials</div>
                 <div className="grid sm:grid-cols-2 gap-x-8 gap-y-4">
                   {analysis.materials.map((m, i) => (
-                    <div key={i} className="flex items-start justify-between gap-4 pb-3 border-b border-black/5 last:border-0">
+                    <div key={`mat-${m.name || i}`} className="flex items-start justify-between gap-4 pb-3 border-b border-black/5 last:border-0">
                       <div>
                         <div className="font-medium text-sm">{m.name}</div>
                         <div className="text-xs text-neutral-500">{m.category} · {m.finish}</div>
@@ -217,7 +217,7 @@ export default function Report() {
               <div className="text-overline mb-4">Top Matches from Catalogue</div>
               <div className="grid sm:grid-cols-2 gap-6">
                 {(analysis.matches || []).slice(0, 8).map((m, i) => (
-                  <div key={i} className="border border-black/5 rounded-2xl overflow-hidden">
+                  <div key={`match-${m.index}-${m.name}`} className="border border-black/5 rounded-2xl overflow-hidden">
                     <div className="aspect-[4/3] bg-[#F3F2EE]">
                       {catImages[m.index] && (
                         <img src={catImages[m.index]} alt={m.name} className="w-full h-full object-cover" crossOrigin="anonymous" />

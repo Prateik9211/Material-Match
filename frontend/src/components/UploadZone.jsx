@@ -71,7 +71,7 @@ export default function UploadZone({
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3" data-testid={`${testid}-previews`}>
           {files.map((f, i) => (
             <div
-              key={i}
+              key={`${f.name}-${f.size}-${i}`}
               className="relative group rounded-xl overflow-hidden bg-white border border-black/5 aspect-square"
             >
               {f.type?.startsWith("image/") && f.preview ? (

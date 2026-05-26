@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import Header from "@/components/Header";
 import api, { formatApiError } from "@/lib/api";
@@ -20,7 +20,7 @@ export default function Analysis() {
   const [status, setStatus] = useState("loading");
   const pollRef = useRef(null);
 
-  const fetchProject = async () => {
+  const fetchProject = useCallback(async () => {
     try {
       const { data } = await api.get(`/projects/${id}`);
       setProject(data);
@@ -31,19 +31,21 @@ export default function Analysis() {
       setStatus("error");
       return null;
     }
-  };
+  }, [id]);
 
-  const loadRefImg = async () => {
+  const loadRefImg = useCallback(async () => {
     try {
       const { data } = await api.get(`/projects/${id}/reference-image`);
       setRefImg(data.data_url);
-    } catch (e) { /* ignore */ }
-  };
+    } catch (e) {
+      console.error("Failed to load reference image:", e);
+    }
+  }, [id]);
 
   useEffect(() => {
     fetchProject();
     loadRefImg();
-  }, [id]);
+  }, [fetchProject, loadRefImg]);
 
   useEffect(() => {
     if (status === "queued" || status === "analyzing") {
@@ -55,22 +57,27 @@ export default function Analysis() {
       }, 3000);
       return () => clearInterval(pollRef.current);
     }
-  }, [status]);
+  }, [status, fetchProject]);
 
-  const loadCatImg = async (idx) => {
-    if (catImages[idx]) return;
+  const loadCatImg = useCallback(async (idx) => {
     try {
       const { data } = await api.get(`/projects/${id}/catalogue/${idx}`);
-      setCatImages((prev) => ({ ...prev, [idx]: data.data_url }));
-    } catch (e) { /* ignore */ }
-  };
+      setCatImages((prev) => (prev[idx] ? prev : { ...prev, [idx]: data.data_url }));
+    } catch (e) {
+      console.error(`Failed to load catalogue image ${idx}:`, e);
+    }
+  }, [id]);
 
   useEffect(() => {
-    if (project?.analysis?.matches) {
-      project.analysis.matches.slice(0, 12).forEach((m) => loadCatImg(m.index));
+    const matches = project?.analysis?.matches;
+    if (matches) {
+      matches.slice(0, 12).forEach((m) => {
+        if (!catImages[m.index]) loadCatImg(m.index);
+      });
     }
-    // eslint-disable-next-line
-  }, [project?.analysis]);
+    // catImages intentionally excluded: would cause an infinite loop
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project?.analysis, loadCatImg]);
 
   const analysis = project?.analysis;
   const isWorking = status === "queued" || status === "analyzing";
@@ -140,7 +147,7 @@ export default function Analysis() {
                     {analysis.style_tags?.length > 0 && (
                       <div className="flex flex-wrap gap-2 mt-4">
                         {analysis.style_tags.map((t, i) => (
-                          <span key={i} className="inline-flex px-2.5 py-1 rounded-full text-xs bg-[#F3F2EE] text-neutral-700">{t}</span>
+                          <span key={`tag-${t}-${i}`} className="inline-flex px-2.5 py-1 rounded-full text-xs bg-[#F3F2EE] text-neutral-700">{t}</span>
                         ))}
                       </div>
                     )}
@@ -152,7 +159,7 @@ export default function Analysis() {
                     <div className="text-overline mb-3">Color palette</div>
                     <div className="grid grid-cols-3 gap-3">
                       {analysis.color_palette.map((c, i) => (
-                        <div key={i} className="space-y-1.5">
+                        <div key={`color-${c.hex || c.name || i}`} className="space-y-1.5">
                           <div className="aspect-square rounded-lg border border-black/5" style={{ background: c.hex }}></div>
                           <div className="text-[10px] text-neutral-600 truncate">{c.name}</div>
                           <div className="text-[10px] text-neutral-400 font-mono">{c.hex}</div>
@@ -167,7 +174,7 @@ export default function Analysis() {
                     <div className="text-overline mb-3">Detected materials</div>
                     <div className="space-y-3">
                       {analysis.materials.map((m, i) => (
-                        <div key={i} className="flex items-start gap-3 pb-3 last:pb-0 border-b last:border-0 border-black/5">
+                        <div key={`mat-${m.name || i}`} className="flex items-start gap-3 pb-3 last:pb-0 border-b last:border-0 border-black/5">
                           <Layers className="w-4 h-4 text-neutral-400 mt-0.5" strokeWidth={1.5} />
                           <div className="flex-1 min-w-0">
                             <div className="text-sm font-medium truncate">{m.name}</div>
@@ -193,7 +200,7 @@ export default function Analysis() {
               <div className="grid sm:grid-cols-2 gap-6" data-testid="matches-grid">
                 {(analysis.matches || []).map((m, i) => (
                   <div
-                    key={i}
+                    key={`match-${m.index}-${m.name}`}
                     className="bg-white border border-black/5 rounded-2xl overflow-hidden shadow-soft hover:shadow-hover transition-all duration-300 hover:-translate-y-1"
                     data-testid={`match-card-${i}`}
                   >
@@ -218,7 +225,7 @@ export default function Analysis() {
                       {m.tags?.length > 0 && (
                         <div className="flex flex-wrap gap-1.5">
                           {m.tags.map((t, j) => (
-                            <span key={j} className="text-[10px] px-2 py-0.5 rounded-full bg-[#F3F2EE] text-neutral-600">{t}</span>
+                            <span key={`tag-${m.index}-${t}-${j}`} className="text-[10px] px-2 py-0.5 rounded-full bg-[#F3F2EE] text-neutral-600">{t}</span>
                           ))}
                         </div>
                       )}

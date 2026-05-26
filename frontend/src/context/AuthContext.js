@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
 import api, { formatApiError } from "@/lib/api";
 
 const AuthContext = createContext(null);
@@ -11,14 +11,14 @@ export function AuthProvider({ children }) {
     let mounted = true;
     api
       .get("/auth/me")
-      .then((r) => mounted && setUser(r.data))
-      .catch(() => mounted && setUser(false));
+      .then((r) => { if (mounted) setUser(r.data); })
+      .catch(() => { if (mounted) setUser(false); });
     return () => {
       mounted = false;
     };
   }, []);
 
-  const login = async (email, password) => {
+  const login = useCallback(async (email, password) => {
     setError("");
     try {
       const { data } = await api.post("/auth/login", { email, password });
@@ -28,9 +28,9 @@ export function AuthProvider({ children }) {
       setError(formatApiError(e));
       return false;
     }
-  };
+  }, []);
 
-  const register = async (email, password, name) => {
+  const register = useCallback(async (email, password, name) => {
     setError("");
     try {
       const { data } = await api.post("/auth/register", { email, password, name });
@@ -40,16 +40,16 @@ export function AuthProvider({ children }) {
       setError(formatApiError(e));
       return false;
     }
-  };
+  }, []);
 
-  const logout = async () => {
+  const logout = useCallback(async () => {
     try {
       await api.post("/auth/logout");
     } catch (e) {
-      // ignore
+      console.error("Logout request failed:", e);
     }
     setUser(false);
-  };
+  }, []);
 
   return (
     <AuthContext.Provider value={{ user, login, register, logout, error, setError }}>
