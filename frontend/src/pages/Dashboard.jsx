@@ -38,10 +38,7 @@ export default function Dashboard() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  const projectRoute = (p) => {
-    if (p.status === "completed") return `/projects/${p.id}/analysis`;
-    return `/projects/${p.id}/upload`;
-  };
+  const projectRoute = (p) => `/projects/${p.id}/analysis`;
 
   return (
     <div className="min-h-screen bg-[#F9F9F8]" data-testid="dashboard-page">

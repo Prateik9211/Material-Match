@@ -565,6 +565,127 @@ def _parse_json(text: str) -> dict:
             return json.loads(text[start:end+1])
         raise
 
+# ============================================================================
+# Mock Material Analysis (MVP — no real LLM, no catalogue matching)
+# ============================================================================
+MOCK_MATERIAL_LIBRARY = [
+    {
+        "zone": "Floor",
+        "material_type": "Engineered Oak Plank",
+        "color": "Warm Walnut Brown",
+        "texture": "Visible natural grain",
+        "finish": "Matte oiled",
+        "design_style": "Scandinavian",
+        "keywords": ["wood", "warm", "natural", "matte", "plank"],
+        "confidence": 0.92,
+    },
+    {
+        "zone": "Walls",
+        "material_type": "Lime Plaster",
+        "color": "Bone White",
+        "texture": "Slightly mottled",
+        "finish": "Matte chalky",
+        "design_style": "Wabi-sabi",
+        "keywords": ["plaster", "minimal", "soft", "chalky"],
+        "confidence": 0.87,
+    },
+    {
+        "zone": "Ceiling",
+        "material_type": "Painted Drywall",
+        "color": "Off-white",
+        "texture": "Smooth",
+        "finish": "Eggshell",
+        "design_style": "Modern Minimalist",
+        "keywords": ["ceiling", "smooth", "neutral", "paint"],
+        "confidence": 0.81,
+    },
+    {
+        "zone": "Sofa",
+        "material_type": "Bouclé Upholstery",
+        "color": "Cream Beige",
+        "texture": "Looped, fluffy",
+        "finish": "Soft matte",
+        "design_style": "Contemporary Mid-century",
+        "keywords": ["fabric", "bouclé", "cozy", "neutral", "textured"],
+        "confidence": 0.89,
+    },
+    {
+        "zone": "Coffee Table",
+        "material_type": "Travertine Stone",
+        "color": "Sandy Cream",
+        "texture": "Open-pore, banded",
+        "finish": "Honed",
+        "design_style": "Organic Modern",
+        "keywords": ["stone", "travertine", "honed", "earthy"],
+        "confidence": 0.84,
+    },
+    {
+        "zone": "Lighting",
+        "material_type": "Brushed Brass",
+        "color": "Warm Gold",
+        "texture": "Linear brush marks",
+        "finish": "Brushed satin",
+        "design_style": "Modern Luxe",
+        "keywords": ["metal", "brass", "warm", "accent"],
+        "confidence": 0.78,
+    },
+    {
+        "zone": "Rug",
+        "material_type": "Hand-tufted Wool",
+        "color": "Sand & Ivory",
+        "texture": "Loop-pile",
+        "finish": "Natural fibre",
+        "design_style": "Japandi",
+        "keywords": ["rug", "wool", "neutral", "layered"],
+        "confidence": 0.86,
+    },
+    {
+        "zone": "Accent Wall",
+        "material_type": "Vertical Slatted Oak",
+        "color": "Mid-tone Honey",
+        "texture": "Linear ribbed",
+        "finish": "Lacquered satin",
+        "design_style": "Japandi",
+        "keywords": ["wood", "slatted", "linear", "warm"],
+        "confidence": 0.83,
+    },
+]
+
+
+@api_router.post("/projects/{project_id}/mock-analyze")
+async def mock_analyze(project_id: str, user: dict = Depends(get_current_user)):
+    doc = await db.projects.find_one({"_id": ObjectId(project_id), "user_id": user["id"]})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not doc.get("reference_image_b64"):
+        raise HTTPException(status_code=400, detail="Upload a reference image first")
+
+    # Stable mock based on project_id so revisits show the same result
+    seed = int(ObjectId(project_id).binary[-4:].hex(), 16)
+    count = 5 + (seed % 4)  # 5-8 rows
+    start = seed % len(MOCK_MATERIAL_LIBRARY)
+    rows = [
+        MOCK_MATERIAL_LIBRARY[(start + i) % len(MOCK_MATERIAL_LIBRARY)]
+        for i in range(count)
+    ]
+
+    mock_analysis = {
+        "rows": rows,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "version": "mock-v1",
+    }
+
+    await db.projects.update_one(
+        {"_id": ObjectId(project_id)},
+        {"$set": {
+            "mock_analysis": mock_analysis,
+            "status": "completed",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }}
+    )
+    return mock_analysis
+
+
 
 @api_router.post("/projects/{project_id}/analyze")
 async def start_analysis(project_id: str, background: BackgroundTasks,

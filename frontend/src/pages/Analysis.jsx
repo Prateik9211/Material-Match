@@ -1,14 +1,14 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import Header from "@/components/Header";
 import api, { formatApiError } from "@/lib/api";
-import { ArrowLeft, FileDown, Sparkles, Layers } from "lucide-react";
+import { ArrowLeft, Sparkles, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
-function scoreBadgeColor(score) {
-  if (score >= 0.8) return "bg-emerald-600";
-  if (score >= 0.6) return "bg-emerald-500";
-  if (score >= 0.4) return "bg-amber-500";
+function confidenceColor(c) {
+  if (c >= 0.9) return "bg-emerald-600";
+  if (c >= 0.8) return "bg-emerald-500";
+  if (c >= 0.7) return "bg-amber-500";
   return "bg-neutral-400";
 }
 
@@ -16,71 +16,41 @@ export default function Analysis() {
   const { id } = useParams();
   const [project, setProject] = useState(null);
   const [refImg, setRefImg] = useState(null);
-  const [catImages, setCatImages] = useState({}); // idx -> data_url
-  const [status, setStatus] = useState("loading");
-  const pollRef = useRef(null);
+  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   const fetchProject = useCallback(async () => {
     try {
-      const { data } = await api.get(`/projects/${id}`);
-      setProject(data);
-      setStatus(data.status || "draft");
-      return data;
-    } catch (e) {
-      toast.error(formatApiError(e));
-      setStatus("error");
-      return null;
+      const [p, r] = await Promise.all([
+        api.get(`/projects/${id}`),
+        api.get(`/projects/${id}/reference-image`).catch(() => null),
+      ]);
+      setProject(p.data);
+      if (r) setRefImg(r.data.data_url);
+    } catch (err) {
+      toast.error(formatApiError(err));
+    } finally {
+      setLoading(false);
     }
   }, [id]);
 
-  const loadRefImg = useCallback(async () => {
+  useEffect(() => { fetchProject(); }, [fetchProject]);
+
+  const analyse = async () => {
+    setBusy(true);
     try {
-      const { data } = await api.get(`/projects/${id}/reference-image`);
-      setRefImg(data.data_url);
-    } catch (e) {
-      console.error("Failed to load reference image:", e);
+      const { data } = await api.post(`/projects/${id}/mock-analyze`);
+      setProject((prev) => ({ ...(prev || {}), mock_analysis: data, status: "completed" }));
+      toast.success("Materials analysed");
+    } catch (err) {
+      toast.error(formatApiError(err));
+    } finally {
+      setBusy(false);
     }
-  }, [id]);
+  };
 
-  useEffect(() => {
-    fetchProject();
-    loadRefImg();
-  }, [fetchProject, loadRefImg]);
-
-  useEffect(() => {
-    if (status === "queued" || status === "analyzing") {
-      pollRef.current = setInterval(async () => {
-        const data = await fetchProject();
-        if (data && (data.status === "completed" || data.status === "error")) {
-          clearInterval(pollRef.current);
-        }
-      }, 3000);
-      return () => clearInterval(pollRef.current);
-    }
-  }, [status, fetchProject]);
-
-  const loadCatImg = useCallback(async (idx) => {
-    try {
-      const { data } = await api.get(`/projects/${id}/catalogue/${idx}`);
-      setCatImages((prev) => (prev[idx] ? prev : { ...prev, [idx]: data.data_url }));
-    } catch (e) {
-      console.error(`Failed to load catalogue image ${idx}:`, e);
-    }
-  }, [id]);
-
-  useEffect(() => {
-    const matches = project?.analysis?.matches;
-    if (matches) {
-      matches.slice(0, 12).forEach((m) => {
-        if (!catImages[m.index]) loadCatImg(m.index);
-      });
-    }
-    // catImages intentionally excluded: would cause an infinite loop
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project?.analysis, loadCatImg]);
-
-  const analysis = project?.analysis;
-  const isWorking = status === "queued" || status === "analyzing";
+  const rows = project?.mock_analysis?.rows || [];
+  const hasAnalysis = rows.length > 0;
 
   return (
     <div className="min-h-screen bg-[#F9F9F8]" data-testid="analysis-page">
@@ -91,148 +61,121 @@ export default function Analysis() {
             <ArrowLeft className="w-4 h-4" strokeWidth={1.5} />
             Back to dashboard
           </Link>
-          {status === "completed" && (
-            <Link
-              to={`/projects/${id}/report`}
-              className="inline-flex items-center gap-2 bg-black text-white hover:bg-black/80 rounded-full px-6 py-3 text-sm font-medium transition-colors"
-              data-testid="view-report-btn"
-            >
-              <FileDown className="w-4 h-4" strokeWidth={1.5} />
-              View report
-            </Link>
-          )}
         </div>
 
         <div className="mb-10">
-          <div className="text-overline mb-2">Analysis · {project?.name || "—"}</div>
-          <h1 className="font-display text-4xl sm:text-5xl font-bold tracking-tight">Material matches.</h1>
+          <div className="text-overline mb-2">Material Analysis · {project?.name || "—"}</div>
+          <h1 className="font-display text-4xl sm:text-5xl font-bold tracking-tight">
+            {hasAnalysis ? "Materials detected." : "Ready to analyse."}
+          </h1>
+          {project?.client_name && (
+            <p className="text-neutral-500 mt-2">Client: {project.client_name}</p>
+          )}
         </div>
 
-        {isWorking && (
-          <div className="bg-white border border-black/5 rounded-2xl p-12 text-center shadow-soft" data-testid="analysis-working">
-            <div className="inline-flex items-center gap-3 mb-4">
-              <Sparkles className="w-6 h-6 text-neutral-900 animate-pulse" strokeWidth={1.25} />
-              <span className="text-overline">{status === "queued" ? "Queued" : "Analyzing"}</span>
-            </div>
-            <h2 className="font-display text-2xl font-semibold mb-2">Claude is reading the materials.</h2>
-            <p className="text-neutral-500 max-w-md mx-auto mb-8">This typically takes 30 seconds to 2 minutes depending on catalogue size. You can leave this page — the analysis runs in the background.</p>
-            <div className="max-w-md mx-auto h-2 rounded-full bg-[#F3F2EE] overflow-hidden">
-              <div className="h-full bg-black animate-pulse" style={{ width: "60%" }}></div>
-            </div>
-          </div>
-        )}
-
-        {status === "error" && (
-          <div className="bg-red-50 border border-red-100 rounded-2xl p-8" data-testid="analysis-error">
-            <h2 className="font-display font-semibold text-red-900 mb-2">Analysis failed</h2>
-            <p className="text-sm text-red-700">{project?.analysis_error || "Unknown error"}</p>
-            <Link to={`/projects/${id}/upload`} className="inline-block mt-4 text-sm underline text-red-900">Try again</Link>
-          </div>
-        )}
-
-        {status === "completed" && analysis && (
+        {loading ? (
           <div className="grid lg:grid-cols-12 gap-8">
-            {/* Left sticky panel */}
-            <aside className="lg:col-span-4">
+            <div className="lg:col-span-5 aspect-[4/5] rounded-2xl shimmer"></div>
+            <div className="lg:col-span-7 h-96 rounded-2xl shimmer"></div>
+          </div>
+        ) : (
+          <div className="grid lg:grid-cols-12 gap-8">
+            {/* Reference image card */}
+            <aside className="lg:col-span-5">
               <div className="lg:sticky lg:top-24 space-y-6">
                 <div className="bg-white border border-black/5 rounded-2xl overflow-hidden shadow-soft" data-testid="reference-card">
                   {refImg ? (
                     <img src={refImg} alt="Reference" className="w-full aspect-[4/5] object-cover" />
                   ) : (
-                    <div className="w-full aspect-[4/5] shimmer"></div>
+                    <div className="w-full aspect-[4/5] bg-[#F3F2EE] grid place-items-center text-overline">No reference</div>
                   )}
                   <div className="p-5">
                     <div className="text-overline mb-2">Reference</div>
-                    <p className="text-sm text-neutral-700 leading-relaxed">{analysis.summary}</p>
-                    {analysis.style_tags?.length > 0 && (
-                      <div className="flex flex-wrap gap-2 mt-4">
-                        {analysis.style_tags.map((t, i) => (
-                          <span key={`tag-${t}-${i}`} className="inline-flex px-2.5 py-1 rounded-full text-xs bg-[#F3F2EE] text-neutral-700">{t}</span>
-                        ))}
-                      </div>
+                    <p className="text-sm text-neutral-700">
+                      Your uploaded inspiration image.
+                    </p>
+                    {project?.mock_analysis?.generated_at && (
+                      <p className="text-xs text-neutral-400 mt-2" data-testid="analysis-generated-at">
+                        Analysed {new Date(project.mock_analysis.generated_at).toLocaleString()}
+                      </p>
                     )}
                   </div>
                 </div>
 
-                {analysis.color_palette?.length > 0 && (
-                  <div className="bg-white border border-black/5 rounded-2xl p-5 shadow-soft" data-testid="color-palette">
-                    <div className="text-overline mb-3">Color palette</div>
-                    <div className="grid grid-cols-3 gap-3">
-                      {analysis.color_palette.map((c, i) => (
-                        <div key={`color-${c.hex || c.name || i}`} className="space-y-1.5">
-                          <div className="aspect-square rounded-lg border border-black/5" style={{ background: c.hex }}></div>
-                          <div className="text-[10px] text-neutral-600 truncate">{c.name}</div>
-                          <div className="text-[10px] text-neutral-400 font-mono">{c.hex}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {analysis.materials?.length > 0 && (
-                  <div className="bg-white border border-black/5 rounded-2xl p-5 shadow-soft" data-testid="detected-materials">
-                    <div className="text-overline mb-3">Detected materials</div>
-                    <div className="space-y-3">
-                      {analysis.materials.map((m, i) => (
-                        <div key={`mat-${m.name || i}`} className="flex items-start gap-3 pb-3 last:pb-0 border-b last:border-0 border-black/5">
-                          <Layers className="w-4 h-4 text-neutral-400 mt-0.5" strokeWidth={1.5} />
-                          <div className="flex-1 min-w-0">
-                            <div className="text-sm font-medium truncate">{m.name}</div>
-                            <div className="text-xs text-neutral-500">{m.category} · {m.finish}</div>
-                            {m.location && <div className="text-xs text-neutral-400">{m.location}</div>}
-                          </div>
-                          <span className="text-xs font-mono text-neutral-500">{Math.round((m.confidence || 0) * 100)}%</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
+                <button
+                  onClick={analyse}
+                  disabled={busy}
+                  className="w-full inline-flex items-center justify-center gap-2 bg-black text-white hover:bg-black/80 rounded-full py-3.5 font-medium transition-colors disabled:opacity-60"
+                  data-testid="analyse-materials-btn"
+                >
+                  {hasAnalysis ? (
+                    <><RefreshCw className={`w-4 h-4 ${busy ? "animate-spin" : ""}`} strokeWidth={1.5} /> {busy ? "Re-analysing…" : "Re-analyse materials"}</>
+                  ) : (
+                    <><Sparkles className={`w-4 h-4 ${busy ? "animate-pulse" : ""}`} strokeWidth={1.5} /> {busy ? "Analysing…" : "Analyse Materials"}</>
+                  )}
+                </button>
+                <p className="text-xs text-neutral-400 text-center">Demo mode · mock analysis</p>
               </div>
             </aside>
 
-            {/* Right matches */}
-            <section className="lg:col-span-8">
-              <div className="flex items-baseline justify-between mb-6">
-                <h2 className="font-display text-2xl font-semibold">Top matches</h2>
-                <span className="text-sm text-neutral-500">{analysis.matches?.length || 0} compared</span>
-              </div>
-
-              <div className="grid sm:grid-cols-2 gap-6" data-testid="matches-grid">
-                {(analysis.matches || []).map((m, i) => (
-                  <div
-                    key={`match-${m.index}-${m.name}`}
-                    className="bg-white border border-black/5 rounded-2xl overflow-hidden shadow-soft hover:shadow-hover transition-all duration-300 hover:-translate-y-1"
-                    data-testid={`match-card-${i}`}
-                  >
-                    <div className="relative aspect-[4/3] bg-[#F3F2EE] overflow-hidden">
-                      {catImages[m.index] ? (
-                        <img src={catImages[m.index]} alt={m.name} className="w-full h-full object-cover" />
-                      ) : (
-                        <div className="w-full h-full shimmer"></div>
-                      )}
-                      <div className={`absolute top-3 right-3 ${scoreBadgeColor(m.score)} text-white text-xs font-semibold px-2.5 py-1 rounded-full`}>
-                        {Math.round((m.score || 0) * 100)}%
-                      </div>
-                    </div>
-                    <div className="p-5 space-y-3">
-                      <div>
-                        <h3 className="font-display font-semibold truncate">{m.name}</h3>
-                        {m.matched_material && (
-                          <div className="text-xs text-neutral-500 mt-0.5">Matches: {m.matched_material}</div>
-                        )}
-                      </div>
-                      <p className="text-sm text-neutral-600 leading-relaxed">{m.explanation}</p>
-                      {m.tags?.length > 0 && (
-                        <div className="flex flex-wrap gap-1.5">
-                          {m.tags.map((t, j) => (
-                            <span key={`tag-${m.index}-${t}-${j}`} className="text-[10px] px-2 py-0.5 rounded-full bg-[#F3F2EE] text-neutral-600">{t}</span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
+            {/* Results table */}
+            <section className="lg:col-span-7">
+              {!hasAnalysis ? (
+                <div className="bg-white border border-dashed border-black/10 rounded-2xl p-12 text-center" data-testid="analysis-empty">
+                  <Sparkles className="w-10 h-10 text-neutral-300 mx-auto mb-4" strokeWidth={1.25} />
+                  <h2 className="font-display text-2xl font-semibold mb-2">No analysis yet</h2>
+                  <p className="text-sm text-neutral-500 max-w-sm mx-auto">
+                    Hit <span className="font-medium text-black">Analyse Materials</span> to detect materials, finishes, and design style for this reference.
+                  </p>
+                </div>
+              ) : (
+                <div className="bg-white border border-black/5 rounded-2xl shadow-soft overflow-hidden" data-testid="analysis-table">
+                  <div className="p-6 pb-4 flex items-baseline justify-between">
+                    <h2 className="font-display text-2xl font-semibold">Detected materials</h2>
+                    <span className="text-xs text-neutral-500">{rows.length} entries</span>
                   </div>
-                ))}
-              </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-[#F3F2EE]/60">
+                        <tr className="text-left">
+                          <th className="px-6 py-3 text-overline font-semibold">Zone / Area</th>
+                          <th className="px-3 py-3 text-overline font-semibold">Material</th>
+                          <th className="px-3 py-3 text-overline font-semibold">Color</th>
+                          <th className="px-3 py-3 text-overline font-semibold">Texture</th>
+                          <th className="px-3 py-3 text-overline font-semibold">Finish</th>
+                          <th className="px-3 py-3 text-overline font-semibold">Style</th>
+                          <th className="px-3 py-3 text-overline font-semibold">Keywords</th>
+                          <th className="px-6 py-3 text-overline font-semibold text-right">Conf.</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-black/5">
+                        {rows.map((r, i) => (
+                          <tr key={`row-${r.zone}-${i}`} className="hover:bg-[#F3F2EE]/30 transition-colors" data-testid={`analysis-row-${i}`}>
+                            <td className="px-6 py-4 font-medium text-neutral-900 whitespace-nowrap">{r.zone}</td>
+                            <td className="px-3 py-4 text-neutral-700">{r.material_type}</td>
+                            <td className="px-3 py-4 text-neutral-700">{r.color}</td>
+                            <td className="px-3 py-4 text-neutral-700">{r.texture}</td>
+                            <td className="px-3 py-4 text-neutral-700">{r.finish}</td>
+                            <td className="px-3 py-4 text-neutral-700">{r.design_style}</td>
+                            <td className="px-3 py-4">
+                              <div className="flex flex-wrap gap-1 max-w-[200px]">
+                                {(r.keywords || []).slice(0, 4).map((k, j) => (
+                                  <span key={`kw-${k}-${j}`} className="inline-flex px-2 py-0.5 text-[10px] rounded-full bg-[#F3F2EE] text-neutral-600">{k}</span>
+                                ))}
+                              </div>
+                            </td>
+                            <td className="px-6 py-4 text-right whitespace-nowrap">
+                              <span className={`inline-flex items-center gap-1.5 ${confidenceColor(r.confidence)} text-white text-xs font-mono font-semibold px-2.5 py-1 rounded-full`}>
+                                {Math.round((r.confidence || 0) * 100)}%
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </section>
           </div>
         )}

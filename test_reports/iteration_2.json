@@ -1,0 +1,39 @@
+{
+  "summary": "E2E testing of the simplified MOCK material analysis MVP. Backend: 6/6 pytest tests passing for /api/projects/{id}/mock-analyze (auth guard, missing-ref guard, happy path, persistence, idempotency, cross-user 404). Frontend: full Playwright flow passes — register -> empty dashboard -> /projects/new (button correctly disabled until name + ref image) -> reference upload -> redirect to /projects/{id}/analysis -> empty state -> Analyse Materials -> 8-column table with 7 rows -> Re-analyse stable -> dashboard card shows 'completed' -> revisit loads saved analysis with no extra click.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard stat card", "issues": ["'Match accuracy' card shows value 'AI' and subtitle 'Powered by Claude' which is misleading in mock-only MVP — consider 'Mock demo' or removing the card until real analysis is wired in."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_mock_analyze.py",
+    "/app/test_reports/pytest/mock_analyze_results.xml"
+  ],
+  "action_items": [
+    "(Cosmetic) Update Dashboard 'Match accuracy / Powered by Claude' stat card copy to reflect mock-only MVP (or hide it).",
+    "(Cleanup) /app/frontend/src/App.js still mounts /projects/:id/upload route to the old Upload page; this route is unreachable from the new UI but the page file likely still exists — consider removing the route and page to avoid drift.",
+    "(Optional) Frontend register flow uses /auth?mode=register (works fine); credentials file references /api/auth/register only which is correct, but a /register convenience route could be added for parity."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now ~790 lines — past the 700-line threshold flagged previously. Mock library and endpoint live next to the legacy Claude pipeline; consider splitting into modules (auth.py, projects.py, mock_analysis.py, analysis_llm.py).",
+    "Legacy /projects/{id}/analyze endpoint and run_analysis() are still present but unreachable from the new UI; if intentional for backward compatibility, document it, otherwise dead-code it to reduce confusion.",
+    "Dashboard.jsx hardcodes statusColor for status values that include 'queued'/'analyzing'/'error' — these states are no longer produced by the mock flow but kept for legacy endpoint. Fine to retain but worth a comment.",
+    "mock_analyze seed derives count from ObjectId hex (5–8 rows) — deterministic but the 8-row max equals the library size; future expansion should keep count<library_size to avoid duplicate-row collisions."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_mock_analyze.py (new)"
+  ],
+  "success_rate": {"backend": "100% (6/6)", "frontend": "100% (full E2E flow)"},
+  "test_credentials": "Admin: admin@materialmatch.ai / MaterialAdmin2026! (working). UI test registered fresh user uitest_<uuid>@test.com / UiTest2026! via /auth?mode=register.",
+  "seed_data_creation": "Each test run creates ephemeral TEST_mock_* and uitest_* users plus one TEST_MockAnalyze project + reference image. Backend tests teardown via DELETE /api/projects/{id}. UI test project remains in DB (use admin or cleanup script for purge).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "New simplified MVP flow is fully working: /projects/new (single page: name + optional client + ref image upload, button disabled until name+ref present) -> POST /projects -> POST /projects/{id}/reference -> redirect to /projects/{id}/analysis -> POST /projects/{id}/mock-analyze (deterministic 5-8 rows, version='mock-v1'). Dashboard card route is /projects/{id}/analysis as required. To re-run backend tests: `python -m pytest /app/backend/tests/test_mock_analyze.py -v` (2s, no LLM). The older /app/backend/tests/backend_test.py still tests the LEGACY Claude pipeline (test_start_analysis + test_poll_status_until_complete take ~1-2min and require ANTHROPIC key + working catalog match). Skip those for this iteration or use -k 'not poll_status' if running the full suite.",
+  "rca of the issue": "No issues found. Mock-analyze endpoint behaves exactly as spec'd: 200 with rows/generated_at/version on success, 400 'Upload a reference image first' when ref missing, 401 when unauth, 404 when project not owned. Persisted state survives reload and re-call returns identical rows."
+}
