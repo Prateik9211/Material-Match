@@ -3,6 +3,7 @@ load_dotenv()
 
 import os
 import io
+import re
 import base64
 import hashlib
 import json
@@ -977,6 +978,35 @@ MATCH_DEDUP_WINDOW_S = int(os.environ.get("MATCH_DEDUP_WINDOW_S", "600"))
 MATCH_MIN_THRESHOLD = int(os.environ.get("MATCH_MIN_THRESHOLD", "40"))
 
 REASON_CATEGORIES = ["color", "texture", "finish", "material_family", "style"]
+CANDIDATE_TYPES = ["product_material_candidate", "room_scene_or_lifestyle", "unclear"]
+
+# Family compatibility for gating. Within each set, members are loosely interchangeable.
+COMPATIBLE_FAMILIES = {
+    "wood": {"wood", "flooring", "furniture"},
+    "flooring": {"wood", "flooring", "stone"},
+    "stone": {"stone", "flooring"},
+    "metal": {"metal"},
+    "upholstery": {"upholstery", "textile", "furniture"},
+    "textile": {"upholstery", "textile"},
+    "wall": {"wall", "ceiling"},
+    "ceiling": {"wall", "ceiling"},
+    "furniture": {"furniture", "wood", "upholstery"},
+}
+HARD_FAMILIES = {"flooring", "wood", "stone", "metal", "ceiling"}
+SOFT_FAMILIES = {"upholstery", "textile"}
+
+# Regex patterns that indicate the LLM judged the candidate to be a different family.
+_WRONG_FAMILY_PATTERNS = [
+    re.compile(p, re.IGNORECASE) for p in [
+        r"\bnot\s+(a\s+)?(wood|flooring|stone|tile|metal|fabric|upholstery|textile|leather)\b",
+        r"\bdifferent\s+(material|category|family)\b",
+        r"\bwrong\s+(material|category|family)\b",
+        r"\bmaterial\s+is\s+(leather|fabric|stone|wood|metal)\s+,?\s*not\b",
+        r"\broom\s+scene\b",
+        r"\bnot\s+a\s+(product|swatch|sample|close[- ]up)\b",
+        r"\bmultiple\s+(unrelated\s+)?materials\b",
+    ]
+]
 
 MATCH_SYSTEM_PROMPT = (
     "You are a materials expert who compares interior-design reference specs to "
@@ -987,21 +1017,36 @@ MATCH_SYSTEM_PROMPT = (
 MATCH_BATCH_USER_PROMPT_TEMPLATE = (
     "Reference material spec (target):\n{spec_json}\n\n"
     "{manual_prompt_block}"
-    "You will be shown {n} candidate product images in order (indexed 0 to {n_minus_1}). "
-    "Score each candidate against the reference along five dimensions: color, texture, "
-    "finish, material_family, style. Then output a single integer match_percent (0–100).\n\n"
+    "You will be shown {n} candidate images in order (indexed 0 to {n_minus_1}). "
+    "These should be supplier-style product/material photos — swatches, samples, or "
+    "close-ups of a single product. They should NOT be room scenes, moodboards, or "
+    "inspiration photos.\n\n"
+    "For each candidate, do TWO things:\n"
+    "  1. Classify it as one of:\n"
+    '     - "product_material_candidate"  (single product/material/swatch)\n'
+    '     - "room_scene_or_lifestyle"     (full room, moodboard, multiple unrelated materials)\n'
+    '     - "unclear"                     (ambiguous or low-quality)\n'
+    "  2. Identify its material family, then score it against the reference along five "
+    "dimensions: color, texture, finish, material_family, style. Then output a single "
+    "integer match_percent (0–100).\n\n"
     "Scoring calibration — use these bands honestly:\n"
     "  • 82–92  Excellent match across most dimensions\n"
     "  • 68–81  Good match with minor differences\n"
     "  • 50–67  Partial match — some dimensions align, others don't\n"
-    "  • below 50  Weak or wrong material family\n"
+    "  • below 50  Weak, wrong material family, or unsuitable substitute\n"
     "Do NOT exceed 92. Reserve 90+ only for truly excellent matches. Most products "
-    "should land 60–85.\n\n"
+    "should land 60–85. If the candidate is a DIFFERENT material family from the reference "
+    "(e.g. fabric vs wood, leather vs stone), score below 50 unless there is a clear "
+    "design-substitute reason explained in the reasons.\n\n"
+    "If candidate_type is 'room_scene_or_lifestyle', set match_percent ≤ 30 and explain in "
+    "the disqualifier (e.g. 'Room scene, not a product photo').\n\n"
     "Return ONLY this JSON shape:\n"
     "{{\n"
     '  "batch_results": [\n'
     "    {{\n"
     '      "candidate_index": 0,\n'
+    '      "candidate_type": "one of: ' + ", ".join(CANDIDATE_TYPES) + '",\n'
+    '      "detected_family": "one of: ' + ", ".join(MATERIAL_FAMILIES) + '",\n'
     '      "match_percent": 75,\n'
     '      "reasons": [\n'
     '        {{"category": "color", "text": "short reason ≤ 80 chars"}},\n'
@@ -1014,11 +1059,11 @@ MATCH_BATCH_USER_PROMPT_TEMPLATE = (
     "}}\n\n"
     "Rules:\n"
     "- batch_results must contain exactly {n} entries, one per candidate, indexed 0..{n_minus_1}.\n"
+    "- candidate_type and detected_family MUST be from the listed enum values.\n"
     "- match_percent is an INTEGER 0–100. Never exceed 92.\n"
     "- Exactly 3 reasons per candidate; each category MUST be one of: " + ", ".join(REASON_CATEGORIES) + ".\n"
     "- Prefer covering different categories across the 3 reasons.\n"
-    "- disqualifier: a short sentence (≤ 120 chars) when there's a real concern (wrong category, "
-    "tonal mismatch, etc.), else null. Use sparingly.\n"
+    "- disqualifier: a short sentence (≤ 120 chars) when there's a real concern, else null.\n"
     "- Reply with ONLY the JSON object."
 )
 
@@ -1066,6 +1111,12 @@ def _validate_batch_result(data, expected_n: int) -> list:
         if idx in seen_idx:
             raise ValueError(f"duplicate candidate_index {idx}")
         seen_idx.add(idx)
+        cand_type = it.get("candidate_type")
+        if cand_type not in CANDIDATE_TYPES:
+            raise ValueError(f"candidate_type '{cand_type}' not in enum")
+        det_fam = it.get("detected_family")
+        if det_fam not in MATERIAL_FAMILIES:
+            raise ValueError(f"detected_family '{det_fam}' not in enum")
         pct = it.get("match_percent")
         if isinstance(pct, bool):
             raise ValueError("match_percent is bool")
@@ -1093,7 +1144,7 @@ def _validate_batch_result(data, expected_n: int) -> list:
             disq = None
         if isinstance(disq, str):
             disq = disq.strip()[:160]
-        cleaned.append({"candidate_index": idx, "match_percent": pct_int, "reasons": reasons, "disqualifier": disq})
+        cleaned.append({"candidate_index": idx, "candidate_type": cand_type, "detected_family": det_fam, "match_percent": pct_int, "reasons": reasons, "disqualifier": disq})
     cleaned.sort(key=lambda x: x["candidate_index"])
     return cleaned
 
@@ -1112,6 +1163,44 @@ def _calibrate_percent(p: int) -> int:
     if p < 0:
         return 0
     return p
+
+
+def _enforce_family_gating(selected_family, detected_family, pct, reasons, disqualifier):
+    """Apply trust-preserving family caps. Returns (adjusted_pct, gating_note or None)."""
+    # 1. Wrong-family language in reasons or disqualifier → cap 39
+    haystack_parts = [(disqualifier or "")]
+    for r in reasons or []:
+        if isinstance(r, dict):
+            haystack_parts.append(r.get("text", ""))
+        else:
+            haystack_parts.append(str(r))
+    haystack = " ".join(haystack_parts)
+    if any(p.search(haystack) for p in _WRONG_FAMILY_PATTERNS):
+        if pct > 39:
+            return 39, "wrong-family language detected"
+
+    sel = (selected_family or "").lower()
+    det = (detected_family or "").lower()
+    if not sel or not det or sel == det:
+        return pct, None
+
+    # 2. Hard-vs-soft mismatch → cap 35
+    if sel in HARD_FAMILIES and det in SOFT_FAMILIES:
+        if pct > 35:
+            return 35, f"hard/soft mismatch: {sel} vs {det}"
+    if sel in SOFT_FAMILIES and det in HARD_FAMILIES:
+        if pct > 35:
+            return 35, f"soft/hard mismatch: {sel} vs {det}"
+
+    # 3. Compatible (e.g. wood ↔ flooring) → no cap
+    compat = COMPATIBLE_FAMILIES.get(sel, {sel})
+    if det in compat:
+        return pct, None
+
+    # 4. Any other different family → cap 39
+    if pct > 39:
+        return 39, f"different family: {sel} vs {det}"
+    return pct, None
 
 
 def _candidate_hash(items: list) -> str:
@@ -1168,7 +1257,7 @@ async def _score_one_batch(
             continue
     # All retries exhausted — return zeroed entries so candidates are dropped below threshold
     logger.warning(f"match batch={batch_idx} all retries failed err={last_err}")
-    return [{"candidate_index": i, "match_percent": 0, "reasons": [
+    return [{"candidate_index": i, "candidate_type": "unclear", "detected_family": "other", "match_percent": 0, "reasons": [
         {"category": "color", "text": "Could not score (LLM error)"},
         {"category": "texture", "text": "Could not score (LLM error)"},
         {"category": "finish", "text": "Could not score (LLM error)"},
@@ -1238,23 +1327,73 @@ async def _run_real_match(
 
     batch_results = await asyncio.gather(*[_do_batch(bi, b) for bi, b in enumerate(batches)])
 
-    # 4. Aggregate global candidates with calibration
+    # 4. Aggregate global candidates with calibration + family gating + candidate-type filter
+    selected_family = (selected.get("material_family") or "").lower()
     scored = []
+    skipped_count = 0
     for bi, (batch, results) in enumerate(zip(batches, batch_results)):
         for r in results:
             cand = batch[r["candidate_index"]]
+            ctype = r.get("candidate_type", "unclear")
+
+            # Room scenes are dropped outright with a per-filename warning
+            if ctype == "room_scene_or_lifestyle":
+                skipped_count += 1
+                warnings.append(
+                    f"Skipped {cand['name']}: image appears to be a room/lifestyle scene, "
+                    "not a product/material candidate."
+                )
+                logger.info(
+                    f"match skipped project={project_id} cand={cand['name']} reason=room_scene"
+                )
+                continue
+
             pct = _calibrate_percent(r["match_percent"])
+
+            # Family gating
+            gated_pct, gate_note = _enforce_family_gating(
+                selected_family, r.get("detected_family"), pct, r.get("reasons", []), r.get("disqualifier"),
+            )
+            if gate_note:
+                logger.info(
+                    f"match gating project={project_id} cand={cand['name']} "
+                    f"pct {pct}→{gated_pct} reason={gate_note}"
+                )
+            pct = gated_pct
+
+            # Unclear candidates: cap at 60 unless family clearly matches the selected
+            if ctype == "unclear":
+                det = (r.get("detected_family") or "").lower()
+                family_ok = det and (
+                    det == selected_family
+                    or det in COMPATIBLE_FAMILIES.get(selected_family, {selected_family})
+                )
+                if not family_ok and pct > 60:
+                    logger.info(
+                        f"match unclear-cap project={project_id} cand={cand['name']} pct {pct}→60"
+                    )
+                    pct = 60
+
             if pct < MATCH_MIN_THRESHOLD:
                 continue
             scored.append({
                 "name": cand["name"],
                 "size": cand["size"],
+                "candidate_type": ctype,
+                "detected_family": r.get("detected_family"),
                 "match_percent": pct,
                 "reasons": r["reasons"],
                 "disqualifier": r["disqualifier"],
             })
     if not scored:
-        warnings.append(f"No products met the minimum {MATCH_MIN_THRESHOLD}% similarity bar.")
+        warnings.append(
+            f"No products met the minimum {MATCH_MIN_THRESHOLD}% similarity bar."
+        )
+    elif len(scored) < 3:
+        warnings.append(
+            "Only limited relevant matches found. Upload more products from the "
+            "same material category for better results."
+        )
 
     scored.sort(key=lambda x: (-x["match_percent"], x["name"]))
     top = scored[:5]
