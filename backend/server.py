@@ -1271,10 +1271,9 @@ def _coerce_match_percent(raw) -> int:
     if isinstance(raw, bool):
         raise ValueError("match_percent is bool")
     try:
-        pct_int = int(round(float(raw)))
-    except (TypeError, ValueError):
-        raise ValueError("match_percent not numeric")
-    return max(0, min(100, pct_int))
+        return max(0, min(100, int(round(float(raw)))))
+    except (TypeError, ValueError) as e:
+        raise ValueError("match_percent not numeric") from e
 
 
 def _coerce_detected_family(raw):
