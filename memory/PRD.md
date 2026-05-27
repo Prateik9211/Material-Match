@@ -77,6 +77,20 @@ Build a modern AI SaaS web application called "MaterialMatch AI" that helps arch
 - ✅ Find Matches button text toggles to "View matches" once that zone has saved results
 - ✅ 7/7 backend pytest pass + 100% frontend E2E pass
 
+## India Sourcing Intelligence (2026-02-27)
+- ✅ Per-user `preferred_region` preference (`India` | `Global`, default `India`)
+- ✅ Endpoints: `GET /api/users/me/preferences`, `PUT /api/users/me/preferences`
+- ✅ `/api/config` now publishes `supported_regions` and `default_region`
+- ✅ Register response + `/auth/me` include `preferred_region`; backfill default applied via `get_current_user`
+- ✅ Region-aware AI prompts: `_build_analysis_prompt(region)` and `_build_match_user_prompt(region, …)` append an INDIA SOURCING CONTEXT block (Greenlam / Merino / Century / Action Tesa / Royale Touche / Kajaria / Simpolo / Nitco / Somany / Hafele India / Hettich India / Asian Paints Royale / Nerolac / Berger + Indian terminology — Kota stone, PU matt, vitrified, MDF + laminate, etc.) when `region == "India"`
+- ✅ Optional `indian_alternative` field (≤ 120 char string or null) on both analysis rows and match candidates — only suggested when AI confidence is high. Server validators accept it gracefully when absent.
+- ✅ Mock analysis + mock match also surface a static `INDIA_ALTERNATIVES_BY_FAMILY` hint when region=India, omitted when region=Global.
+- ✅ Frontend: small **IN / Global** toggle in `Header.jsx` (testids `region-toggle`, `region-in-btn`, `region-global-btn`); amber italic IN-alt line in `Analysis.jsx` (`analysis-indian-alt-{i}`) and `Match.jsx` (`match-indian-alt-{i}`)
+- ✅ 14 new tests in `tests/test_region_india.py` (prompt-builder unit + live API integration) + existing batch-validator tests all PASS (23/23 total)
+- ✅ Live AI verified: with region=India the model produces Indian terminology and references brands (e.g. "easily achieved with popular Indian brands like Asian Paints", "options available with Indian manufacturers"); existing match gating still rejects room-scenes and wrong-family swatches.
+
+## Live AI Material Analysis (2026-02-26)
+
 ## Prioritized Backlog
 
 ### P1

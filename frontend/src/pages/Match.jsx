@@ -404,6 +404,17 @@ export default function Match() {
                             {m.disqualifier}
                           </div>
                         )}
+
+                        {m.indian_alternative && (
+                          <div
+                            className="text-xs italic text-amber-900 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 leading-snug"
+                            data-testid={`match-indian-alt-${i}`}
+                            title="AI-suggested Indian-market equivalent"
+                          >
+                            <span className="not-italic font-semibold mr-1">India alt:</span>
+                            {m.indian_alternative}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </article>

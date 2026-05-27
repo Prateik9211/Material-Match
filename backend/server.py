@@ -38,6 +38,32 @@ JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_MINUTES = 60 * 24  # 24h for MVP comfort
 REFRESH_TOKEN_DAYS = 7
 
+# ----------------------------------------------------------------------------
+# Region preference (controls AI prompt context, NOT visible vendor data)
+# ----------------------------------------------------------------------------
+SUPPORTED_REGIONS = ["India", "Global"]
+DEFAULT_REGION = "India"
+
+# Indian-market brand & terminology context used to enrich AI reasoning when
+# preferred_region == "India". Kept server-side only — never surfaced in UI.
+INDIAN_BRAND_CONTEXT = (
+    "INDIA SOURCING CONTEXT (use to enrich reasoning, not to advertise brands):\n"
+    "- Laminates / Veneers commonly specified in India: Greenlam, Merino, "
+    "Century, Action Tesa, Royale Touche (typical thickness 0.8–1mm; "
+    "post-laminate substrate is usually MDF or BWP-grade plywood).\n"
+    "- Tiles / Stone widely available in India: Kajaria, Simpolo, Nitco, "
+    "Somany (vitrified, GVT, double-charged); regional stones: Kota grey/blue, "
+    "Tandur, Jaisalmer yellow, Kadappa black, Indian green marble.\n"
+    "- Hardware: Hafele India, Hettich India (soft-close, channel hardware).\n"
+    "- Paints / Finishes: Asian Paints Royale, Nerolac, Berger (Royale Aspira, "
+    "Excel, Velvet Touch). PU and melamine polish are common wood finishes.\n"
+    "Prefer Indian interior-design terminology where it reads naturally — e.g. "
+    "'teak veneer', 'PU matt finish', 'MDF + laminate', 'Kota stone', "
+    "'pre-laminated board', 'vitrified tile', 'bagged jute rug'. When a "
+    "referenced material is uncommon in India, prefer to suggest a plausible "
+    "Indian-market equivalent over a global one."
+)
+
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 LLM_PROVIDER = "anthropic"
 LLM_MODEL = "claude-sonnet-4-5-20250929"
@@ -139,6 +165,9 @@ async def get_current_user(request: Request) -> dict:
             raise HTTPException(status_code=401, detail="User not found")
         user = to_str_id(user)
         user.pop("password_hash", None)
+        # Backfill default preferred_region for older users so callers can rely on it.
+        if user.get("preferred_region") not in SUPPORTED_REGIONS:
+            user["preferred_region"] = DEFAULT_REGION
         return user
     except pyjwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
@@ -188,6 +217,7 @@ async def register(payload: RegisterRequest, response: Response):
         "password_hash": hash_password(payload.password),
         "name": payload.name,
         "role": "user",
+        "preferred_region": DEFAULT_REGION,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     res = await db.users.insert_one(doc)
@@ -195,7 +225,8 @@ async def register(payload: RegisterRequest, response: Response):
     access = create_access_token(uid, email)
     refresh = create_refresh_token(uid)
     set_auth_cookies(response, access, refresh)
-    return {"id": uid, "email": email, "name": payload.name, "role": "user"}
+    return {"id": uid, "email": email, "name": payload.name, "role": "user",
+            "preferred_region": DEFAULT_REGION}
 
 
 @api_router.post("/auth/login")
@@ -213,6 +244,7 @@ async def login(payload: LoginRequest, response: Response):
         "email": email,
         "name": user.get("name", ""),
         "role": user.get("role", "user"),
+        "preferred_region": user.get("preferred_region") if user.get("preferred_region") in SUPPORTED_REGIONS else DEFAULT_REGION,
     }
 
 
@@ -225,6 +257,38 @@ async def logout(response: Response, user: dict = Depends(get_current_user)):
 @api_router.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
     return user
+
+
+# ============================================================================
+# User preferences (region only for MVP — gates Indian-market AI context)
+# ============================================================================
+class PreferencesUpdate(BaseModel):
+    preferred_region: str
+
+    @classmethod
+    def model_validate_strict(cls, data):
+        return cls.model_validate(data)
+
+
+@api_router.get("/users/me/preferences")
+async def get_my_preferences(user: dict = Depends(get_current_user)):
+    return {"preferred_region": user.get("preferred_region", DEFAULT_REGION)}
+
+
+@api_router.put("/users/me/preferences")
+async def update_my_preferences(payload: PreferencesUpdate,
+                                user: dict = Depends(get_current_user)):
+    region = (payload.preferred_region or "").strip()
+    if region not in SUPPORTED_REGIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"preferred_region must be one of: {', '.join(SUPPORTED_REGIONS)}",
+        )
+    await db.users.update_one(
+        {"_id": ObjectId(user["id"])},
+        {"$set": {"preferred_region": region}},
+    )
+    return {"preferred_region": region}
 
 
 @api_router.post("/auth/refresh")
@@ -518,6 +582,26 @@ MOCK_MATERIAL_LIBRARY = [
 ]
 
 
+# Static India-market hint per material family — used by mock analysis only.
+# Real-AI analysis builds these dynamically via the LLM.
+INDIA_ALTERNATIVES_BY_FAMILY = {
+    "wood": "Indian teak veneer with PU matt finish (Greenlam/Century range) — widely stocked.",
+    "wall": "Lime-finish washable distemper or Asian Paints Royale Aspira — common in Indian homes.",
+    "ceiling": "Gypsum board ceiling with Berger / Asian Paints emulsion — standard Indian spec.",
+    "upholstery": "Cotton-bouclé blend from D'Decor or Sarom — widely available in Indian fabric stores.",
+    "stone": "Kota stone honed or Indian Statuario marble — common via regional stone suppliers.",
+    "metal": "Brushed brass / antique brass profiles from Hafele India or Hettich India.",
+    "textile": "Hand-tufted wool rug from Jaipur Rugs or Obeetee — Indian alternative.",
+    "flooring": "Indian engineered teak plank or Kajaria wood-look vitrified tile — common spec.",
+    "furniture": "Indian sheesham or teak furniture from regional carpenters / urban brands.",
+    "lighting": "Brushed brass pendant from local Indian foundries; Hafele India fittings.",
+    "decor": "Locally crafted brass or terracotta accents — easy to source pan-India.",
+    "door": "Flush door with teak veneer + PU finish — standard Indian residential spec.",
+    "window": "Aluminium frame with toughened glass — common urban-Indian spec.",
+    "other": None,
+}
+
+
 @api_router.post("/projects/{project_id}/mock-analyze")
 async def mock_analyze(project_id: str, user: dict = Depends(get_current_user)):
     doc = await db.projects.find_one({"_id": ObjectId(project_id), "user_id": user["id"]})
@@ -530,15 +614,21 @@ async def mock_analyze(project_id: str, user: dict = Depends(get_current_user)):
     seed = int(ObjectId(project_id).binary[-4:].hex(), 16)
     count = 5 + (seed % 4)  # 5-8 rows
     start = seed % len(MOCK_MATERIAL_LIBRARY)
-    rows = [
-        MOCK_MATERIAL_LIBRARY[(start + i) % len(MOCK_MATERIAL_LIBRARY)]
-        for i in range(count)
-    ]
+    region = user.get("preferred_region", DEFAULT_REGION)
+    rows = []
+    for i in range(count):
+        base = dict(MOCK_MATERIAL_LIBRARY[(start + i) % len(MOCK_MATERIAL_LIBRARY)])
+        if region == "India":
+            base["indian_alternative"] = INDIA_ALTERNATIVES_BY_FAMILY.get(
+                base.get("material_family", "other")
+            )
+        rows.append(base)
 
     mock_analysis = {
         "rows": rows,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "version": "mock-v2",
+        "region": region,
     }
 
     await db.projects.update_one(
@@ -606,6 +696,26 @@ ANALYSIS_USER_PROMPT = (
     "- Reply with ONLY the JSON object."
 )
 
+INDIA_ANALYSIS_BLOCK = (
+    "\n\n" + INDIAN_BRAND_CONTEXT + "\n\n"
+    "BECAUSE the user prefers India sourcing, you MAY add ONE optional extra field "
+    "per row:\n"
+    '  "indian_alternative": "short ≤ 120 char hint, e.g. \\"Kota stone honed — '
+    'similar to Travertine; widely available via Indian regional suppliers\\""\n'
+    "Include this field only when an Indian-market alternative is genuinely "
+    "useful AND your confidence is ≥ 70. Otherwise set it to null or omit it. "
+    "Use Indian interior-design terminology (e.g. PU matte, MDF with laminate, "
+    "vitrified tile, teak veneer, Kota stone) where it reads naturally in the "
+    "main fields too — but never invent brand names without justification."
+)
+
+
+def _build_analysis_prompt(region: str) -> str:
+    """Compose the analysis user prompt, optionally adding the India sourcing block."""
+    if region == "India":
+        return ANALYSIS_USER_PROMPT + INDIA_ANALYSIS_BLOCK
+    return ANALYSIS_USER_PROMPT
+
 ANALYSIS_RETRY_NUDGE = (
     "Your previous response was not valid JSON for the requested schema. "
     "Reply with ONLY the JSON object — no markdown, no commentary. "
@@ -658,8 +768,21 @@ def _validate_analysis_payload(data) -> list:
             "design_style": r["design_style"].strip(),
             "keywords": [k.strip().lower() for k in kws[:6] if k.strip()],
             "confidence": conf_int,
+            "indian_alternative": _clean_optional_text(r.get("indian_alternative"), max_len=120),
         })
     return cleaned
+
+
+def _clean_optional_text(value, max_len: int = 120):
+    """Coerce a possibly-missing/empty/non-string LLM field into a trimmed str or None."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    return stripped[:max_len]
 
 
 async def _check_and_increment_quota(user_id: str) -> int:
@@ -685,9 +808,11 @@ async def _check_and_increment_quota(user_id: str) -> int:
     return count
 
 
-async def run_real_analysis(project_id: str, user_id: str, ref_b64: str) -> dict:
+async def run_real_analysis(project_id: str, user_id: str, ref_b64: str, region: str = DEFAULT_REGION) -> dict:
     """Call OpenAI vision and return validated payload. Raises HTTPException on failure."""
     import asyncio
+
+    base_user_prompt = _build_analysis_prompt(region)
 
     last_error = ""
     last_raw = ""
@@ -700,7 +825,7 @@ async def run_real_analysis(project_id: str, user_id: str, ref_b64: str) -> dict
             ).with_model(LLM_PROVIDER_ANALYSIS, LLM_MODEL_ANALYSIS)
 
             ref_img = ImageContent(image_base64=ref_b64)
-            user_text = ANALYSIS_USER_PROMPT if attempt == 0 else ANALYSIS_USER_PROMPT + "\n\n" + ANALYSIS_RETRY_NUDGE
+            user_text = base_user_prompt if attempt == 0 else base_user_prompt + "\n\n" + ANALYSIS_RETRY_NUDGE
             msg = UserMessage(text=user_text, file_contents=[ref_img])
 
             raw = await asyncio.wait_for(
@@ -714,6 +839,7 @@ async def run_real_analysis(project_id: str, user_id: str, ref_b64: str) -> dict
                 "rows": cleaned,
                 "generated_at": datetime.now(timezone.utc).isoformat(),
                 "version": f"real-openai-{LLM_MODEL_ANALYSIS}-v1",
+                "region": region,
             }
         except asyncio.TimeoutError:
             last_error = f"timeout after {LLM_ANALYSIS_TIMEOUT_S}s"
@@ -800,7 +926,10 @@ async def real_analyze(project_id: str, user: dict = Depends(get_current_user)):
     started = datetime.now(timezone.utc)
     analysis = None
     try:
-        analysis = await run_real_analysis(project_id, user["id"], ref_b64)
+        analysis = await run_real_analysis(
+            project_id, user["id"], ref_b64,
+            region=user.get("preferred_region", DEFAULT_REGION),
+        )
     except HTTPException:
         day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         await db.usage_counters.update_one(
@@ -1076,6 +1205,34 @@ MATCH_RETRY_NUDGE = (
     "and reasons[].category is one of the listed enum values."
 )
 
+INDIA_MATCH_BLOCK = (
+    "\n\n" + INDIAN_BRAND_CONTEXT + "\n\n"
+    "BECAUSE the user prefers India sourcing, you MAY add ONE optional extra field "
+    "per candidate:\n"
+    '  "indian_alternative": "short ≤ 120 char hint, e.g. \\"Comparable to '
+    'Greenlam veneer in matt PU finish — widely stocked across Indian dealers.\\""\n'
+    "Include it only when an India-market parallel is genuinely useful AND the "
+    "candidate is a real product_material_candidate AND match_percent ≥ 55. "
+    "Otherwise set the field to null or omit it. Use Indian interior-design "
+    "terminology where natural — never invent brand-SKU pairs."
+)
+
+
+def _build_match_user_prompt(region: str,
+                             spec_json: str,
+                             manual_prompt_block: str,
+                             n: int) -> str:
+    """Compose the per-batch match user prompt, optionally adding India sourcing block."""
+    base = MATCH_BATCH_USER_PROMPT_TEMPLATE.format(
+        spec_json=spec_json,
+        manual_prompt_block=manual_prompt_block,
+        n=n,
+        n_minus_1=n - 1,
+    )
+    if region == "India":
+        return base + INDIA_MATCH_BLOCK
+    return base
+
 
 def _normalize_image_to_b64(content: bytes) -> str | None:
     """Resize/recompress an image to max edge MATCH_RESIZE_MAX_PX, JPEG q85. Returns base64 or None on failure."""
@@ -1174,6 +1331,7 @@ def _validate_batch_result(data, expected_n: int) -> list:
                 "match_percent": pct_int,
                 "reasons": reasons,
                 "disqualifier": disq,
+                "indian_alternative": _clean_optional_text(it.get("indian_alternative"), max_len=120),
             }
         except ValueError as ve:
             item_errors.append(f"item[{raw_pos}]={ve}")
@@ -1193,6 +1351,7 @@ def _validate_batch_result(data, expected_n: int) -> list:
                 "match_percent": 0,
                 "reasons": [],
                 "disqualifier": "Could not parse this candidate's score",
+                "indian_alternative": None,
             }
     return out
 
@@ -1263,17 +1422,13 @@ async def _score_one_batch(
     selected_spec_json: str,
     manual_prompt: str,
     candidate_b64s: list,
+    region: str = DEFAULT_REGION,
 ) -> list:
     """Call the LLM once for a batch of up to MATCH_BATCH_SIZE candidates. Returns per-candidate result list (length = len(candidate_b64s))."""
     import asyncio
     n = len(candidate_b64s)
     manual_block = f"User preferences:\n{manual_prompt}\n\n" if manual_prompt else ""
-    user_text = MATCH_BATCH_USER_PROMPT_TEMPLATE.format(
-        spec_json=selected_spec_json,
-        manual_prompt_block=manual_block,
-        n=n,
-        n_minus_1=n - 1,
-    )
+    user_text = _build_match_user_prompt(region, selected_spec_json, manual_block, n)
     last_raw = ""
     last_err = ""
     for attempt in range(LLM_MATCH_MAX_RETRIES + 1):
@@ -1309,7 +1464,7 @@ async def _score_one_batch(
         {"category": "color", "text": "Could not score (LLM error)"},
         {"category": "texture", "text": "Could not score (LLM error)"},
         {"category": "finish", "text": "Could not score (LLM error)"},
-    ], "disqualifier": "Scoring failed for this candidate."} for i in range(n)]
+    ], "disqualifier": "Scoring failed for this candidate.", "indian_alternative": None} for i in range(n)]
 
 
 async def _run_real_match(
@@ -1319,6 +1474,7 @@ async def _run_real_match(
     manual_prompt: str,
     catalogue_files: list,
     existing_match: dict,
+    region: str = DEFAULT_REGION,
 ) -> dict:
     """Phase-1 real catalogue match: uploaded product images only, batched scoring."""
     import asyncio
@@ -1371,7 +1527,8 @@ async def _run_real_match(
 
     async def _do_batch(bi, batch):
         async with sem:
-            return await _score_one_batch(project_id, bi, selected_spec_json, manual_prompt, [c["b64"] for c in batch])
+            return await _score_one_batch(project_id, bi, selected_spec_json, manual_prompt,
+                                          [c["b64"] for c in batch], region=region)
 
     batch_results = await asyncio.gather(*[_do_batch(bi, b) for bi, b in enumerate(batches)])
 
@@ -1432,6 +1589,7 @@ async def _run_real_match(
                 "match_percent": pct,
                 "reasons": r["reasons"],
                 "disqualifier": r["disqualifier"],
+                "indian_alternative": r.get("indian_alternative"),
             })
     if not scored:
         warnings.append(
@@ -1458,6 +1616,7 @@ async def _run_real_match(
             "score_label": _score_label(s["match_percent"]),
             "reasons": _format_reasons_for_storage(s["reasons"]),
             "disqualifier": s["disqualifier"],
+            "indian_alternative": s.get("indian_alternative"),
             "thumbnail_color": "#" + hashlib.sha256(s["name"].encode()).hexdigest()[:6],
         })
 
@@ -1468,6 +1627,7 @@ async def _run_real_match(
         "batch_count": len(batches),
         "candidate_count": len(raw_candidates),
         "version": f"real-openai-{LLM_MODEL_MATCH}-v1",
+        "region": region,
     }
 
 
@@ -1514,6 +1674,7 @@ async def run_match(
         try:
             real_result = await _run_real_match(
                 project_id, user["id"], selected, manual_prompt, catalogue, existing_match,
+                region=user.get("preferred_region", DEFAULT_REGION),
             )
         except HTTPException:
             await db.usage_counters.update_one(
@@ -1543,6 +1704,7 @@ async def run_match(
             "batch_count": real_result["batch_count"],
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "version": real_result["version"],
+            "region": real_result.get("region"),
         }
         await db.projects.update_one(
             {"_id": ObjectId(project_id)},
@@ -1578,6 +1740,15 @@ async def run_match(
 
     base_pcts = [92, 86, 79, 71, 63]
     reason_pool = MATCH_REASONS_LIBRARY.get(category, MATCH_REASONS_LIBRARY["wood"])
+    region = user.get("preferred_region", DEFAULT_REGION)
+    india_hint_by_cat = {
+        "wood":    "Comparable Indian alternative: teak / sheesham veneer + PU matt (Greenlam / Century).",
+        "stone":   "Comparable Indian alternative: Kota stone honed or Indian Statuario from regional suppliers.",
+        "fabric":  "Comparable Indian alternative: D'Decor / Sarom upholstery in similar weave.",
+        "metal":   "Comparable Indian alternative: brushed brass profile via Hafele India or Hettich India.",
+        "plaster": "Comparable Indian alternative: Asian Paints Royale Aspira or Berger Silk Velvet finish.",
+        "rug":     "Comparable Indian alternative: Jaipur Rugs or Obeetee hand-tufted wool.",
+    }
     matches = []
     for i, product in enumerate(chosen):
         jitter = ((seed_int >> (i * 3)) & 0x7) - 3  # ±3
@@ -1593,6 +1764,7 @@ async def run_match(
             "score_label": _score_label(pct),
             "reasons": reasons,
             "disqualifier": disqualifier,
+            "indian_alternative": india_hint_by_cat.get(category) if region == "India" and pct >= 65 else None,
             "thumbnail_color": product["color"],
         })
 
@@ -1605,6 +1777,7 @@ async def run_match(
         "matches": matches,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "version": "mock-match-v1",
+        "region": region,
     }
 
     await db.projects.update_one(
@@ -1650,6 +1823,8 @@ async def get_client_config():
         "enable_real_match": ENABLE_REAL_MATCH and bool(EMERGENT_LLM_KEY),
         "real_analysis_model": LLM_MODEL_ANALYSIS if ENABLE_REAL_ANALYSIS else None,
         "real_match_model": LLM_MODEL_MATCH if ENABLE_REAL_MATCH else None,
+        "supported_regions": SUPPORTED_REGIONS,
+        "default_region": DEFAULT_REGION,
     }
 
 

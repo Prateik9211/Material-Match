@@ -1,11 +1,30 @@
-import React from "react";
+import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
+import api from "@/lib/api";
 import { LogOut, LayoutGrid } from "lucide-react";
+import { toast } from "sonner";
 
 export default function Header({ variant = "app" }) {
-  const { user, logout } = useAuth();
+  const { user, logout, setUser } = useAuth();
   const navigate = useNavigate();
+  const [savingRegion, setSavingRegion] = useState(false);
+
+  const region = user?.preferred_region === "Global" ? "Global" : "India";
+
+  const switchRegion = async (next) => {
+    if (!user || savingRegion || next === region) return;
+    setSavingRegion(true);
+    try {
+      const { data } = await api.put("/users/me/preferences", { preferred_region: next });
+      setUser({ ...user, preferred_region: data.preferred_region });
+      toast.success(`Region preference: ${data.preferred_region}`);
+    } catch {
+      toast.error("Could not update region preference");
+    } finally {
+      setSavingRegion(false);
+    }
+  };
 
   return (
     <header className="sticky top-0 z-50 glass border-b border-black/5" data-testid="app-header">
@@ -30,6 +49,33 @@ export default function Header({ variant = "app" }) {
                 <LayoutGrid className="w-4 h-4" strokeWidth={1.5} />
                 Dashboard
               </button>
+
+              {/* Region preference pill — drives AI prompt context, not visible vendor data */}
+              <div
+                className="hidden sm:inline-flex items-center bg-[#F3F2EE] rounded-full p-0.5 text-xs font-medium"
+                data-testid="region-toggle"
+                role="group"
+                aria-label="Region preference"
+              >
+                {["India", "Global"].map((r) => (
+                  <button
+                    key={r}
+                    onClick={() => switchRegion(r)}
+                    disabled={savingRegion}
+                    aria-pressed={region === r}
+                    className={
+                      "px-3 py-1.5 rounded-full transition-colors " +
+                      (region === r
+                        ? "bg-black text-white"
+                        : "text-neutral-600 hover:text-black")
+                    }
+                    data-testid={`region-${r.toLowerCase()}-btn`}
+                  >
+                    {r === "India" ? "IN" : "Global"}
+                  </button>
+                ))}
+              </div>
+
               <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#F3F2EE]" data-testid="user-chip">
                 <div className="w-6 h-6 rounded-full bg-black text-white grid place-items-center text-xs font-medium">
                   {(user.name || user.email || "U")[0].toUpperCase()}

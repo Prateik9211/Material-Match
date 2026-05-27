@@ -183,6 +183,15 @@ export default function Analysis() {
                                     {r.material_family}
                                   </span>
                                 )}
+                                {r.indian_alternative && (
+                                  <div
+                                    className="mt-1 text-[11px] italic text-amber-800 bg-amber-50 border border-amber-100 rounded-md px-2 py-1 leading-snug"
+                                    data-testid={`analysis-indian-alt-${i}`}
+                                    title="AI-suggested Indian-market equivalent"
+                                  >
+                                    IN: {r.indian_alternative}
+                                  </div>
+                                )}
                               </div>
                             </td>
                             <td className="px-3 py-4 text-neutral-700">{r.color}</td>
