@@ -104,10 +104,10 @@ def _build_cors_origins() -> list[str]:
 _CORS_ORIGINS = _build_cors_origins()
 # Best-effort regex so any *.emergent.host preview / production deploy is
 # allowed without redeploying when the Emergent platform mints a new hostname.
-# The pattern also covers the user's custom apex + subdomains, which the
-# platform proxies through.
+# The pattern covers ANY number of subdomain levels (preview.emergent.host,
+# app.preview.emergent.host, www.materialmatches.com etc.).
 _CORS_ORIGIN_REGEX = (
-    r"^https://([a-z0-9-]+\.)?(emergent\.host|emergentagent\.com|materialmatches\.com)$"
+    r"^https://([a-z0-9-]+\.)*(emergent\.host|emergentagent\.com|materialmatches\.com)$"
 )
 
 app.add_middleware(
@@ -121,6 +121,29 @@ app.add_middleware(
 logger.info(
     f"CORS allowlist: explicit={_CORS_ORIGINS} regex={_CORS_ORIGIN_REGEX}"
 )
+
+
+@app.middleware("http")
+async def _log_cors_preflight(request: Request, call_next):
+    """Log every OPTIONS preflight with the requesting Origin so production
+    misconfigurations are visible in container stdout instead of silent 400s.
+    Adds zero overhead on non-OPTIONS requests."""
+    if request.method == "OPTIONS":
+        origin = request.headers.get("origin", "<none>")
+        acr_method = request.headers.get("access-control-request-method", "<none>")
+        response = await call_next(request)
+        if response.status_code >= 400:
+            logger.warning(
+                f"CORS preflight REJECTED path={request.url.path} "
+                f"origin={origin!r} requested_method={acr_method} "
+                f"status={response.status_code} — origin not in allowlist/regex"
+            )
+        else:
+            logger.info(
+                f"CORS preflight OK path={request.url.path} origin={origin!r}"
+            )
+        return response
+    return await call_next(request)
 
 
 # ============================================================================
