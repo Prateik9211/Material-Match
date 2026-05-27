@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useMemo, useState, useCallback } from "react";
-import api, { formatApiError } from "@/lib/api";
+import api, { formatApiError, setAccessToken } from "@/lib/api";
 
 const AuthContext = createContext(null);
 
@@ -22,6 +22,7 @@ export function AuthProvider({ children }) {
     setError("");
     try {
       const { data } = await api.post("/auth/login", { email, password });
+      if (data.access_token) setAccessToken(data.access_token);
       setUser(data);
       return true;
     } catch (e) {
@@ -34,6 +35,7 @@ export function AuthProvider({ children }) {
     setError("");
     try {
       const { data } = await api.post("/auth/register", { email, password, name });
+      if (data.access_token) setAccessToken(data.access_token);
       setUser(data);
       return true;
     } catch (e) {
@@ -48,6 +50,7 @@ export function AuthProvider({ children }) {
     } catch {
       // Server-side logout failure is non-fatal; client state is cleared regardless.
     }
+    setAccessToken(null);
     setUser(false);
   }, []);
 

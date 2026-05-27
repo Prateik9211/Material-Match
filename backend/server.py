@@ -297,7 +297,12 @@ async def register(payload: RegisterRequest, response: Response):
     refresh = create_refresh_token(uid)
     set_auth_cookies(response, access, refresh)
     return {"id": uid, "email": email, "name": payload.name, "role": "user",
-            "preferred_region": DEFAULT_REGION}
+            "preferred_region": DEFAULT_REGION,
+            # Returned in the response body too so the frontend can send it as
+            # `Authorization: Bearer …` on subsequent calls. This protects auth
+            # from any cross-site cookie quirk (third-party-cookie blocking,
+            # proxy stripping, intermittent SameSite enforcement, etc.).
+            "access_token": access}
 
 
 @api_router.post("/auth/login")
@@ -316,6 +321,8 @@ async def login(payload: LoginRequest, response: Response):
         "name": user.get("name", ""),
         "role": user.get("role", "user"),
         "preferred_region": user.get("preferred_region") if user.get("preferred_region") in SUPPORTED_REGIONS else DEFAULT_REGION,
+        # See register() comment — bearer-token fallback for cross-site cookie issues.
+        "access_token": access,
     }
 
 
@@ -378,7 +385,7 @@ async def refresh(request: Request, response: Response):
         access = create_access_token(uid, user["email"])
         response.set_cookie("access_token", access, httponly=True, secure=True, samesite="none",
                             max_age=ACCESS_TOKEN_MINUTES * 60, path="/")
-        return {"ok": True}
+        return {"ok": True, "access_token": access}
     except pyjwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
 

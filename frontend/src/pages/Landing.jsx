@@ -131,55 +131,75 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* PRICING */}
+      {/* PRICING — India Early-Access Beta */}
       <section id="pricing" className="max-w-7xl mx-auto px-6 py-24">
-        <div className="text-center mb-16">
+        <div className="text-center mb-12">
           <div className="text-overline mb-3">Pricing</div>
           <h2 className="font-display text-4xl sm:text-5xl font-bold tracking-tight">
-            Built to scale with your studio.
+            Early Access Beta.
           </h2>
+          <p className="text-neutral-500 mt-4 max-w-xl mx-auto text-sm sm:text-base">
+            We're inviting selected Indian architects and interior designers to test
+            MaterialMatch.AI free of cost during the beta.
+          </p>
         </div>
 
-        <div className="grid md:grid-cols-2 gap-6 max-w-4xl mx-auto">
-          {[
-            { name: "Studio", price: "$0", cadence: "/forever", features: ["3 projects / month", "Material analysis", "Up to 25 catalogue items", "PDF export"], cta: "Start free", highlight: false },
-            { name: "Practice", price: "$49", cadence: "/month", features: ["Unlimited projects", "Priority AI analysis", "Up to 500 catalogue items per project", "Branded reports", "Team workspaces"], cta: "Start 14-day trial", highlight: true },
-          ].map((p, i) => (
-            <div
-              key={p.name}
-              className={`rounded-3xl p-10 transition-all ${
-                p.highlight ? "bg-black text-white" : "bg-white border border-black/5 shadow-soft"
-              }`}
-              data-testid={`pricing-card-${i}`}
-            >
-              <div className="flex items-baseline justify-between mb-6">
-                <h3 className="font-display text-2xl font-semibold">{p.name}</h3>
-                {p.highlight && <span className="text-xs uppercase tracking-widest bg-white text-black px-2 py-1 rounded-full">Most popular</span>}
-              </div>
-              <div className="mb-6">
-                <span className="font-display text-5xl font-bold">{p.price}</span>
-                <span className={`text-sm ${p.highlight ? "text-neutral-400" : "text-neutral-500"}`}>{p.cadence}</span>
-              </div>
-              <ul className="space-y-3 mb-8">
-                {p.features.map((f) => (
-                  <li key={f} className={`flex items-start gap-2 text-sm ${p.highlight ? "text-neutral-200" : "text-neutral-700"}`}>
-                    <Check className="w-4 h-4 mt-0.5" strokeWidth={2} />
-                    {f}
-                  </li>
-                ))}
-              </ul>
-              <Link
-                to="/auth?mode=register"
-                className={`inline-flex items-center gap-2 rounded-full px-6 py-3 font-medium transition-colors ${
-                  p.highlight ? "bg-white text-black hover:bg-white/90" : "bg-black text-white hover:bg-black/80"
-                }`}
-                data-testid={`pricing-cta-${i}`}
-              >
-                {p.cta}
-                <ArrowRight className="w-4 h-4" strokeWidth={1.5} />
-              </Link>
+        <div className="max-w-xl mx-auto">
+          <div
+            className="rounded-3xl p-10 bg-black text-white relative overflow-hidden"
+            data-testid="pricing-card-beta"
+          >
+            <span className="absolute top-6 right-6 text-[10px] uppercase tracking-widest bg-white text-black px-2 py-1 rounded-full font-semibold">
+              India · Beta
+            </span>
+
+            <div className="flex items-baseline justify-between mb-6">
+              <h3 className="font-display text-2xl font-semibold">Early Access Beta</h3>
             </div>
-          ))}
+
+            <div className="mb-6">
+              <span className="font-display text-6xl font-bold" data-testid="pricing-amount">
+                ₹0
+              </span>
+              <span className="text-sm text-neutral-400 ml-2">/ limited beta</span>
+            </div>
+
+            <p className="text-sm text-neutral-300 mb-6 leading-relaxed">
+              For selected Indian architects and interior designers. Help shape the
+              product while it's still being built around your workflow.
+            </p>
+
+            <ul className="space-y-3 mb-8" data-testid="pricing-features">
+              {[
+                "AI material analysis from reference images",
+                "Catalogue image matching with Top-5 ranked results",
+                "India-mode AI: prompts use Indian-market sourcing context",
+                "Unlimited projects during beta",
+                "Direct feedback channel with the product team",
+              ].map((f) => (
+                <li key={f} className="flex items-start gap-2 text-sm text-neutral-200">
+                  <Check className="w-4 h-4 mt-0.5 shrink-0" strokeWidth={2} />
+                  {f}
+                </li>
+              ))}
+            </ul>
+
+            <Link
+              to="/auth?mode=register"
+              className="inline-flex items-center gap-2 rounded-full px-6 py-3 font-medium transition-colors bg-white text-black hover:bg-white/90"
+              data-testid="pricing-cta-beta"
+            >
+              Request Early Access
+              <ArrowRight className="w-4 h-4" strokeWidth={1.5} />
+            </Link>
+
+            <p
+              className="text-xs italic text-neutral-400 mt-6 leading-relaxed"
+              data-testid="pricing-note-india"
+            >
+              Pricing for Indian studios will be finalized after beta feedback.
+            </p>
+          </div>
         </div>
       </section>
 
