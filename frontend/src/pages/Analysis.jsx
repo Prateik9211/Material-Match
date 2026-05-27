@@ -6,10 +6,15 @@ import api, { formatApiError, useConfig } from "@/lib/api";
 import { ArrowLeft, Sparkles, RefreshCw, ArrowUpRight } from "lucide-react";
 import { toast } from "sonner";
 
+// Confidence-threshold bands for color coding the confidence pill.
+const CONFIDENCE_STRONG = 90;
+const CONFIDENCE_GOOD = 80;
+const CONFIDENCE_PARTIAL = 70;
+
 function confidenceColor(c) {
-  if (c >= 90) return "bg-emerald-600";
-  if (c >= 80) return "bg-emerald-500";
-  if (c >= 70) return "bg-amber-500";
+  if (c >= CONFIDENCE_STRONG) return "bg-emerald-600";
+  if (c >= CONFIDENCE_GOOD) return "bg-emerald-500";
+  if (c >= CONFIDENCE_PARTIAL) return "bg-amber-500";
   return "bg-neutral-400";
 }
 

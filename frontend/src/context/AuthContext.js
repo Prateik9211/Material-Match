@@ -45,8 +45,12 @@ export function AuthProvider({ children }) {
   const logout = useCallback(async () => {
     try {
       await api.post("/auth/logout");
-    } catch {
+    } catch (err) {
       // Server-side logout failure is non-fatal; client state is cleared regardless.
+      // Surface to the dev console (warn, not error) so debugging is possible without
+      // breaking the user-facing sign-out flow.
+      // eslint-disable-next-line no-console
+      console.warn("Logout request failed, clearing client state anyway:", err?.message || err);
     }
     setUser(false);
   }, []);

@@ -1253,11 +1253,105 @@ def _normalize_image_to_b64(content: bytes) -> str | None:
         return None
 
 
+# ---- Per-field validators (used by _validate_batch_result, kept small/testable) ----
+def _coerce_candidate_index(raw_idx, raw_pos: int, expected_n: int, seen_idx: set) -> int:
+    """Validate a candidate_index. Allow positional fallback when LLM forgets the index."""
+    idx = raw_idx
+    if not isinstance(idx, int) or not (0 <= idx < expected_n):
+        if 0 <= raw_pos < expected_n and raw_pos not in seen_idx:
+            idx = raw_pos
+        else:
+            raise ValueError(f"bad candidate_index {raw_idx}")
+    if idx in seen_idx:
+        raise ValueError(f"duplicate candidate_index {idx}")
+    return idx
+
+
+def _coerce_match_percent(raw) -> int:
+    if isinstance(raw, bool):
+        raise ValueError("match_percent is bool")
+    try:
+        pct_int = int(round(float(raw)))
+    except (TypeError, ValueError):
+        raise ValueError("match_percent not numeric")
+    return max(0, min(100, pct_int))
+
+
+def _coerce_detected_family(raw):
+    if raw in MATERIAL_FAMILIES:
+        return raw
+    if "other" in MATERIAL_FAMILIES:
+        return "other"
+    raise ValueError("detected_family missing")
+
+
+def _coerce_reasons(raw_reasons) -> list:
+    """Pick up to 3 well-formed {category, text} dicts; silently drop the rest."""
+    if not isinstance(raw_reasons, list):
+        return []
+    reasons: list = []
+    for r in raw_reasons[:3]:
+        if not isinstance(r, dict):
+            continue
+        cat = r.get("category")
+        txt = r.get("text")
+        if cat not in REASON_CATEGORIES:
+            continue
+        if not isinstance(txt, str) or not txt.strip():
+            continue
+        reasons.append({"category": cat, "text": txt.strip()[:120]})
+    return reasons
+
+
+def _coerce_disqualifier(raw):
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return raw.strip()[:160]
+
+
+def _zero_fallback_entry(idx: int, msg: str = "Could not parse this candidate's score") -> dict:
+    return {
+        "candidate_index": idx,
+        "candidate_type": "unclear",
+        "detected_family": "other",
+        "match_percent": 0,
+        "reasons": [],
+        "disqualifier": msg,
+        "indian_alternative": None,
+    }
+
+
+def _validate_one_batch_item(it, raw_pos: int, expected_n: int, seen_idx: set) -> dict:
+    """Validate a single LLM batch entry. Raises ValueError on unrecoverable issues.
+    Returns a clean dict ready for aggregation."""
+    if not isinstance(it, dict):
+        raise ValueError("entry not object")
+    idx = _coerce_candidate_index(it.get("candidate_index"), raw_pos, expected_n, seen_idx)
+    cand_type = it.get("candidate_type")
+    if cand_type not in CANDIDATE_TYPES:
+        raise ValueError(f"candidate_type {cand_type!r} not in enum")
+    det_fam = _coerce_detected_family(it.get("detected_family"))
+    pct_int = _coerce_match_percent(it.get("match_percent"))
+    reasons = _coerce_reasons(it.get("reasons"))
+    # Genuine product candidates must come with ≥1 reason — otherwise we can't trust the score.
+    if cand_type == "product_material_candidate" and not reasons:
+        raise ValueError("product candidate has no usable reasons")
+    return {
+        "candidate_index": idx,
+        "candidate_type": cand_type,
+        "detected_family": det_fam,
+        "match_percent": pct_int,
+        "reasons": reasons,
+        "disqualifier": _coerce_disqualifier(it.get("disqualifier")),
+        "indian_alternative": _clean_optional_text(it.get("indian_alternative"), max_len=120),
+    }
+
+
 def _validate_batch_result(data, expected_n: int) -> list:
     """Validate a batched LLM response per-item. Returns a list of length expected_n.
     Each slot is a clean entry; slots the LLM mangled are filled with a zero-score
-    fallback so the rest of the batch is not lost. Raises ValueError ONLY when
-    the structural envelope is unusable or every single item fails."""
+    fallback so the rest of the batch is not lost. Raises ValueError ONLY when the
+    structural envelope is unusable or every single item fails."""
     if not isinstance(data, dict) or "batch_results" not in data:
         raise ValueError("missing 'batch_results'")
     items = data["batch_results"]
@@ -1270,89 +1364,24 @@ def _validate_batch_result(data, expected_n: int) -> list:
 
     for raw_pos, it in enumerate(items):
         try:
-            if not isinstance(it, dict):
-                raise ValueError("entry not object")
-            idx = it.get("candidate_index")
-            if not isinstance(idx, int) or not (0 <= idx < expected_n):
-                # Tolerate index drift: if it looks like a positional miss, fall back to raw_pos
-                if 0 <= raw_pos < expected_n and raw_pos not in seen_idx:
-                    idx = raw_pos
-                else:
-                    raise ValueError(f"bad candidate_index {idx}")
-            if idx in seen_idx:
-                raise ValueError(f"duplicate candidate_index {idx}")
-            cand_type = it.get("candidate_type")
-            if cand_type not in CANDIDATE_TYPES:
-                raise ValueError(f"candidate_type {cand_type!r} not in enum")
-            det_fam = it.get("detected_family")
-            if det_fam not in MATERIAL_FAMILIES:
-                # Soft-coerce unknown families to "other" (a valid enum value)
-                det_fam = "other" if "other" in MATERIAL_FAMILIES else None
-                if det_fam is None:
-                    raise ValueError("detected_family missing")
-            pct = it.get("match_percent")
-            if isinstance(pct, bool):
-                raise ValueError("match_percent is bool")
-            try:
-                pct_int = int(round(float(pct)))
-            except (TypeError, ValueError):
-                raise ValueError("match_percent not numeric")
-            pct_int = max(0, min(100, pct_int))
-
-            reasons_raw = it.get("reasons") or []
-            if not isinstance(reasons_raw, list):
-                reasons_raw = []
-            reasons: list = []
-            for r in reasons_raw[:3]:  # cap at 3, ignore extras
-                if not isinstance(r, dict):
-                    continue
-                cat = r.get("category")
-                txt = r.get("text")
-                if cat not in REASON_CATEGORIES:
-                    continue
-                if not isinstance(txt, str) or not txt.strip():
-                    continue
-                reasons.append({"category": cat, "text": txt.strip()[:120]})
-            # Require at least 1 reason for genuine product candidates (so the UI is informative),
-            # but allow 0 reasons for room-scene / unclear entries (they will be filtered out anyway).
-            if cand_type == "product_material_candidate" and not reasons:
-                raise ValueError("product candidate has no usable reasons")
-            disq = it.get("disqualifier")
-            if disq is not None and (not isinstance(disq, str) or not disq.strip()):
-                disq = None
-            if isinstance(disq, str):
-                disq = disq.strip()[:160]
-
-            seen_idx.add(idx)
-            out[idx] = {
-                "candidate_index": idx,
-                "candidate_type": cand_type,
-                "detected_family": det_fam,
-                "match_percent": pct_int,
-                "reasons": reasons,
-                "disqualifier": disq,
-                "indian_alternative": _clean_optional_text(it.get("indian_alternative"), max_len=120),
-            }
+            entry = _validate_one_batch_item(it, raw_pos, expected_n, seen_idx)
         except ValueError as ve:
             item_errors.append(f"item[{raw_pos}]={ve}")
             continue
+        seen_idx.add(entry["candidate_index"])
+        out[entry["candidate_index"]] = entry
 
     if all(x is None for x in out):
-        raise ValueError(f"no valid entries in batch_results ({len(items)} raw items, errors: {'; '.join(item_errors[:3])})")
+        raise ValueError(
+            f"no valid entries in batch_results ({len(items)} raw items, errors: "
+            f"{'; '.join(item_errors[:3])})"
+        )
 
     # Fill mangled slots with a zero-score fallback so the caller can still emit them
     for i in range(expected_n):
         if out[i] is None:
             logger.info(f"match validator-fallback idx={i} (item error)")
-            out[i] = {
-                "candidate_index": i,
-                "candidate_type": "unclear",
-                "detected_family": "other",
-                "match_percent": 0,
-                "reasons": [],
-                "disqualifier": "Could not parse this candidate's score",
-                "indian_alternative": None,
-            }
+            out[i] = _zero_fallback_entry(i)
     return out
 
 
