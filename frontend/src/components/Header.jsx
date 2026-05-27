@@ -18,7 +18,11 @@ export default function Header({ variant = "app" }) {
     try {
       const { data } = await api.put("/users/me/preferences", { preferred_region: next });
       setUser({ ...user, preferred_region: data.preferred_region });
-      toast.success(`Region preference: ${data.preferred_region}`);
+      toast.success(
+        data.preferred_region === "India"
+          ? "India mode: AI now uses Indian-market sourcing context"
+          : "Global mode: no India-specific context"
+      );
     } catch {
       toast.error("Could not update region preference");
     } finally {
@@ -50,28 +54,37 @@ export default function Header({ variant = "app" }) {
                 Dashboard
               </button>
 
-              {/* Region preference pill — drives AI prompt context, not visible vendor data */}
+              {/* Region preference toggle — drives AI prompt context (India sourcing brands, terminology). Server-only signal, never surfaced as vendor data. */}
               <div
-                className="hidden sm:inline-flex items-center bg-[#F3F2EE] rounded-full p-0.5 text-xs font-medium"
+                className="hidden sm:inline-flex items-center gap-1.5 bg-[#F3F2EE] rounded-full pl-3 pr-0.5 py-0.5 text-xs"
                 data-testid="region-toggle"
                 role="group"
                 aria-label="Region preference"
               >
+                <span className="text-[10px] uppercase tracking-wider text-neutral-500 font-semibold">
+                  Region
+                </span>
                 {["India", "Global"].map((r) => (
                   <button
                     key={r}
                     onClick={() => switchRegion(r)}
                     disabled={savingRegion}
                     aria-pressed={region === r}
+                    aria-label={`Switch region preference to ${r}`}
+                    title={
+                      r === "India"
+                        ? "India mode: AI prompts include Indian-market sourcing context (Greenlam, Kajaria, Asian Paints, Kota stone, etc.)"
+                        : "Global mode: no India-specific sourcing context"
+                    }
                     className={
-                      "px-3 py-1.5 rounded-full transition-colors " +
+                      "px-3 py-1.5 rounded-full font-medium transition-colors " +
                       (region === r
                         ? "bg-black text-white"
                         : "text-neutral-600 hover:text-black")
                     }
                     data-testid={`region-${r.toLowerCase()}-btn`}
                   >
-                    {r === "India" ? "IN" : "Global"}
+                    {r}
                   </button>
                 ))}
               </div>

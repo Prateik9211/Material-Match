@@ -698,15 +698,17 @@ ANALYSIS_USER_PROMPT = (
 
 INDIA_ANALYSIS_BLOCK = (
     "\n\n" + INDIAN_BRAND_CONTEXT + "\n\n"
-    "BECAUSE the user prefers India sourcing, you MAY add ONE optional extra field "
-    "per row:\n"
-    '  "indian_alternative": "short ≤ 120 char hint, e.g. \\"Kota stone honed — '
-    'similar to Travertine; widely available via Indian regional suppliers\\""\n'
-    "Include this field only when an Indian-market alternative is genuinely "
-    "useful AND your confidence is ≥ 70. Otherwise set it to null or omit it. "
-    "Use Indian interior-design terminology (e.g. PU matte, MDF with laminate, "
-    "vitrified tile, teak veneer, Kota stone) where it reads naturally in the "
-    "main fields too — but never invent brand names without justification."
+    "BECAUSE the user prefers India sourcing, add ONE extra field per row:\n"
+    '  "indian_alternative": "short ≤ 120 char hint naming an Indian-market '
+    'equivalent or category, e.g. \\"Kota stone honed — comparable to Travertine, '
+    'widely stocked by Indian regional suppliers\\" or \\"Greenlam laminate over '
+    'MDF — common Indian flooring substitute\\""\n'
+    "Populate this field for EVERY row where an Indian-market equivalent is "
+    "genuinely useful (most rows should have one). Set to null only when the "
+    "material truly has no plausible Indian-market alternative. Use Indian "
+    "interior-design terminology in the main fields too where natural — PU matt, "
+    "MDF + laminate, vitrified tile, teak veneer, Kota stone — but never invent "
+    "brand-SKU pairs."
 )
 
 
@@ -1207,14 +1209,15 @@ MATCH_RETRY_NUDGE = (
 
 INDIA_MATCH_BLOCK = (
     "\n\n" + INDIAN_BRAND_CONTEXT + "\n\n"
-    "BECAUSE the user prefers India sourcing, you MAY add ONE optional extra field "
-    "per candidate:\n"
-    '  "indian_alternative": "short ≤ 120 char hint, e.g. \\"Comparable to '
-    'Greenlam veneer in matt PU finish — widely stocked across Indian dealers.\\""\n'
-    "Include it only when an India-market parallel is genuinely useful AND the "
-    "candidate is a real product_material_candidate AND match_percent ≥ 55. "
-    "Otherwise set the field to null or omit it. Use Indian interior-design "
-    "terminology where natural — never invent brand-SKU pairs."
+    "BECAUSE the user prefers India sourcing, add ONE extra field per candidate:\n"
+    '  "indian_alternative": "short ≤ 120 char hint naming an Indian-market '
+    'equivalent or category, e.g. \\"Comparable to Greenlam veneer in matt PU '
+    'finish — widely stocked across Indian dealers\\""\n'
+    "Populate this field for EVERY candidate that is a genuine "
+    "product_material_candidate AND has match_percent ≥ 45 (most surviving "
+    "candidates should have one). For room scenes, unclear images, or weak "
+    "matches, set it to null. Use Indian terminology where natural — never "
+    "invent brand-SKU pairs."
 )
 
 
