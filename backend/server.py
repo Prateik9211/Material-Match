@@ -76,6 +76,54 @@ logger = logging.getLogger("materialmatch")
 
 
 # ============================================================================
+# CORS — registered BEFORE routes so the Starlette CORS middleware can answer
+# OPTIONS preflight without hitting any route handler. The allowlist is built
+# from env vars so the production deploy can add the custom domain without a
+# code change.
+# ============================================================================
+def _build_cors_origins() -> list[str]:
+    """Resolve the CORS allowlist from env. Order of precedence:
+       1. CORS_ORIGINS — comma-separated list (production override)
+       2. FRONTEND_URL — single preview URL (legacy / dev convenience)
+       3. localhost:3000 — always allowed for local dev
+    Wildcards ("*") are stripped because we send credentials (cookies) and the
+    browser rejects allow_origins=* with credentials.
+    """
+    raw = (os.environ.get("CORS_ORIGINS") or "").strip()
+    origins: list[str] = []
+    if raw and raw != "*":
+        origins = [o.strip().rstrip("/") for o in raw.split(",") if o.strip()]
+    frontend = (os.environ.get("FRONTEND_URL") or "").strip().rstrip("/")
+    if frontend and frontend not in origins:
+        origins.append(frontend)
+    if "http://localhost:3000" not in origins:
+        origins.append("http://localhost:3000")
+    return [o for o in origins if o and o != "*"]
+
+
+_CORS_ORIGINS = _build_cors_origins()
+# Best-effort regex so any *.emergent.host preview / production deploy is
+# allowed without redeploying when the Emergent platform mints a new hostname.
+# The pattern also covers the user's custom apex + subdomains, which the
+# platform proxies through.
+_CORS_ORIGIN_REGEX = (
+    r"^https://([a-z0-9-]+\.)?(emergent\.host|emergentagent\.com|materialmatches\.com)$"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_CORS_ORIGINS,
+    allow_origin_regex=_CORS_ORIGIN_REGEX,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+logger.info(
+    f"CORS allowlist: explicit={_CORS_ORIGINS} regex={_CORS_ORIGIN_REGEX}"
+)
+
+
+# ============================================================================
 # MongoDB helpers
 # ============================================================================
 def _validate_object_id(v):
@@ -1909,6 +1957,12 @@ async def root():
     return {"app": "MaterialMatch AI", "status": "ok"}
 
 
+@api_router.get("/health")
+async def health():
+    """Lightweight unauthenticated probe used by uptime checks / deploy smoke."""
+    return {"status": "ok", "app": "MaterialMatch AI"}
+
+
 @api_router.get("/config")
 async def get_client_config():
     """Public, no-auth config flags the frontend uses to switch UI copy."""
@@ -1964,13 +2018,5 @@ async def shutdown_event():
 
 # Mount the router
 app.include_router(api_router)
-
-# CORS - allow credentials with explicit origin
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[FRONTEND_URL, "http://localhost:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# (CORS middleware was registered earlier — before any routes — so OPTIONS
+# preflights are answered without hitting a handler.)
