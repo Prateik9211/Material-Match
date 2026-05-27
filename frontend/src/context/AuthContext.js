@@ -45,10 +45,8 @@ export function AuthProvider({ children }) {
   const logout = useCallback(async () => {
     try {
       await api.post("/auth/logout");
-    } catch (err) {
+    } catch {
       // Server-side logout failure is non-fatal; client state is cleared regardless.
-      // Logging here aids debugging without surfacing to the user.
-      console.error("Logout request failed:", err);
     }
     setUser(false);
   }, []);
