@@ -4,6 +4,9 @@ import { useConfig } from "@/lib/api";
 
 export default function DemoModeBanner({ className = "" }) {
   const config = useConfig();
+  // While config is still loading, render nothing — avoids a misleading
+  // "DEMO MODE ACTIVE" flash on first render when real-AI is in fact enabled.
+  if (config == null) return null;
   const analysisOn = !!config?.enable_real_analysis;
   const matchOn = !!config?.enable_real_match;
 

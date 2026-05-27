@@ -1496,20 +1496,11 @@ async def _score_one_batch(
     ], "disqualifier": "Scoring failed for this candidate.", "indian_alternative": None} for i in range(n)]
 
 
-async def _run_real_match(
-    project_id: str,
-    user_id: str,
-    selected: dict,
-    manual_prompt: str,
-    catalogue_files: list,
-    existing_match: dict,
-    region: str = DEFAULT_REGION,
-) -> dict:
-    """Phase-1 real catalogue match: uploaded product images only, batched scoring."""
-    import asyncio
-    warnings: list = []
+async def _prepare_match_candidates(catalogue_files: list, warnings: list) -> list:
+    """Read, filter, size-cap and base64-normalize every uploaded catalogue file.
 
-    # 1. Filter, size-cap, normalize candidates
+    Appends per-file warnings to `warnings`. Raises 400/422 when the final candidate
+    set is empty or too large."""
     raw_candidates = []
     for f in catalogue_files:
         content = await f.read()
@@ -1526,53 +1517,89 @@ async def _run_real_match(
         if not b64:
             warnings.append(f"Could not decode: {f.filename}")
             continue
-        raw_candidates.append({
-            "name": f.filename or "untitled",
-            "size": len(content),
-            "b64": b64,
-        })
-    if len(raw_candidates) == 0:
-        raise HTTPException(status_code=400, detail="No valid product images provided. Upload JPEG/PNG/WEBP files under 5 MiB.")
+        raw_candidates.append({"name": f.filename or "untitled",
+                               "size": len(content), "b64": b64})
+
+    if not raw_candidates:
+        raise HTTPException(
+            status_code=400,
+            detail="No valid product images provided. Upload JPEG/PNG/WEBP files under 5 MiB.",
+        )
     if len(raw_candidates) > MATCH_MAX_PRODUCT_IMAGES:
-        raise HTTPException(status_code=422, detail=f"Too many images. Maximum {MATCH_MAX_PRODUCT_IMAGES} per match.")
+        raise HTTPException(
+            status_code=422,
+            detail=f"Too many images. Maximum {MATCH_MAX_PRODUCT_IMAGES} per match.",
+        )
+    return raw_candidates
 
-    # 2. Dedup check — same uploads + same zone within window
-    cand_hash = _candidate_hash([{"name": c["name"], "size": c["size"]} for c in raw_candidates])
-    if existing_match and existing_match.get("candidate_hash") == cand_hash and existing_match.get("version", "").startswith("real-"):
-        try:
-            gen_at = datetime.fromisoformat(existing_match["generated_at"].replace("Z", "+00:00"))
-            if (datetime.now(timezone.utc) - gen_at).total_seconds() < MATCH_DEDUP_WINDOW_S:
-                logger.info(f"match dedup-hit project={project_id}")
-                return existing_match
-        except Exception:
-            pass
 
-    # 3. Build batches + concurrent dispatch
-    selected_spec_json = json.dumps({k: selected.get(k) for k in
-                                     ("zone", "material_family", "material_type", "color",
-                                      "texture", "finish", "design_style", "keywords")}, ensure_ascii=False)
-    batches = [raw_candidates[i:i + MATCH_BATCH_SIZE] for i in range(0, len(raw_candidates), MATCH_BATCH_SIZE)]
-    sem = asyncio.Semaphore(LLM_MATCH_CONCURRENCY)
+def _dedup_hit(existing_match: dict, cand_hash: str, project_id: str) -> dict | None:
+    """Return the cached `existing_match` if same uploads + still-fresh, else None."""
+    if not existing_match:
+        return None
+    if existing_match.get("candidate_hash") != cand_hash:
+        return None
+    if not existing_match.get("version", "").startswith("real-"):
+        return None
+    try:
+        gen_at = datetime.fromisoformat(existing_match["generated_at"].replace("Z", "+00:00"))
+    except (KeyError, ValueError, AttributeError):
+        return None
+    if (datetime.now(timezone.utc) - gen_at).total_seconds() >= MATCH_DEDUP_WINDOW_S:
+        return None
+    logger.info(f"match dedup-hit project={project_id}")
+    return existing_match
 
-    async def _do_batch(bi, batch):
-        async with sem:
-            return await _score_one_batch(project_id, bi, selected_spec_json, manual_prompt,
-                                          [c["b64"] for c in batch], region=region)
 
-    batch_results = await asyncio.gather(*[_do_batch(bi, b) for bi, b in enumerate(batches)])
+def _apply_score_gating(r: dict, cand: dict, selected_family: str,
+                       project_id: str) -> tuple[str, int] | None:
+    """Compute the final gated match_percent for one batch result row.
 
-    # 4. Aggregate global candidates with calibration + family gating + candidate-type filter
-    selected_family = (selected.get("material_family") or "").lower()
+    Returns (gated_pct as int, …) or None when the candidate should be dropped
+    (room-scene rejection or below MATCH_MIN_THRESHOLD)."""
+    ctype = r.get("candidate_type", "unclear")
+    pct = _calibrate_percent(r["match_percent"])
+
+    gated_pct, gate_note = _enforce_family_gating(
+        selected_family, r.get("detected_family"), pct,
+        r.get("reasons", []), r.get("disqualifier"),
+    )
+    if gate_note:
+        logger.info(
+            f"match gating project={project_id} cand={cand['name']} "
+            f"pct {pct}→{gated_pct} reason={gate_note}"
+        )
+    pct = gated_pct
+
+    # Unclear candidates: cap at 60 unless family clearly matches the selected
+    if ctype == "unclear":
+        det = (r.get("detected_family") or "").lower()
+        family_ok = det and (
+            det == selected_family
+            or det in COMPATIBLE_FAMILIES.get(selected_family, {selected_family})
+        )
+        if not family_ok and pct > 60:
+            logger.info(
+                f"match unclear-cap project={project_id} cand={cand['name']} pct {pct}→60"
+            )
+            pct = 60
+
+    if pct < MATCH_MIN_THRESHOLD:
+        return None
+    return ctype, pct
+
+
+def _aggregate_batch_results(batches: list, batch_results: list,
+                             selected_family: str, project_id: str,
+                             warnings: list) -> list:
+    """Walk every per-batch result, drop room-scenes, apply gating, keep survivors."""
     scored = []
-    skipped_count = 0
-    for bi, (batch, results) in enumerate(zip(batches, batch_results)):
+    for batch, results in zip(batches, batch_results):
         for r in results:
             cand = batch[r["candidate_index"]]
             ctype = r.get("candidate_type", "unclear")
 
-            # Room scenes are dropped outright with a per-filename warning
             if ctype == "room_scene_or_lifestyle":
-                skipped_count += 1
                 warnings.append(
                     f"Skipped {cand['name']}: image appears to be a room/lifestyle scene, "
                     "not a product/material candidate."
@@ -1582,61 +1609,34 @@ async def _run_real_match(
                 )
                 continue
 
-            pct = _calibrate_percent(r["match_percent"])
-
-            # Family gating
-            gated_pct, gate_note = _enforce_family_gating(
-                selected_family, r.get("detected_family"), pct, r.get("reasons", []), r.get("disqualifier"),
-            )
-            if gate_note:
-                logger.info(
-                    f"match gating project={project_id} cand={cand['name']} "
-                    f"pct {pct}→{gated_pct} reason={gate_note}"
-                )
-            pct = gated_pct
-
-            # Unclear candidates: cap at 60 unless family clearly matches the selected
-            if ctype == "unclear":
-                det = (r.get("detected_family") or "").lower()
-                family_ok = det and (
-                    det == selected_family
-                    or det in COMPATIBLE_FAMILIES.get(selected_family, {selected_family})
-                )
-                if not family_ok and pct > 60:
-                    logger.info(
-                        f"match unclear-cap project={project_id} cand={cand['name']} pct {pct}→60"
-                    )
-                    pct = 60
-
-            if pct < MATCH_MIN_THRESHOLD:
+            gating = _apply_score_gating(r, cand, selected_family, project_id)
+            if gating is None:
                 continue
+            kept_ctype, pct = gating
+
             scored.append({
                 "name": cand["name"],
                 "size": cand["size"],
-                "candidate_type": ctype,
+                "candidate_type": kept_ctype,
                 "detected_family": r.get("detected_family"),
                 "match_percent": pct,
                 "reasons": r["reasons"],
                 "disqualifier": r["disqualifier"],
                 "indian_alternative": r.get("indian_alternative"),
             })
-    if not scored:
-        warnings.append(
-            f"No products met the minimum {MATCH_MIN_THRESHOLD}% similarity bar."
-        )
-    elif len(scored) < 3:
-        warnings.append(
-            "Only limited relevant matches found. Upload more products from the "
-            "same material category for better results."
-        )
+    return scored
 
+
+def _shape_match_response(scored: list) -> list:
+    """Top-5 deterministic ordering + final wire-format for the frontend."""
     scored.sort(key=lambda x: (-x["match_percent"], x["name"]))
     top = scored[:5]
-
-    # 5. Shape result
     matches = []
     for i, s in enumerate(top):
-        product_name = os.path.splitext(s["name"])[0].replace("_", " ").replace("-", " ").strip().title() or s["name"]
+        product_name = (
+            os.path.splitext(s["name"])[0].replace("_", " ").replace("-", " ").strip().title()
+            or s["name"]
+        )
         matches.append({
             "id": f"match_{i + 1}",
             "product_name": product_name,
@@ -1648,6 +1648,69 @@ async def _run_real_match(
             "indian_alternative": s.get("indian_alternative"),
             "thumbnail_color": "#" + hashlib.sha256(s["name"].encode()).hexdigest()[:6],
         })
+    return matches
+
+
+async def _run_real_match(
+    project_id: str,
+    user_id: str,
+    selected: dict,
+    manual_prompt: str,
+    catalogue_files: list,
+    existing_match: dict,
+    region: str = DEFAULT_REGION,
+) -> dict:
+    """Phase-1 real catalogue match: uploaded product images only, batched scoring.
+
+    Pipeline:
+      1. `_prepare_match_candidates` — read + size-cap + normalize uploaded files
+      2. `_dedup_hit` — cheap re-use of recent identical request
+      3. batched LLM dispatch via `_score_one_batch`
+      4. `_aggregate_batch_results` — drop room scenes, apply family gating
+      5. `_shape_match_response` — Top-5 ordering + frontend wire format
+    """
+    import asyncio
+    warnings: list = []
+
+    raw_candidates = await _prepare_match_candidates(catalogue_files, warnings)
+    cand_hash = _candidate_hash([{"name": c["name"], "size": c["size"]} for c in raw_candidates])
+
+    hit = _dedup_hit(existing_match, cand_hash, project_id)
+    if hit is not None:
+        return hit
+
+    selected_spec_json = json.dumps(
+        {k: selected.get(k) for k in
+         ("zone", "material_family", "material_type", "color",
+          "texture", "finish", "design_style", "keywords")},
+        ensure_ascii=False,
+    )
+    batches = [raw_candidates[i:i + MATCH_BATCH_SIZE]
+               for i in range(0, len(raw_candidates), MATCH_BATCH_SIZE)]
+    sem = asyncio.Semaphore(LLM_MATCH_CONCURRENCY)
+
+    async def _do_batch(bi, batch):
+        async with sem:
+            return await _score_one_batch(
+                project_id, bi, selected_spec_json, manual_prompt,
+                [c["b64"] for c in batch], region=region,
+            )
+
+    batch_results = await asyncio.gather(*[_do_batch(bi, b) for bi, b in enumerate(batches)])
+
+    selected_family = (selected.get("material_family") or "").lower()
+    scored = _aggregate_batch_results(batches, batch_results, selected_family,
+                                      project_id, warnings)
+
+    if not scored:
+        warnings.append(f"No products met the minimum {MATCH_MIN_THRESHOLD}% similarity bar.")
+    elif len(scored) < 3:
+        warnings.append(
+            "Only limited relevant matches found. Upload more products from the "
+            "same material category for better results."
+        )
+
+    matches = _shape_match_response(scored)
 
     return {
         "matches": matches,

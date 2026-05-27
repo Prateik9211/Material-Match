@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
-import { ArrowRight, Mail, Lock, User as UserIcon } from "lucide-react";
 import { toast } from "sonner";
+import AuthForm from "@/components/auth/AuthForm";
 
 export default function Auth() {
   const [searchParams] = useSearchParams();
@@ -39,6 +39,9 @@ export default function Auth() {
   let submitLabel = mode === "login" ? "Sign in" : "Create account";
   if (busy) submitLabel = "Working…";
 
+  const heading = mode === "login" ? "Sign in to continue." : "Start matching materials.";
+  const overline = mode === "login" ? "Welcome back" : "Create account";
+
   return (
     <div className="min-h-screen bg-[#F9F9F8] flex flex-col" data-testid="auth-page">
       <div className="px-6 py-6">
@@ -71,88 +74,20 @@ export default function Auth() {
         <div className="flex items-center justify-center p-6 sm:p-12">
           <div className="w-full max-w-md space-y-8">
             <div>
-              <div className="text-overline mb-3">{mode === "login" ? "Welcome back" : "Create account"}</div>
-              <h1 className="font-display text-4xl font-bold tracking-tight">
-                {mode === "login" ? "Sign in to continue." : "Start matching materials."}
-              </h1>
+              <div className="text-overline mb-3">{overline}</div>
+              <h1 className="font-display text-4xl font-bold tracking-tight">{heading}</h1>
             </div>
 
-            <form onSubmit={submit} className="space-y-4" data-testid="auth-form">
-              {mode === "register" && (
-                <div className="space-y-1.5">
-                  <label className="text-overline">Name</label>
-                  <div className="relative">
-                    <UserIcon className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400" strokeWidth={1.5} />
-                    <input
-                      type="text"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      placeholder="Your full name"
-                      className="w-full pl-11 pr-4 py-3.5 bg-white border border-black/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-black/20 transition-all text-sm"
-                      data-testid="auth-name-input"
-                    />
-                  </div>
-                </div>
-              )}
-              <div className="space-y-1.5">
-                <label className="text-overline">Email</label>
-                <div className="relative">
-                  <Mail className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400" strokeWidth={1.5} />
-                  <input
-                    type="email"
-                    required
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="you@studio.com"
-                    className="w-full pl-11 pr-4 py-3.5 bg-white border border-black/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-black/20 transition-all text-sm"
-                    data-testid="auth-email-input"
-                  />
-                </div>
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-overline">Password</label>
-                <div className="relative">
-                  <Lock className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400" strokeWidth={1.5} />
-                  <input
-                    type="password"
-                    required
-                    minLength={6}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Min. 6 characters"
-                    className="w-full pl-11 pr-4 py-3.5 bg-white border border-black/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-black/20 transition-all text-sm"
-                    data-testid="auth-password-input"
-                  />
-                </div>
-              </div>
-
-              {error && (
-                <div className="text-sm bg-red-50 text-red-700 border border-red-100 rounded-xl px-4 py-3" data-testid="auth-error">
-                  {error}
-                </div>
-              )}
-
-              <button
-                type="submit"
-                disabled={busy}
-                className="w-full bg-black text-white hover:bg-black/80 rounded-full py-3.5 font-medium transition-colors inline-flex items-center justify-center gap-2 disabled:opacity-60"
-                data-testid="auth-submit-btn"
-              >
-                {submitLabel}
-                {!busy && <ArrowRight className="w-4 h-4" strokeWidth={1.5} />}
-              </button>
-
-              <button
-                type="button"
-                disabled
-                title="Coming soon"
-                className="w-full border border-black/10 bg-white text-neutral-600 rounded-full py-3.5 font-medium inline-flex items-center justify-center gap-2 disabled:opacity-60 cursor-not-allowed"
-                data-testid="auth-google-btn"
-              >
-                Continue with Google
-                <span className="text-xs text-neutral-400">(soon)</span>
-              </button>
-            </form>
+            <AuthForm
+              mode={mode}
+              name={name} onNameChange={setName}
+              email={email} onEmailChange={setEmail}
+              password={password} onPasswordChange={setPassword}
+              busy={busy}
+              error={error}
+              submitLabel={submitLabel}
+              onSubmit={submit}
+            />
 
             <div className="text-sm text-neutral-600 text-center">
               {mode === "login" ? (
