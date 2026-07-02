@@ -93,6 +93,21 @@ Build a modern AI SaaS web application called "MaterialMatch AI" that helps arch
 
 ## Live AI Material Analysis (2026-02-26)
 
+## Sprint 2 — Products & Fixtures + Affiliate DB (2026-07-02)
+- ✅ **Products & Fixtures Detection**: separate AI pass triggered automatically by the "Generate Specification" button. Uses `openai/gpt-4o-mini` vision via `emergentintegrations.LlmChat`. Env flag `ENABLE_REAL_PRODUCTS`, timeout `LLM_PRODUCTS_TIMEOUT_S`, model `LLM_MODEL_PRODUCTS`.
+- ✅ Schema: `product_name`, `category` (9 enums: lighting, furniture, decor, art, textile-decor, fixture, plant-planter, electronics, other), `description`, `style_keywords`, `color_keywords`, `material_keywords`, `finish_keywords`, `estimated_price_inr`, `search_keywords`, `confidence` (0-100).
+- ✅ Deterministic mock fallback (`MOCK_PRODUCTS_LIBRARY` — 6 seed products) when real AI is disabled.
+- ✅ **Admin-managed Affiliate Database** (`affiliate_products` collection) with admin CRUD at `/api/admin/affiliates[/{id}]` (GET/POST/PUT/DELETE). Guarded by new `require_admin` dependency.
+- ✅ Admin role auto-promotion via `ADMIN_EMAILS` env var (comma-separated). Idempotent — flips `role=admin` on every authenticated request when the email is listed.
+- ✅ 10-item Indian-market seed on startup: Pepperfry, Urban Ladder, IKEA India, WoodenStreet, Hafele India, Amazon India, Jaipur Rugs covering lighting, furniture, decor, art, textile-decor, fixture, plant-planter categories.
+- ✅ **Keyword-similarity matching engine**: weighted Jaccard on name (30%) + style (25%) + material (20%) + color (15%) + finish (10%). Threshold `AFFILIATE_MATCH_MIN_SCORE=0.20`. Cross-category fallback with 0.75× penalty when no in-category match found.
+- ✅ Fallback search URLs: every detected product gets `amazon.in/s?k=…` and `google.com/search?tbm=shop&q=…+india` links (single "india" — no duplication).
+- ✅ `GET /api/projects/{id}/products` returns cached detection results with matches. Cross-user access → 404.
+- ✅ Frontend: new `/admin/affiliates` page (add/edit/delete modal, image thumbnails, category badges, keyword chips). Header "Affiliates" link shown only when `role=admin`.
+- ✅ Frontend: new `ProductsSection` component on Analysis page — visual cards with category badge, confidence pill, price band, style/material keyword chips, green "Curated Recommendation" badge (with clickable affiliate link) + Amazon.in + Google Shopping fallback pills.
+- ✅ Landing hero trust bullet updated: "Catalogue-first" → "Products & Fixtures Detection" (testid `hero-trust-products`).
+- ✅ 19 new pytest unit tests in `tests/test_products_and_affiliates.py` covering jaccard/tokenizer/score/validator/search URLs/seed invariants — all PASS. Testing agent verified 48/48 relevant tests + full E2E flows green.
+
 ## Prioritized Backlog
 
 ### P1
@@ -102,14 +117,20 @@ Build a modern AI SaaS web application called "MaterialMatch AI" that helps arch
 - Forgot password / reset password flow
 
 ### P2
+- Concept Presentation Workspace (rooms + notes + images)
+- Client Brief Questionnaire (structured intake form for new projects)
 - Team workspaces & sharing
 - Vendor/SKU tagging on catalogue items
 - Stripe billing (Studio free / Practice $49 paywall)
 - Google OAuth social login
 - Save/star favorite matches
 - Comparison view (side-by-side reference vs matched product)
+- Refactor `server.py` (~2900 lines) into `routes/`, `services/`, `models/` modules
+- shadcn AlertDialog for affiliate delete confirmation (replace native `window.confirm`)
 
 ### P3
+- PDF Report Generation / Export
+- Vendor Marketplace & live shop addresses
 - Object storage migration (out of MongoDB base64)
 - Parallel LLM calls (asyncio.gather) for faster analysis on big catalogues
 - Server-side PDF generation (ReportLab) for higher fidelity prints
