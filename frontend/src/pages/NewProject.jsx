@@ -60,7 +60,7 @@ export default function NewProject() {
   };
 
   return (
-    <div className="min-h-screen bg-[#F9F9F8]" data-testid="new-project-page">
+    <div className="min-h-screen bg-[#FAF8F5]" data-testid="new-project-page">
       <Header />
       <main className="max-w-3xl mx-auto px-6 py-12">
         <Link to="/dashboard" className="inline-flex items-center gap-2 text-sm text-neutral-600 hover:text-black mb-8" data-testid="back-to-dashboard">

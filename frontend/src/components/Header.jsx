@@ -68,7 +68,7 @@ export default function Header({ variant = "app" }) {
 
               {/* Region preference toggle — drives AI prompt context (India sourcing brands, terminology). Server-only signal, never surfaced as vendor data. */}
               <div
-                className="hidden sm:inline-flex items-center gap-1.5 bg-[#F3F2EE] rounded-full pl-3 pr-0.5 py-0.5 text-xs"
+                className="hidden sm:inline-flex items-center gap-1.5 bg-[#F5F1EC] rounded-full pl-3 pr-0.5 py-0.5 text-xs"
                 data-testid="region-toggle"
                 role="group"
                 aria-label="Region preference"
@@ -101,7 +101,7 @@ export default function Header({ variant = "app" }) {
                 ))}
               </div>
 
-              <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#F3F2EE]" data-testid="user-chip">
+              <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#F5F1EC]" data-testid="user-chip">
                 <div className="w-6 h-6 rounded-full bg-black text-white grid place-items-center text-xs font-medium">
                   {(user.name || user.email || "U")[0].toUpperCase()}
                 </div>

@@ -27,7 +27,7 @@ export default function MatchSidebar({
               onError={onImgError}
             />
           ) : (
-            <div className="w-full aspect-[4/3] bg-[#F3F2EE] grid place-items-center text-overline">
+            <div className="w-full aspect-[4/3] bg-[#F5F1EC] grid place-items-center text-overline">
               {imgError ? "Image unavailable" : "No reference"}
             </div>
           )}
@@ -71,7 +71,7 @@ export default function MatchSidebar({
               {selected.keywords.slice(0, 6).map((k, i) => (
                 <span
                   key={`k-${k}-${i}`}
-                  className="text-[10px] px-2 py-0.5 rounded-full bg-[#F3F2EE] text-neutral-600"
+                  className="text-[10px] px-2 py-0.5 rounded-full bg-[#F5F1EC] text-neutral-600"
                 >
                   {k}
                 </span>

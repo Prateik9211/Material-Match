@@ -1,0 +1,36 @@
+{
+  "summary": "Sprint 4 (Warm palette polish + public Demo + Welcome dashboard) end-to-end verified. Backend: added /app/backend/tests/test_sprint4_demo.py — 7/7 pass (demo project, demo reference image, read-only protection, admin login, /auth/me, /admin/affiliates=10, public demo room). Prior regression suites re-ran green: test_rooms + test_sprint3_rooms_integration + test_products_and_affiliates = 49/49 pass. Frontend: Landing shows warm ivory bg (rgb(250,248,245) = #FAF8F5), hero-philosophy present, all 5 hero-trust-bullets present (Designer-first, India-first sourcing, Catalogue matching, Products & Fixtures detection, Client-ready presentations), hero-cta-demo routes to /demo, hero-cta-create is a button (uses onClick nav) routing to /auth?mode=register&next=/projects/new when logged out. NO 'Made with Emergent' badge (#emergent-badge absent). NO 'USD', '$', 'OpenAI', or 'GPT' strings in copy. /demo public route accessible without auth and renders all expected testids (demo-page, demo-reference-img, demo-summary, demo-spec-zones, demo-zone-0..3, products-section, product-card-0..3 with matched_affiliate CURATED RECOMMENDATION visible, demo-catalogue-matches, demo-match-0..2, demo-presentation-cta, demo-open-presentation). /share/rooms/materialmatch-demo renders room-presentation with Concept Overview / Material Specifications / Suggested Products / Designer Notes in correct order (empty sections auto-hidden). Empty-state dashboard for a freshly registered user shows welcome-panel with welcome-demo-btn, welcome-create-btn and welcome-step-0..4. Admin dashboard hides welcome-panel and shows dashboard-demo-btn (small) + new-project-btn (primary); recent projects grid renders; Sourcing Region stat card shows 'India / India-first sourcing' (no 'Mock' label — the string 'Mock' only appears in user-created project names). Admin /admin/affiliates lists exactly 10 affiliates. Microcopy strings verified in source: 'Preparing your design story…' (PublicRoom + Demo), 'Reading finishes and specification zones…' (Analysis), 'Scanning catalogue pages…' (Match + MatchControls). Mobile 390px: welcome panel steps stack sensibly. No regressions found.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_sprint4_demo.py",
+    "/app/test_reports/pytest/sprint4_demo.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Registration accepts .local emails at the frontend (no client-side hint) but backend rejects them with 422 via email_validator's reserved-TLD rule. Consider (a) surfacing the specific reason to the user via auth-error, or (b) allow test/reserved TLDs since 422 is confusing when the user thinks their email 'looks fine'. In this run it caused a false test failure until the domain was switched to @example.com.",
+    "hero-cta-create is a <button> that uses navigate() rather than an <a href>; this works but breaks middle-click / open-in-new-tab UX and makes E2E link assertions harder. Consider using <Link> for consistency with hero-cta-demo.",
+    "server.py has now grown past 3400 lines with the addition of _seed_demo_project + demo endpoints. The extraction recommendation from iteration_5/6 still stands — rooms/demo/products should each move to their own module before Sprint 5.",
+    "Sprint 3 double-DELETE bug (server.py L3170-3180 — $pull + $set collides so modified_count is always 1) is STILL present. See iteration_6 rca. Not blocking Sprint 4."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sprint4_demo.py (new — 7 tests, all pass)"
+  ],
+  "success_rate": {
+    "backend": "100% (7/7 Sprint 4 demo tests + 49/49 prior regression = 56/56)",
+    "frontend": "100% (Landing, /demo, /share/rooms/materialmatch-demo, empty Welcome dashboard, admin dashboard, microcopy strings, warm palette, mobile stacking — all verified)"
+  },
+  "test_credentials": "Admin: admin@materialmatch.ai / MaterialAdmin2026!. Fresh signup must use a real TLD (e.g. @example.com); @test.local is rejected 422 by backend email_validator.",
+  "seed_data_creation": "Demo project auto-seeded at backend startup by _seed_demo_project (id from /api/demo/project). Registered a throwaway user sprint4user{ts}@example.com during UI test — no cleanup needed (isolated user).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Sprint 4 demo tests live at /app/backend/tests/test_sprint4_demo.py. Full pytest sweep: `cd /app/backend && PYTHONPATH=/app/backend pytest tests/test_sprint4_demo.py tests/test_rooms.py tests/test_sprint3_rooms_integration.py tests/test_products_and_affiliates.py -v`. Sprint 4 test-ids in play: hero-philosophy, hero-trust-bullets, hero-cta-demo (link), hero-cta-create (BUTTON, not link — use click not href), demo-page, demo-reference-img, demo-summary, demo-spec-zones, demo-zone-0..3, demo-catalogue-matches, demo-match-0..2, demo-presentation-cta, demo-open-presentation, welcome-panel, welcome-demo-btn, welcome-create-btn (both BUTTONs), welcome-step-0..4, dashboard-demo-btn, new-project-btn. Auth form uses auth-name-input / auth-email-input / auth-password-input / auth-submit-btn / auth-switch-register. When ?mode=register is passed, the form starts in register mode. Do NOT create projects/rooms on the demo project (user_id='system-demo', is_demo=true); it is intentionally read-only.",
+  "rca of the issue": "N/A — no new issues found for Sprint 4."
+}

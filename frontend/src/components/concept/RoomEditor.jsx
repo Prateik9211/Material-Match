@@ -152,7 +152,7 @@ export default function RoomEditor({ room, specs, products, onChange }) {
           kind="current_site"
           images={room.current_site_photos}
           onChange={(imgs) => onChange({ ...room, current_site_photos: imgs })}
-          accent="bg-[#F3F2EE]"
+          accent="bg-[#F5F1EC]"
           testidPrefix="current"
         />
       </Section>

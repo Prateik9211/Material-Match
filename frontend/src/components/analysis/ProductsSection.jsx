@@ -59,7 +59,7 @@ function ProductCard({ product, index }) {
       data-testid={`product-card-${index}`}
     >
       {/* Header strip with icon + category */}
-      <div className="bg-[#F3F2EE] p-4 flex items-center justify-between border-b border-black/5">
+      <div className="bg-[#F5F1EC] p-4 flex items-center justify-between border-b border-black/5">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-white border border-black/5 grid place-items-center">
             <Package className="w-4 h-4 text-neutral-700" strokeWidth={1.5} />

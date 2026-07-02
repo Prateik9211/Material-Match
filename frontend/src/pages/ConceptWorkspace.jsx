@@ -39,7 +39,7 @@ function ShareModal({ room, onClose, onShareChange }) {
           </button>
         </div>
         <div className="p-5 space-y-4">
-          <div className="flex items-center justify-between p-4 rounded-xl border border-black/5 bg-[#F3F2EE]/40">
+          <div className="flex items-center justify-between p-4 rounded-xl border border-black/5 bg-[#F5F1EC]/40">
             <div>
               <div className="text-sm font-medium">Public link</div>
               <div className="text-xs text-neutral-500">Anyone with the link can view — no login.</div>
@@ -256,7 +256,7 @@ export default function ConceptWorkspace() {
   const pinnedProducts = projectProducts.filter((p) => pinnedProdIds.has(String(p.id || "")));
 
   return (
-    <div className="min-h-screen bg-[#F9F9F8]" data-testid="concept-workspace">
+    <div className="min-h-screen bg-[#FAF8F5]" data-testid="concept-workspace">
       <Header />
       <main className="max-w-7xl mx-auto px-6 py-10">
         <Link

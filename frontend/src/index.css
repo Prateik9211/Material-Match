@@ -5,32 +5,46 @@
 @tailwind utilities;
 
 :root {
-  --background: 0 0% 97.6%; /* #F9F9F8 */
-  --foreground: 0 0% 6.7%;
+  --background: 36 33% 97%; /* #FAF8F5 warm ivory */
+  --foreground: 25 12% 15%; /* #2B2724 deep charcoal */
   --card: 0 0% 100%;
-  --card-foreground: 0 0% 6.7%;
+  --card-foreground: 25 12% 15%;
   --popover: 0 0% 100%;
-  --popover-foreground: 0 0% 6.7%;
-  --primary: 0 0% 6.7%;
-  --primary-foreground: 0 0% 100%;
-  --secondary: 36 14% 94%; /* #F3F2EE */
-  --secondary-foreground: 0 0% 6.7%;
-  --muted: 36 14% 94%;
-  --muted-foreground: 240 4% 46%;
-  --accent: 36 14% 94%;
-  --accent-foreground: 0 0% 6.7%;
-  --destructive: 0 70% 50%;
+  --popover-foreground: 25 12% 15%;
+  --primary: 25 12% 15%;
+  --primary-foreground: 36 33% 97%;
+  --secondary: 30 22% 94%; /* #F5F1EC warm stone panel */
+  --secondary-foreground: 25 12% 15%;
+  --muted: 30 22% 94%;
+  --muted-foreground: 28 8% 44%; /* #7A7168 warm grey */
+  --accent: 30 22% 94%;
+  --accent-foreground: 25 12% 15%;
+  --destructive: 12 65% 46%; /* muted warm red */
   --destructive-foreground: 0 0% 100%;
-  --border: 30 8% 90%;
-  --input: 30 8% 90%;
-  --ring: 0 0% 6.7%;
+  --border: 30 20% 80%; /* #D8CEC2 warm stone border */
+  --input: 30 20% 80%;
+  --ring: 25 12% 15%;
   --radius: 1rem;
+
+  /* Warm interior palette — named CSS vars for consistency */
+  --paper: #FAF8F5;
+  --paper-warm: #FFFDF9;
+  --stone-panel: #F5F1EC;
+  --stone-border: #D8CEC2;
+  --stone-border-soft: #E7DED0;
+  --charcoal: #2B2724;
+  --warm-grey: #7A7168;
+  --sage: #7F9D7A;
+  --sage-soft: #E4EBE0;
+  --ochre: #B9873C;
+  --ochre-soft: #F4E9D5;
+  --sand: #E9DFCD;
 }
 
 body {
   margin: 0;
-  background: #f9f9f8;
-  color: #111;
+  background: #FAF8F5;
+  color: #2B2724;
   font-family: "Satoshi", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -83,12 +97,19 @@ h1, h2, h3, h4, h5, h6, .font-display {
 /* Custom scrollbar */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #d8d6d1; border-radius: 8px; }
-::-webkit-scrollbar-thumb:hover { background: #b8b5b0; }
+::-webkit-scrollbar-thumb { background: #D8CEC2; border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: #B8AA96; }
 
 ::selection {
-  background: #111;
-  color: #fff;
+  background: #2B2724;
+  color: #FAF8F5;
+}
+
+/* Warm shimmer for skeletons */
+.shimmer {
+  background: linear-gradient(90deg, #F5F1EC 0%, #EDE6DA 50%, #F5F1EC 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.8s linear infinite;
 }
 
 /* Animations */
@@ -103,7 +124,7 @@ h1, h2, h3, h4, h5, h6, .font-display {
   100% { background-position: 200% 0; }
 }
 .shimmer {
-  background: linear-gradient(90deg, #f3f2ee 0%, #ebeae5 50%, #f3f2ee 100%);
+  background: linear-gradient(90deg, #F5F1EC 0%, #EDE6DA 50%, #F5F1EC 100%);
   background-size: 200% 100%;
   animation: shimmer 1.8s linear infinite;
 }

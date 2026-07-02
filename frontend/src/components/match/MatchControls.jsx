@@ -79,7 +79,7 @@ export default function MatchControls({
           ) : (
             <>
               <Sparkles className={`w-4 h-4 ${busy ? "animate-pulse" : ""}`} strokeWidth={1.5} />
-              {busy ? "Matching…" : "Run Match"}
+              {busy ? "Scanning catalogue pages…" : "Run Match"}
             </>
           )}
         </button>

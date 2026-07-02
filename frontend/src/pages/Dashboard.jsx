@@ -1,19 +1,72 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import Header from "@/components/Header";
-import DemoModeBanner from "@/components/DemoModeBanner";
 import api, { formatApiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
-import { Plus, FileText, ArrowUpRight, Sparkles, Clock } from "lucide-react";
+import { Plus, FileText, ArrowUpRight, Sparkles, Clock, PlayCircle, Camera, Layers, Palette, ShoppingBag, PenSquare } from "lucide-react";
 import { toast } from "sonner";
 
 const statusColor = {
-  draft: "bg-neutral-100 text-neutral-600",
-  queued: "bg-amber-50 text-amber-700",
-  analyzing: "bg-blue-50 text-blue-700",
-  completed: "bg-emerald-50 text-emerald-700",
+  draft: "bg-stone-panel text-warm-grey",
+  queued: "bg-ochre-soft text-ochre",
+  analyzing: "bg-sage-soft text-sage",
+  completed: "bg-sage-soft text-sage",
   error: "bg-red-50 text-red-700",
 };
+
+const WORKFLOW_STEPS = [
+  { icon: Camera, title: "Upload a reference", body: "A Pinterest pin or an interior photograph." },
+  { icon: Layers, title: "Generate specifications", body: "Zones, finishes, colour, and India-first sourcing." },
+  { icon: Palette, title: "Match your catalogue", body: "Upload a supplier PDF or product images." },
+  { icon: ShoppingBag, title: "Detect products & fixtures", body: "Lighting, furniture, decor — with curated options." },
+  { icon: PenSquare, title: "Prepare presentation", body: "Assemble rooms into a shareable design story." },
+];
+
+function WelcomePanel({ onDemo, onCreate }) {
+  return (
+    <div className="bg-white border border-stone-border-soft rounded-3xl p-10 sm:p-12 shadow-soft" data-testid="welcome-panel">
+      <div className="text-overline mb-3">Welcome to MaterialMatch</div>
+      <h2 className="font-display text-3xl sm:text-4xl font-bold tracking-tight text-charcoal max-w-2xl">
+        Start with a demo or create your first project.
+      </h2>
+      <p className="text-warm-grey mt-3 max-w-2xl">
+        The demo project shows the full flow — specification, catalogue matches, products, and a client-ready presentation — in under three minutes.
+      </p>
+      <div className="mt-6 flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={onDemo}
+          className="inline-flex items-center gap-2 bg-charcoal text-paper hover:bg-charcoal/85 rounded-full px-6 py-3 font-medium transition-colors"
+          data-testid="welcome-demo-btn"
+        >
+          <PlayCircle className="w-4 h-4" strokeWidth={1.75} />
+          Explore Demo Project
+        </button>
+        <button
+          type="button"
+          onClick={onCreate}
+          className="inline-flex items-center gap-2 bg-white text-charcoal border border-stone-border hover:border-charcoal hover:bg-stone-panel rounded-full px-6 py-3 font-medium transition-colors"
+          data-testid="welcome-create-btn"
+        >
+          <Plus className="w-4 h-4" strokeWidth={1.75} />
+          Create New Project
+        </button>
+      </div>
+      <div className="mt-10 grid sm:grid-cols-2 lg:grid-cols-5 gap-4">
+        {WORKFLOW_STEPS.map((s, i) => (
+          <div key={s.title} className="p-4 rounded-2xl bg-stone-panel/60 border border-stone-border-soft" data-testid={`welcome-step-${i}`}>
+            <div className="flex items-center gap-2 text-warm-grey mb-2">
+              <s.icon className="w-4 h-4" strokeWidth={1.5} />
+              <span className="text-[10px] font-mono tabular-nums">0{i + 1}</span>
+            </div>
+            <div className="font-display font-semibold text-sm text-charcoal">{s.title}</div>
+            <p className="text-xs text-warm-grey mt-1 leading-relaxed">{s.body}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export default function Dashboard() {
   const { user } = useAuth();
@@ -40,6 +93,8 @@ export default function Dashboard() {
   useEffect(() => { fetchData(); }, [fetchData]);
 
   const projectRoute = (p) => `/projects/${p.id}/analysis`;
+  const openDemo = () => navigate("/demo");
+  const openCreate = () => navigate("/projects/new");
 
   const renderProjectsSection = () => {
     if (loading) {
@@ -51,31 +106,16 @@ export default function Dashboard() {
         </div>
       );
     }
-    if (projects.length === 0) {
-      return (
-        <div className="bg-white border border-dashed border-black/10 rounded-2xl p-12 text-center" data-testid="empty-projects">
-          <Sparkles className="w-8 h-8 text-neutral-300 mx-auto mb-3" strokeWidth={1.25} />
-          <p className="text-neutral-500 mb-4">No projects yet — kick off your first material match.</p>
-          <Link
-            to="/projects/new"
-            className="inline-flex items-center gap-2 bg-black text-white hover:bg-black/80 rounded-full px-5 py-2.5 text-sm font-medium"
-            data-testid="empty-new-project-btn"
-          >
-            <Plus className="w-4 h-4" strokeWidth={1.5} /> Create project
-          </Link>
-        </div>
-      );
-    }
     return (
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
         {projects.map((p) => (
           <button
             key={p.id}
             onClick={() => navigate(projectRoute(p))}
-            className="text-left bg-white border border-black/5 rounded-2xl overflow-hidden shadow-soft hover:shadow-hover hover:-translate-y-1 transition-all duration-300"
+            className="text-left bg-white border border-stone-border-soft rounded-2xl overflow-hidden shadow-soft hover:shadow-hover hover:-translate-y-1 transition-all duration-300"
             data-testid={`project-card-${p.id}`}
           >
-            <div className="aspect-[16/10] bg-[#F3F2EE] relative grain">
+            <div className="aspect-[16/10] bg-stone-panel relative grain">
               <div className="absolute inset-0 grid place-items-center">
                 <div className="text-overline">{p.name?.slice(0, 2).toUpperCase() || "PR"}</div>
               </div>
@@ -84,9 +124,9 @@ export default function Dashboard() {
               </span>
             </div>
             <div className="p-5">
-              <h3 className="font-display font-semibold text-base mb-1 truncate">{p.name}</h3>
-              <p className="text-xs text-neutral-500 truncate">{p.client_name || "No client"}</p>
-              <div className="mt-3 flex items-center gap-1 text-xs text-neutral-400">
+              <h3 className="font-display font-semibold text-base mb-1 truncate text-charcoal">{p.name}</h3>
+              <p className="text-xs text-warm-grey truncate">{p.client_name || "No client"}</p>
+              <div className="mt-3 flex items-center gap-1 text-xs text-warm-grey/70">
                 <Clock className="w-3 h-3" strokeWidth={1.5} />
                 {new Date(p.created_at).toLocaleDateString()}
               </div>
@@ -97,97 +137,123 @@ export default function Dashboard() {
     );
   };
 
+  const hasProjects = projects.length > 0;
+
   return (
-    <div className="min-h-screen bg-[#F9F9F8]" data-testid="dashboard-page">
+    <div className="min-h-screen bg-paper" data-testid="dashboard-page">
       <Header />
 
       <main className="max-w-7xl mx-auto px-6 py-12">
-        <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-6 mb-12">
+        <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-6 mb-10">
           <div>
             <div className="text-overline mb-2">Welcome back</div>
-            <h1 className="font-display text-4xl sm:text-5xl font-bold tracking-tight">
+            <h1 className="font-display text-4xl sm:text-5xl font-bold tracking-tight text-charcoal">
               {user?.name || "Designer"}.
             </h1>
-            <p className="text-neutral-500 mt-2">Pick up where you left off, or start a new project.</p>
+            <p className="text-warm-grey mt-2">Pick up where you left off, or start a new project.</p>
           </div>
-          <Link
-            to="/projects/new"
-            className="inline-flex items-center gap-2 bg-black text-white hover:bg-black/80 rounded-full px-6 py-3 font-medium transition-colors self-start"
-            data-testid="new-project-btn"
-          >
-            <Plus className="w-4 h-4" strokeWidth={1.5} />
-            New project
-          </Link>
-        </div>
-
-        <DemoModeBanner className="mb-12" />
-
-        {/* Stat cards */}
-        <div className="grid sm:grid-cols-3 gap-6 mb-12">
-          {[
-            { label: "Active projects", value: projects.length, icon: Sparkles },
-            { label: "Completed reports", value: reports.length, icon: FileText },
-            { label: "Match accuracy", value: "Mock", icon: ArrowUpRight, sub: "Demo mode" },
-          ].map((s, i) => (
-            <div key={s.label} className="bg-white border border-black/5 rounded-2xl p-6 shadow-soft" data-testid={`stat-card-${i}`}>
-              <div className="flex items-start justify-between mb-6">
-                <span className="text-overline">{s.label}</span>
-                <s.icon className="w-5 h-5 text-neutral-400" strokeWidth={1.25} />
-              </div>
-              <div className="font-display text-4xl font-bold tracking-tight">{s.value}</div>
-              {s.sub && <div className="text-xs text-neutral-500 mt-1">{s.sub}</div>}
-            </div>
-          ))}
-        </div>
-
-        {/* Recent projects */}
-        <section className="mb-16">
-          <div className="flex items-baseline justify-between mb-6">
-            <h2 className="font-display text-2xl font-semibold">Recent projects</h2>
-          </div>
-
-          {renderProjectsSection()}
-        </section>
-
-        {/* Recent reports */}
-        <section>
-          <div className="flex items-baseline justify-between mb-6">
-            <h2 className="font-display text-2xl font-semibold">Recent reports</h2>
-          </div>
-          {reports.length === 0 ? (
-            <div className="bg-white border border-dashed border-black/10 rounded-2xl p-8 text-center text-sm text-neutral-500" data-testid="empty-reports">
-              Reports appear here after you complete an analysis.
-            </div>
-          ) : (
-            <div className="bg-white border border-black/5 rounded-2xl divide-y divide-black/5 shadow-soft">
-              {reports.map((r) => (
-                <Link
-                  key={r.id}
-                  to={`/projects/${r.project_id}/report`}
-                  className="flex items-center justify-between gap-4 p-5 hover:bg-[#F3F2EE]/40 transition-colors"
-                  data-testid={`report-row-${r.id}`}
-                >
-                  <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 rounded-lg bg-[#F3F2EE] grid place-items-center">
-                      <FileText className="w-5 h-5 text-neutral-700" strokeWidth={1.25} />
-                    </div>
-                    <div>
-                      <div className="font-medium text-sm">{r.project_name}</div>
-                      <div className="text-xs text-neutral-500">{r.client_name || "—"} · {new Date(r.created_at).toLocaleDateString()}</div>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <div className="text-right hidden sm:block">
-                      <div className="text-xs text-neutral-500">Top match</div>
-                      <div className="font-display font-semibold">{Math.round((r.top_score || 0) * 100)}%</div>
-                    </div>
-                    <ArrowUpRight className="w-4 h-4 text-neutral-400" strokeWidth={1.5} />
-                  </div>
-                </Link>
-              ))}
+          {hasProjects && (
+            <div className="flex items-center gap-2 self-start">
+              <button
+                type="button"
+                onClick={openDemo}
+                className="inline-flex items-center gap-2 bg-white text-charcoal border border-stone-border hover:border-charcoal rounded-full px-4 py-2.5 text-sm font-medium transition-colors"
+                data-testid="dashboard-demo-btn"
+              >
+                <PlayCircle className="w-4 h-4" strokeWidth={1.75} />
+                Explore Demo
+              </button>
+              <button
+                type="button"
+                onClick={openCreate}
+                className="inline-flex items-center gap-2 bg-charcoal text-paper hover:bg-charcoal/85 rounded-full px-6 py-2.5 font-medium transition-colors"
+                data-testid="new-project-btn"
+              >
+                <Plus className="w-4 h-4" strokeWidth={1.5} />
+                New project
+              </button>
             </div>
           )}
-        </section>
+        </div>
+
+        {/* Empty state welcome panel */}
+        {!loading && !hasProjects && (
+          <div className="mb-12">
+            <WelcomePanel onDemo={openDemo} onCreate={openCreate} />
+          </div>
+        )}
+
+        {hasProjects && (
+          <>
+            {/* Stat cards */}
+            <div className="grid sm:grid-cols-3 gap-6 mb-12">
+              {[
+                { label: "Active projects", value: projects.length, icon: Sparkles },
+                { label: "Completed reports", value: reports.length, icon: FileText },
+                { label: "Sourcing region", value: user?.preferred_region || "IN", icon: ArrowUpRight, sub: "India-first sourcing" },
+              ].map((s, i) => (
+                <div key={s.label} className="bg-white border border-stone-border-soft rounded-2xl p-6 shadow-soft" data-testid={`stat-card-${i}`}>
+                  <div className="flex items-start justify-between mb-6">
+                    <span className="text-overline">{s.label}</span>
+                    <s.icon className="w-5 h-5 text-warm-grey" strokeWidth={1.25} />
+                  </div>
+                  <div className="font-display text-4xl font-bold tracking-tight text-charcoal">{s.value}</div>
+                  {s.sub && <div className="text-xs text-warm-grey mt-1">{s.sub}</div>}
+                </div>
+              ))}
+            </div>
+
+            {/* Recent projects */}
+            <section className="mb-16">
+              <div className="flex items-baseline justify-between mb-6">
+                <h2 className="font-display text-2xl font-semibold text-charcoal">Recent projects</h2>
+              </div>
+              {renderProjectsSection()}
+            </section>
+          </>
+        )}
+
+        {/* Recent reports */}
+        {hasProjects && (
+          <section>
+            <div className="flex items-baseline justify-between mb-6">
+              <h2 className="font-display text-2xl font-semibold text-charcoal">Recent reports</h2>
+            </div>
+            {reports.length === 0 ? (
+              <div className="bg-white border border-dashed border-stone-border rounded-2xl p-8 text-center text-sm text-warm-grey" data-testid="empty-reports">
+                Reports appear here after you complete an analysis.
+              </div>
+            ) : (
+              <div className="bg-white border border-stone-border-soft rounded-2xl divide-y divide-stone-border-soft shadow-soft">
+                {reports.map((r) => (
+                  <Link
+                    key={r.id}
+                    to={`/projects/${r.project_id}/report`}
+                    className="flex items-center justify-between gap-4 p-5 hover:bg-stone-panel/60 transition-colors"
+                    data-testid={`report-row-${r.id}`}
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className="w-10 h-10 rounded-lg bg-stone-panel grid place-items-center">
+                        <FileText className="w-5 h-5 text-charcoal" strokeWidth={1.25} />
+                      </div>
+                      <div>
+                        <div className="font-medium text-sm text-charcoal">{r.project_name}</div>
+                        <div className="text-xs text-warm-grey">{r.client_name || "—"} · {new Date(r.created_at).toLocaleDateString()}</div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <div className="text-right hidden sm:block">
+                        <div className="text-xs text-warm-grey">Top match</div>
+                        <div className="font-display font-semibold text-charcoal">{Math.round((r.top_score || 0) * 100)}%</div>
+                      </div>
+                      <ArrowUpRight className="w-4 h-4 text-warm-grey" strokeWidth={1.5} />
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
       </main>
     </div>
   );

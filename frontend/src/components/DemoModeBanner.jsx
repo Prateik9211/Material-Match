@@ -31,7 +31,7 @@ export default function DemoModeBanner({ className = "" }) {
   if (analysisOn && !matchOn) {
     return (
       <div
-        className={`inline-flex items-center gap-2 bg-[#F3F2EE] border border-black/5 text-neutral-700 rounded-full px-3.5 py-1.5 ${className}`}
+        className={`inline-flex items-center gap-2 bg-[#F5F1EC] border border-black/5 text-neutral-700 rounded-full px-3.5 py-1.5 ${className}`}
         data-testid="demo-mode-banner"
         data-mode="real-analysis"
       >
@@ -48,7 +48,7 @@ export default function DemoModeBanner({ className = "" }) {
   if (!analysisOn && matchOn) {
     return (
       <div
-        className={`inline-flex items-center gap-2 bg-[#F3F2EE] border border-black/5 text-neutral-700 rounded-full px-3.5 py-1.5 ${className}`}
+        className={`inline-flex items-center gap-2 bg-[#F5F1EC] border border-black/5 text-neutral-700 rounded-full px-3.5 py-1.5 ${className}`}
         data-testid="demo-mode-banner"
         data-mode="real-match"
       >

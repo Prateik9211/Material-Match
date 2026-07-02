@@ -55,13 +55,13 @@ export default function PublicRoom() {
   if (loading) {
     return (
       <div className="min-h-screen grid place-items-center text-sm text-neutral-500" data-testid="public-loading">
-        Loading presentation…
+        Preparing your design story…
       </div>
     );
   }
   if (error || !room) {
     return (
-      <div className="min-h-screen grid place-items-center bg-[#F9F9F8] p-6" data-testid="public-error">
+      <div className="min-h-screen grid place-items-center bg-[#FAF8F5] p-6" data-testid="public-error">
         <div className="text-center max-w-md">
           <div className="text-overline mb-2">Presentation unavailable</div>
           <h1 className="font-display text-3xl font-semibold mb-3">This link isn&rsquo;t active.</h1>
@@ -74,7 +74,7 @@ export default function PublicRoom() {
   }
 
   return (
-    <div className={printMode ? "bg-white" : "min-h-screen bg-[#F9F9F8]"} data-testid="public-room-page">
+    <div className={printMode ? "bg-white" : "min-h-screen bg-[#FAF8F5]"} data-testid="public-room-page">
       {!printMode && (
         <div className="sticky top-0 z-40 bg-white/90 backdrop-blur border-b border-black/5">
           <div className="max-w-5xl mx-auto px-6 py-3 flex items-center justify-between">

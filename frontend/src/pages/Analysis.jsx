@@ -164,7 +164,7 @@ export default function Analysis() {
   const hasAnalysis = rows.length > 0;
 
   return (
-    <div className="min-h-screen bg-[#F9F9F8]" data-testid="analysis-page">
+    <div className="min-h-screen bg-[#FAF8F5]" data-testid="analysis-page">
       <Header />
       <main className="max-w-7xl mx-auto px-6 py-12">
         <div className="flex items-center justify-between mb-8 flex-wrap gap-4">
@@ -196,7 +196,7 @@ export default function Analysis() {
             {/* Reference image hero */}
             <div className="bg-white border border-black/5 rounded-2xl shadow-soft overflow-hidden" data-testid="reference-card">
               <div className="grid sm:grid-cols-12 gap-0">
-                <div className="sm:col-span-4 lg:col-span-3 bg-[#F3F2EE] aspect-square sm:aspect-auto relative">
+                <div className="sm:col-span-4 lg:col-span-3 bg-[#F5F1EC] aspect-square sm:aspect-auto relative">
                   {refImg && !imgError ? (
                     <img src={refImg} alt="Reference" className="absolute inset-0 w-full h-full object-cover" onError={() => setImgError(true)} />
                   ) : (
@@ -223,9 +223,9 @@ export default function Analysis() {
                       className="inline-flex items-center justify-center gap-2 bg-black text-white hover:bg-black/80 rounded-full px-6 py-3 text-sm font-medium transition-colors disabled:opacity-60"
                       data-testid="analyse-materials-btn">
                       {hasAnalysis ? (
-                        <><RefreshCw className={`w-4 h-4 ${busy ? "animate-spin" : ""}`} strokeWidth={1.5} /> {busy ? "Regenerating…" : "Regenerate specification"}</>
+                        <><RefreshCw className={`w-4 h-4 ${busy ? "animate-spin" : ""}`} strokeWidth={1.5} /> {busy ? "Reading finishes and specification zones…" : "Regenerate specification"}</>
                       ) : (
-                        <><Sparkles className={`w-4 h-4 ${busy ? "animate-pulse" : ""}`} strokeWidth={1.5} /> {busy ? "Analysing…" : "Generate specification"}</>
+                        <><Sparkles className={`w-4 h-4 ${busy ? "animate-pulse" : ""}`} strokeWidth={1.5} /> {busy ? "Reading finishes and specification zones…" : "Generate specification"}</>
                       )}
                     </button>
                     <Link
@@ -265,7 +265,7 @@ export default function Analysis() {
                   </div>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
-                      <thead className="bg-[#F3F2EE]/60">
+                      <thead className="bg-[#F5F1EC]/60">
                         <tr className="text-left">
                           <th className="w-8 px-2 py-3"></th>
                           <th className="px-3 py-3 text-overline font-semibold">Zone / Surface</th>
@@ -284,7 +284,7 @@ export default function Analysis() {
                           const toggle = () => setExpandedRow(expanded ? null : i);
                           return (
                             <React.Fragment key={`row-${r.zone}-${i}`}>
-                              <tr className="hover:bg-[#F3F2EE]/30 transition-colors cursor-pointer" data-testid={`analysis-row-${i}`} onClick={toggle}>
+                              <tr className="hover:bg-[#F5F1EC]/30 transition-colors cursor-pointer" data-testid={`analysis-row-${i}`} onClick={toggle}>
                                 <td className="px-2 py-4 text-neutral-400">
                                   {expanded ? <ChevronDown className="w-4 h-4" strokeWidth={1.5} /> : <ChevronRight className="w-4 h-4" strokeWidth={1.5} />}
                                 </td>

@@ -90,7 +90,7 @@ export default function Match() {
       fd.append("manual_prompt", prompt || "");
       [...pdfFiles, ...imgFiles].forEach((f) => fd.append("catalogue", f));
 
-      setProgressStep("Running match engine…");
+      setProgressStep("Scanning catalogue pages…");
       const { data } = await api.post(`/projects/${id}/match`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
       });
@@ -108,7 +108,7 @@ export default function Match() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#F9F9F8]" data-testid="match-page">
+      <div className="min-h-screen bg-[#FAF8F5]" data-testid="match-page">
         <Header />
         <main className="max-w-7xl mx-auto px-6 py-12">
           <div className="grid lg:grid-cols-12 gap-8">
@@ -122,7 +122,7 @@ export default function Match() {
 
   if (!zone || !selected) {
     return (
-      <div className="min-h-screen bg-[#F9F9F8]" data-testid="match-page">
+      <div className="min-h-screen bg-[#FAF8F5]" data-testid="match-page">
         <Header />
         <main className="max-w-3xl mx-auto px-6 py-12">
           <Link to={`/projects/${id}/analysis`} className="inline-flex items-center gap-2 text-sm text-neutral-600 hover:text-black mb-8" data-testid="back-to-analysis">
@@ -142,7 +142,7 @@ export default function Match() {
   }
 
   return (
-    <div className="min-h-screen bg-[#F9F9F8]" data-testid="match-page">
+    <div className="min-h-screen bg-[#FAF8F5]" data-testid="match-page">
       <Header />
       <main className="max-w-7xl mx-auto px-6 py-12">
         <Link to={`/projects/${id}/analysis`} className="inline-flex items-center gap-2 text-sm text-neutral-600 hover:text-black mb-6" data-testid="back-to-analysis">

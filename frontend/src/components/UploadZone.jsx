@@ -47,7 +47,7 @@ export default function UploadZone({
         onDrop={handleDrop}
         onClick={() => inputRef.current?.click()}
         className={`cursor-pointer border-2 border-dashed rounded-2xl flex flex-col items-center justify-center p-10 min-h-[200px] transition-all ${
-          dragging ? "border-black bg-[#F3F2EE]" : "border-black/10 bg-[#F3F2EE]/40 hover:bg-[#F3F2EE]"
+          dragging ? "border-black bg-[#F5F1EC]" : "border-black/10 bg-[#F5F1EC]/40 hover:bg-[#F5F1EC]"
         }`}
         data-testid={testid}
       >

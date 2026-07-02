@@ -43,7 +43,7 @@ export default function Auth() {
   const overline = mode === "login" ? "Welcome back" : "Create account";
 
   return (
-    <div className="min-h-screen bg-[#F9F9F8] flex flex-col" data-testid="auth-page">
+    <div className="min-h-screen bg-[#FAF8F5] flex flex-col" data-testid="auth-page">
       <div className="px-6 py-6">
         <Link to="/" className="inline-flex items-center gap-2" data-testid="auth-back-home">
           <div className="w-6 h-6 rounded-md bg-black grid place-items-center">

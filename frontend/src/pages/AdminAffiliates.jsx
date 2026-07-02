@@ -352,7 +352,7 @@ export default function AdminAffiliates() {
   };
 
   return (
-    <div className="min-h-screen bg-[#F9F9F8]" data-testid="admin-affiliates-page">
+    <div className="min-h-screen bg-[#FAF8F5]" data-testid="admin-affiliates-page">
       <Header />
       <main className="max-w-7xl mx-auto px-6 py-12">
         <div className="flex items-center justify-between mb-6 flex-wrap gap-4">
@@ -395,7 +395,7 @@ export default function AdminAffiliates() {
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
-                <thead className="bg-[#F3F2EE]/60">
+                <thead className="bg-[#F5F1EC]/60">
                   <tr className="text-left">
                     <th className="px-4 py-3 text-overline font-semibold">Product</th>
                     <th className="px-4 py-3 text-overline font-semibold">Category</th>

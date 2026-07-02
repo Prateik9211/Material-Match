@@ -2775,6 +2775,190 @@ async def startup_event():
     except Exception:
         logger.exception("Affiliate seed failed")
 
+    # Sprint 4: seed the global read-only DEMO project. Every user (and even
+    # signed-out visitors) can view this via GET /api/demo/project. Idempotent.
+    try:
+        await _seed_demo_project()
+    except Exception:
+        logger.exception("Demo project seed failed")
+
+
+async def _seed_demo_project() -> None:
+    """Create/refresh the global read-only demo project + one demo room. This
+    is stored under a synthetic admin user with role='system-demo' so it never
+    surfaces in a real user's dashboard. Uses a fixed slug/id so
+    GET /api/demo/project can find it without an id in the URL."""
+    marker = {"is_demo": True, "demo_slug": "materialmatch-demo-warm-living"}
+    existing = await db.projects.find_one(marker)
+    now = datetime.now(timezone.utc).isoformat()
+    demo_ref_url = ("https://images.unsplash.com/photo-1600585154340-be6161a56a0c"
+                    "?w=1600&q=80&auto=format&fit=crop")
+    demo_ref_b64 = ""
+    try:
+        import urllib.request
+        req = urllib.request.Request(demo_ref_url, headers={"User-Agent": "materialmatch-demo"})
+        with urllib.request.urlopen(req, timeout=8) as r:  # noqa: S310
+            demo_ref_b64 = base64.b64encode(r.read()).decode("utf-8")
+    except Exception:
+        logger.warning("Demo reference image fetch failed — demo will have no image")
+
+    analysis_rows = [
+        {"zone": "Wall Feature", "material_family": "Wood", "material_type": "Warm Oak Slat Panel",
+         "color": "Honey oak", "texture": "Vertical slat panelling", "finish": "Oiled matte",
+         "design_style": "Warm modern", "keywords": ["oak slats", "vertical panelling", "warm wood"],
+         "confidence": 92, "procurement_difficulty": "Easy in India",
+         "indian_alternative": "Century Ply Sainik Oak veneer with slat overlay",
+         "brands_to_check": ["Century Ply", "Greenlam", "Merino"],
+         "vendor_type": "Panel supplier",
+         "sourcing_keywords": ["oak slat wall india", "wooden slat panel"]},
+        {"zone": "Flooring", "material_family": "Stone", "material_type": "Warm Limestone Tile",
+         "color": "Sand beige", "texture": "Fine grain, subtle veining", "finish": "Honed matte",
+         "design_style": "Calm minimal", "keywords": ["limestone", "beige floor", "matte stone"],
+         "confidence": 88, "procurement_difficulty": "Moderate",
+         "indian_alternative": "Kota beige or Dholpur beige with honed finish",
+         "brands_to_check": ["Kajaria", "Somany", "Nitco"], "vendor_type": "Tile showroom",
+         "sourcing_keywords": ["kota beige tile india", "honed limestone floor"]},
+        {"zone": "Sofa Upholstery", "material_family": "Textile", "material_type": "Bouclé Fabric",
+         "color": "Ivory cream", "texture": "Looped bouclé weave", "finish": "Soft matte",
+         "design_style": "Contemporary cozy", "keywords": ["boucle", "cream sofa", "textured weave"],
+         "confidence": 87, "procurement_difficulty": "Easy",
+         "indian_alternative": "D'Decor bouclé range or Fabindia linen-cotton weave",
+         "brands_to_check": ["D'Decor", "Fabindia", "Sarita Handa"], "vendor_type": "Fabric house",
+         "sourcing_keywords": ["boucle upholstery fabric india"]},
+        {"zone": "Ceiling", "material_family": "Paint", "material_type": "Warm White Emulsion",
+         "color": "Warm white with pink undertone", "texture": "Smooth", "finish": "Matte",
+         "design_style": "Warm minimal", "keywords": ["warm white paint", "matte ceiling"],
+         "confidence": 95, "procurement_difficulty": "Very easy",
+         "indian_alternative": "Asian Paints Royale Aspira 'Cotton White'",
+         "brands_to_check": ["Asian Paints", "Berger", "Nerolac"], "vendor_type": "Paint retailer",
+         "sourcing_keywords": ["asian paints cotton white", "warm white emulsion"]},
+    ]
+    products_list = [
+        {"id": "product_1", "product_name": "Brushed Brass Pendant Light",
+         "category": "lighting",
+         "description": "Warm brass pendant with fluted glass shade for layered ambient light.",
+         "style_keywords": ["modern", "minimalist", "warm"], "color_keywords": ["brass", "gold"],
+         "material_keywords": ["brass", "glass"], "finish_keywords": ["brushed"],
+         "estimated_price_inr": "₹5,499", "search_keywords": ["brass pendant light india"],
+         "confidence": 88},
+        {"id": "product_2", "product_name": "Bouclé Curved Accent Chair",
+         "category": "furniture",
+         "description": "Sculptural lounge chair in cream bouclé, on a stained walnut base.",
+         "style_keywords": ["contemporary", "curved", "cozy"], "color_keywords": ["cream"],
+         "material_keywords": ["boucle", "wood"], "finish_keywords": ["soft"],
+         "estimated_price_inr": "₹27,999", "search_keywords": ["boucle lounge chair india"],
+         "confidence": 85},
+        {"id": "product_3", "product_name": "Sand-tone Hand-Tufted Wool Rug",
+         "category": "textile-decor",
+         "description": "Neutral wool rug with loop-pile texture — anchors the seating area.",
+         "style_keywords": ["japandi", "neutral"], "color_keywords": ["sand", "ivory"],
+         "material_keywords": ["wool"], "finish_keywords": ["hand-tufted"],
+         "estimated_price_inr": "₹18,900", "search_keywords": ["wool area rug india"],
+         "confidence": 82},
+        {"id": "product_4", "product_name": "Terracotta Ceramic Vase Set",
+         "category": "decor",
+         "description": "Set of matte ceramic vases in warm earth tones — organic modern accent.",
+         "style_keywords": ["organic", "minimalist"], "color_keywords": ["beige", "terracotta"],
+         "material_keywords": ["ceramic"], "finish_keywords": ["matte"],
+         "estimated_price_inr": "₹2,199", "search_keywords": ["ceramic vase set india"],
+         "confidence": 78},
+    ]
+    # Enrich products with affiliate matches + fallback search URLs.
+    enriched_products = []
+    for p in products_list:
+        matched = await _match_product_to_affiliates(p)
+        pp = dict(p)
+        pp["matched_affiliate"] = matched
+        pp["search_urls"] = _build_search_urls(p)
+        enriched_products.append(pp)
+    match_results = {
+        "top_matches": [
+            {"filename": "warm-living-catalogue.pdf", "page_number": 3,
+             "match_percent": 94, "material_name": "White Oak Veneer Slats",
+             "explanation": "Same warm honey-oak tone, near-identical vertical slat rhythm and matte-oiled finish."},
+            {"filename": "warm-living-catalogue.pdf", "page_number": 7,
+             "match_percent": 88, "material_name": "Kota Beige Honed Limestone",
+             "explanation": "Matching sand-beige body with subtle veining and a low-sheen honed surface."},
+            {"filename": "warm-living-catalogue.pdf", "page_number": 12,
+             "match_percent": 84, "material_name": "Bouclé Cream Upholstery",
+             "explanation": "Same looped weave texture and warm ivory colour palette."},
+        ],
+        "generated_at": now,
+    }
+    demo_doc = {
+        **marker,
+        "name": "Warm Modern Living — Demo",
+        "client_name": "Bengaluru Residence · Sample",
+        "user_id": "system-demo",
+        "reference_image_b64": demo_ref_b64,
+        "status": "completed",
+        "preferred_region": "IN",
+        "mock_analysis": {
+            "summary": {
+                "overall_style": "Warm modern with layered natural materials",
+                "palette": ["Honey oak", "Sand beige", "Ivory", "Warm white"],
+                "dominant_materials": ["Warm oak slat panelling", "Honed limestone", "Bouclé upholstery"],
+                "confidence": 89,
+            },
+            "rows": analysis_rows,
+            "generated_at": now,
+            "version": "demo-v1",
+        },
+        "products_detected": {
+            "products": enriched_products,
+            "generated_at": now,
+            "region": "IN",
+            "version": "demo-v1",
+        },
+        "match_results": match_results,
+        "created_at": now,
+        "updated_at": now,
+    }
+    if existing:
+        await db.projects.update_one({"_id": existing["_id"]}, {"$set": demo_doc})
+        demo_project_id = str(existing["_id"])
+    else:
+        res = await db.projects.insert_one(demo_doc)
+        demo_project_id = str(res.inserted_id)
+        logger.info(f"Seeded demo project id={demo_project_id}")
+
+    # Also seed one demo room so /demo can showcase the concept presentation.
+    room_marker = {"project_id": demo_project_id, "is_demo_room": True}
+    existing_room = await db.rooms.find_one(room_marker)
+    room_doc = {
+        **room_marker,
+        "user_id": "system-demo",
+        "name": "Living Room",
+        "room_type": "living",
+        "order": 0,
+        "current_site_photos": [],
+        "moodboards": [],
+        "reference_images": [],
+        "concept_overview": (
+            "This living room is designed to feel calm, warm and considered. A restrained "
+            "palette of honey oak, sand-beige stone and ivory bouclé creates a quiet contrast "
+            "of textures. Layered lighting and a hand-tufted wool rug soften the composition, "
+            "while curated brass accents introduce a subtle premium note. Every specification "
+            "supports a client-ready look that is timeless, inviting and unmistakably Indian in "
+            "its sourcing story."
+        ),
+        "concept_overview_ai_draft": "",
+        "designer_notes": (
+            "Delivery in phases: shell + panelling first (4 weeks), then upholstery + rug "
+            "(2 weeks), then lighting + decor (1 week). Final styling on-site over a weekend."
+        ),
+        "pinned_material_row_ids": ["Wall Feature", "Flooring", "Sofa Upholstery", "Ceiling"],
+        "pinned_product_ids": ["product_1", "product_2", "product_3", "product_4"],
+        "share_slug": "materialmatch-demo",
+        "share_enabled": True,
+        "created_at": now,
+        "updated_at": now,
+    }
+    if existing_room:
+        await db.rooms.update_one({"_id": existing_room["_id"]}, {"$set": room_doc})
+    else:
+        await db.rooms.insert_one(room_doc)
+
 
 def _seed_affiliate_products() -> list:
     """Return a list of curated Indian affiliate products for initial demo.
@@ -3355,6 +3539,48 @@ async def public_room_image(slug: str, kind: str, img_id: str):
         if img.get("id") == img_id:
             return {"data_url": f"data:{img['mime']};base64,{img['b64']}"}
     raise HTTPException(status_code=404, detail="Image not found")
+
+
+# ============================================================================
+# Sprint 4: Public read-only DEMO project (no auth required)
+# ============================================================================
+def _sanitize_demo_project(doc: dict) -> dict:
+    """Strip internal DB fields from the demo project before returning it."""
+    if not doc:
+        return {}
+    out = {
+        "id": str(doc.get("_id", "")),
+        "name": doc.get("name"),
+        "client_name": doc.get("client_name"),
+        "status": doc.get("status"),
+        "is_demo": True,
+        "preferred_region": doc.get("preferred_region", "IN"),
+        "mock_analysis": doc.get("mock_analysis") or {},
+        "products_detected": doc.get("products_detected") or {},
+        "match_results": doc.get("match_results") or {},
+        "created_at": doc.get("created_at"),
+        "updated_at": doc.get("updated_at"),
+    }
+    return out
+
+
+@api_router.get("/demo/project")
+async def get_demo_project():
+    """Public: fetch the global read-only demo project. Includes analysis rows,
+    products (with affiliate matches), and match results. No auth required."""
+    doc = await db.projects.find_one({"is_demo": True, "demo_slug": "materialmatch-demo-warm-living"})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Demo project not seeded")
+    return _sanitize_demo_project(doc)
+
+
+@api_router.get("/demo/reference-image")
+async def get_demo_reference_image():
+    """Public: fetch the demo project's reference image as a data URL."""
+    doc = await db.projects.find_one({"is_demo": True, "demo_slug": "materialmatch-demo-warm-living"})
+    if not doc or not doc.get("reference_image_b64"):
+        raise HTTPException(status_code=404, detail="Demo reference not available")
+    return {"data_url": f"data:image/jpeg;base64,{doc['reference_image_b64']}"}
 
 
 app.include_router(api_router)
