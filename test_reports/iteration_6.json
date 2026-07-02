@@ -1,0 +1,46 @@
+{
+  "summary": "Sprint 3 (Concept Presentation Workspace) end-to-end verified. Backend: 12/12 unit tests + 17/18 new integration tests (test_sprint3_rooms_integration.py) — Room CRUD, ownership isolation, image upload with all validation rules, AI overview generation (uses fallback mock when EMERGENT_LLM_KEY not set for products; live LLM works when ENABLE_REAL_PRODUCTS is on — verified `concept_overview_ai_draft` never overwrites the designer's `concept_overview`), share toggle, public read + public image with no auth, security (no user_id / password_hash / ai_draft leak in public payload). Frontend: /projects/:id/concept fully functional — open-concept-btn on Analysis routes here, add-room-btn opens add-room-modal, room creates & becomes active, all 7 editor sections render in the exact story order (current→moodboards→references→overview→specs→products→notes), save-room-btn persists edits, generate-overview-btn triggers backend call, share modal opens and produces a working share URL. Public share page /share/rooms/:slug renders room-presentation with story-overview when only overview has content; empty sections correctly auto-hide (spec compliant). Print view at ?print=1 renders room-presentation. Cleanup: all TEST_ rooms deleted.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "DELETE /api/rooms/{id}/images/{kind}/{img_id}",
+        "issue": "Double-DELETE returns 200 instead of 404 for a not-found image. Root cause: server.py L3170-3180 uses `$pull` alongside `$set: updated_at` in same update op. Since $set always bumps updated_at, `modified_count` is always 1 even when $pull matched no image, so the `modified_count == 0 → 404` check never triggers. Fix: check `pre.count` vs `post.count` or use find_one_and_update and inspect the array."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_rooms.py",
+    "/app/backend/tests/test_sprint3_rooms_integration.py",
+    "/app/test_reports/pytest/sprint3_units.xml",
+    "/app/test_reports/pytest/sprint3_integration.xml"
+  ],
+  "action_items": [
+    "Fix double-DELETE image endpoint so it returns 404 when the image doesn't exist (issue detailed above). Very minor — everything else on Sprint 3 is green."
+  ],
+  "critical_code_review_comments": [
+    "server.py has grown to 3357 lines. Sprint 3 added ~430 more (rooms + share + public + generate-overview). The extraction recommendation from iteration_5 still stands — please extract rooms into /app/backend/rooms.py (models, helpers, router) before Sprint 4 to keep this file navigable.",
+    "generate_overview gates on `EMERGENT_LLM_KEY and ENABLE_REAL_PRODUCTS` — the AND with ENABLE_REAL_PRODUCTS is surprising. If a designer flips off ENABLE_REAL_PRODUCTS globally to disable Sprint 2 catalogue calls, they also silently lose real AI overview (fall back to boilerplate). Consider a separate ENABLE_REAL_OVERVIEW flag or just gate on EMERGENT_LLM_KEY alone.",
+    "Public endpoint /api/public/rooms/{slug} does NOT validate `slug` shape — Mongo query is safe but a malicious client could hammer the endpoint with random slugs for enumeration. Consider adding a light regex `^[a-z0-9]{6,14}$` and returning 400 on malformed slug (still 404 on unknown).",
+    "In PATCH /rooms/{id}, `updates['concept_overview'] = payload.concept_overview[:4000]` silently truncates — no error is surfaced to UI. For designer trust, prefer 400 on >4000 chars with an explicit message, or expose the effective length back in the response.",
+    "_make_slug uses secrets.token_urlsafe(9) then strips `_-` and lowercases; strip could occasionally shorten a slug below 6 chars (test bound is 6-14 but in edge cases you can get less). Consider looping until len >= 8 to guarantee entropy."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sprint3_rooms_integration.py (new — 18 integration tests, 17 pass, 1 exposes double-delete bug)"
+  ],
+  "success_rate": {
+    "backend": "97% (29/30 tests — 12 unit + 17/18 integration; 1 minor double-delete bug)",
+    "frontend": "100% (all Sprint 3 user flows: open concept, add room, edit 7 sections, save, generate draft, share toggle, public presentation, print view — all working)"
+  },
+  "test_credentials": "Admin: admin@materialmatch.ai / MaterialAdmin2026! (has 7 projects; used '6a15f27181baf7c97e921558' SHA-Smoke which has mock_analysis). Non-admin: designer@test.com / Designer2026! (auto-created via /api/auth/register if missing).",
+  "seed_data_creation": "Created 1 UI test room during Playwright pass and cleaned it up. Integration tests create/delete their own TEST_-prefixed rooms.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run: `cd /app/backend && PYTHONPATH=/app/backend pytest tests/test_rooms.py tests/test_sprint3_rooms_integration.py -v` — expect 29/30 pass. The failing test is test_get_and_delete_image (double-delete). Test-ids in play for future runs: open-concept-btn (Analysis), add-room-btn / add-room-modal (workspace), editor-section-{current|moodboards|references|overview|specs|products|notes}, generate-overview-btn, overview-textarea, save-room-btn, pin-spec-{id}, pin-product-{id}, share-btn / share-modal / share-toggle / share-url-input / share-copy-btn / share-open-view / share-open-print (last five appear only AFTER toggle is ON). Public page test-ids: room-presentation, story-{current|moodboards|references|overview|specs|products|notes} — empty sections are auto-hidden by design. Admin dashboard currently only surfaces 'projects/new' as clickable link — real project cards may not be linked; go direct via /projects/{id}/analysis if you need a specific project.",
+  "rca of the issue": "Double-DELETE image bug root cause is a single-write mongo op combining $pull and $set. When $pull is a no-op, $set on updated_at still increments modified_count, defeating the 404 guard. Reproduction: (1) upload image to a room, (2) delete it — 200, (3) delete the same img_id again — expected 404, actual 200. Mitigation: split into a read-then-write (verify the image exists first via find_one and array projection, then run the $pull-only update); or run $pull without touching updated_at and add a separate updated_at write only when modified_count>0."
+}

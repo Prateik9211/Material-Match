@@ -10,6 +10,8 @@ import NewProject from "@/pages/NewProject";
 import Analysis from "@/pages/Analysis";
 import Match from "@/pages/Match";
 import AdminAffiliates from "@/pages/AdminAffiliates";
+import ConceptWorkspace from "@/pages/ConceptWorkspace";
+import PublicRoom from "@/pages/PublicRoom";
 
 function App() {
   return (
@@ -59,6 +61,15 @@ function App() {
               </ProtectedRoute>
             }
           />
+          <Route
+            path="/projects/:id/concept"
+            element={
+              <ProtectedRoute>
+                <ConceptWorkspace />
+              </ProtectedRoute>
+            }
+          />
+          <Route path="/share/rooms/:slug" element={<PublicRoom />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

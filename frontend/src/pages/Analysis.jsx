@@ -228,6 +228,14 @@ export default function Analysis() {
                         <><Sparkles className={`w-4 h-4 ${busy ? "animate-pulse" : ""}`} strokeWidth={1.5} /> {busy ? "Analysing…" : "Generate specification"}</>
                       )}
                     </button>
+                    <Link
+                      to={`/projects/${id}/concept`}
+                      className="inline-flex items-center justify-center gap-2 border border-neutral-200 hover:border-black text-neutral-800 rounded-full px-5 py-3 text-sm font-medium transition-colors"
+                      data-testid="open-concept-btn"
+                    >
+                      <Sparkles className="w-4 h-4" strokeWidth={1.5} />
+                      Concept Presentation
+                    </Link>
                     <span className="text-xs text-neutral-400" data-testid="analysis-mode-label">
                       {realAnalysisActive ? "Live specification" : "Sample specification"}
                     </span>

@@ -2738,6 +2738,10 @@ async def startup_event():
         await db.usage_counters.create_index("created_at", expireAfterSeconds=32 * 86400)
         await db.affiliate_products.create_index("product_category")
         await db.affiliate_products.create_index("product_name")
+        # Sprint 3 rooms
+        await db.rooms.create_index([("project_id", 1), ("order", 1)])
+        await db.rooms.create_index([("user_id", 1)])
+        await db.rooms.create_index("share_slug", unique=True, sparse=True)
     except Exception:
         logger.exception("Index creation failed")
 
@@ -2921,6 +2925,432 @@ async def shutdown_event():
 
 
 # Mount the router
+# ============================================================================
+# Sprint 3: Concept Presentation Workspace (rooms nested in project)
+# ============================================================================
+# A "room" is an editable presentation section under a project. It carries
+# three image galleries (current site, moodboard, reference), an editable
+# concept overview (AI-drafted, designer-edited), pinned material rows +
+# products from the parent project, and freeform designer notes. Rooms can
+# be shared publicly via a slug for client presentation and printing.
+ROOM_TYPES = [
+    "living", "bedroom", "kitchen", "bath", "dining",
+    "office", "kids", "outdoor", "hallway", "custom",
+]
+
+IMAGE_KINDS = ["current_site", "moodboard", "reference"]
+
+MAX_IMAGES_PER_KIND = 12
+MAX_ROOM_IMAGE_BYTES = 6 * 1024 * 1024  # 6MB per image
+
+LLM_OVERVIEW_TIMEOUT_S = int(os.environ.get("LLM_OVERVIEW_TIMEOUT_S", "45"))
+
+
+class RoomCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    room_type: str = "custom"
+
+
+class RoomUpdate(BaseModel):
+    name: Optional[str] = None
+    room_type: Optional[str] = None
+    concept_overview: Optional[str] = None
+    designer_notes: Optional[str] = None
+    order: Optional[int] = None
+    pinned_material_row_ids: Optional[List[str]] = None
+    pinned_product_ids: Optional[List[str]] = None
+
+
+def _room_owner_query(room_id: str, user_id: str) -> dict:
+    return {"_id": ObjectId(room_id), "user_id": user_id}
+
+
+def _room_public_projection() -> dict:
+    """Fields we want on the read-only public share view."""
+    return {
+        "name": 1, "room_type": 1, "order": 1,
+        "current_site_photos": 1, "moodboards": 1, "reference_images": 1,
+        "concept_overview": 1, "designer_notes": 1,
+        "pinned_material_row_ids": 1, "pinned_product_ids": 1,
+        "share_slug": 1, "share_enabled": 1,
+        "project_id": 1, "user_id": 1,
+        "updated_at": 1,
+    }
+
+
+def _room_out(doc: dict) -> dict:
+    """Serialize a room doc — drop image bytes to keep response small."""
+    if not doc:
+        return doc
+    d = dict(doc)
+    d["id"] = str(d.pop("_id", ""))
+    # Convert image arrays to lightweight metadata (id + mime); bytes fetched separately.
+    for kind in IMAGE_KINDS:
+        key = _kind_field(kind)
+        imgs = d.get(key) or []
+        d[key] = [{"id": img.get("id"), "mime": img.get("mime")} for img in imgs]
+    return d
+
+
+def _kind_field(kind: str) -> str:
+    return {
+        "current_site": "current_site_photos",
+        "moodboard": "moodboards",
+        "reference": "reference_images",
+    }[kind]
+
+
+def _make_slug() -> str:
+    return secrets.token_urlsafe(9).replace("_", "").replace("-", "")[:12].lower()
+
+
+@api_router.post("/projects/{project_id}/rooms")
+async def create_room(project_id: str, payload: RoomCreate,
+                      user: dict = Depends(get_current_user)):
+    # Verify project ownership
+    proj = await db.projects.find_one({"_id": ObjectId(project_id), "user_id": user["id"]})
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if payload.room_type not in ROOM_TYPES:
+        raise HTTPException(status_code=400, detail=f"room_type must be one of {ROOM_TYPES}")
+    now = datetime.now(timezone.utc).isoformat()
+    # Determine order = current count
+    order = await db.rooms.count_documents({"project_id": project_id})
+    doc = {
+        "project_id": project_id,
+        "user_id": user["id"],
+        "name": payload.name.strip(),
+        "room_type": payload.room_type,
+        "order": order,
+        "current_site_photos": [],
+        "moodboards": [],
+        "reference_images": [],
+        "concept_overview": "",
+        "concept_overview_ai_draft": "",
+        "designer_notes": "",
+        "pinned_material_row_ids": [],
+        "pinned_product_ids": [],
+        "share_slug": _make_slug(),
+        "share_enabled": False,
+        "created_at": now,
+        "updated_at": now,
+    }
+    res = await db.rooms.insert_one(doc)
+    doc["_id"] = res.inserted_id
+    return _room_out(doc)
+
+
+@api_router.get("/projects/{project_id}/rooms")
+async def list_rooms(project_id: str, user: dict = Depends(get_current_user)):
+    proj = await db.projects.find_one({"_id": ObjectId(project_id), "user_id": user["id"]})
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    cursor = db.rooms.find({"project_id": project_id, "user_id": user["id"]}).sort("order", 1)
+    return [_room_out(d) async for d in cursor]
+
+
+@api_router.get("/rooms/{room_id}")
+async def get_room(room_id: str, user: dict = Depends(get_current_user)):
+    try:
+        doc = await db.rooms.find_one(_room_owner_query(room_id, user["id"]))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid room id")
+    if not doc:
+        raise HTTPException(status_code=404, detail="Room not found")
+    return _room_out(doc)
+
+
+@api_router.patch("/rooms/{room_id}")
+async def update_room(room_id: str, payload: RoomUpdate,
+                      user: dict = Depends(get_current_user)):
+    updates: dict = {}
+    if payload.name is not None:
+        updates["name"] = payload.name.strip()[:80]
+    if payload.room_type is not None:
+        if payload.room_type not in ROOM_TYPES:
+            raise HTTPException(status_code=400, detail="Invalid room_type")
+        updates["room_type"] = payload.room_type
+    if payload.concept_overview is not None:
+        updates["concept_overview"] = payload.concept_overview[:4000]
+    if payload.designer_notes is not None:
+        updates["designer_notes"] = payload.designer_notes[:4000]
+    if payload.order is not None:
+        updates["order"] = int(payload.order)
+    if payload.pinned_material_row_ids is not None:
+        updates["pinned_material_row_ids"] = [str(x) for x in payload.pinned_material_row_ids][:32]
+    if payload.pinned_product_ids is not None:
+        updates["pinned_product_ids"] = [str(x) for x in payload.pinned_product_ids][:32]
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        res = await db.rooms.find_one_and_update(
+            _room_owner_query(room_id, user["id"]),
+            {"$set": updates},
+            return_document=True,
+        )
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid room id")
+    if not res:
+        raise HTTPException(status_code=404, detail="Room not found")
+    return _room_out(res)
+
+
+@api_router.delete("/rooms/{room_id}")
+async def delete_room(room_id: str, user: dict = Depends(get_current_user)):
+    try:
+        res = await db.rooms.delete_one(_room_owner_query(room_id, user["id"]))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid room id")
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Room not found")
+    return {"ok": True}
+
+
+@api_router.post("/rooms/{room_id}/images")
+async def upload_room_image(room_id: str, kind: str,
+                            file: UploadFile = File(...),
+                            user: dict = Depends(get_current_user)):
+    if kind not in IMAGE_KINDS:
+        raise HTTPException(status_code=400, detail=f"kind must be one of {IMAGE_KINDS}")
+    try:
+        room = await db.rooms.find_one(_room_owner_query(room_id, user["id"]))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid room id")
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    field = _kind_field(kind)
+    if len(room.get(field, [])) >= MAX_IMAGES_PER_KIND:
+        raise HTTPException(status_code=400, detail=f"Max {MAX_IMAGES_PER_KIND} images per kind")
+    content = await file.read()
+    if len(content) > MAX_ROOM_IMAGE_BYTES:
+        raise HTTPException(status_code=400, detail="Image too large (max 6MB)")
+    mime = file.content_type or "image/jpeg"
+    if mime not in ("image/jpeg", "image/png", "image/webp"):
+        raise HTTPException(status_code=400, detail="Unsupported image format")
+    img_id = secrets.token_hex(8)
+    img_doc = {
+        "id": img_id,
+        "mime": mime,
+        "b64": base64.b64encode(content).decode("utf-8"),
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.rooms.update_one(
+        _room_owner_query(room_id, user["id"]),
+        {"$push": {field: img_doc},
+         "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"ok": True, "id": img_id, "mime": mime, "kind": kind}
+
+
+@api_router.get("/rooms/{room_id}/images/{kind}/{img_id}")
+async def get_room_image(room_id: str, kind: str, img_id: str,
+                         user: dict = Depends(get_current_user)):
+    if kind not in IMAGE_KINDS:
+        raise HTTPException(status_code=400, detail="Invalid kind")
+    try:
+        room = await db.rooms.find_one(_room_owner_query(room_id, user["id"]))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid room id")
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    field = _kind_field(kind)
+    for img in room.get(field, []):
+        if img.get("id") == img_id:
+            return {"data_url": f"data:{img['mime']};base64,{img['b64']}"}
+    raise HTTPException(status_code=404, detail="Image not found")
+
+
+@api_router.delete("/rooms/{room_id}/images/{kind}/{img_id}")
+async def delete_room_image(room_id: str, kind: str, img_id: str,
+                            user: dict = Depends(get_current_user)):
+    if kind not in IMAGE_KINDS:
+        raise HTTPException(status_code=400, detail="Invalid kind")
+    field = _kind_field(kind)
+    try:
+        res = await db.rooms.update_one(
+            _room_owner_query(room_id, user["id"]),
+            {"$pull": {field: {"id": img_id}},
+             "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid room id")
+    if res.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Image not found")
+    return {"ok": True}
+
+
+@api_router.post("/rooms/{room_id}/generate-overview")
+async def generate_overview(room_id: str, user: dict = Depends(get_current_user)):
+    """Ask the LLM to draft a client-facing concept overview paragraph based
+    on pinned materials/products and designer notes. Returns the draft — the
+    designer edits and PATCHes concept_overview to persist."""
+    try:
+        room = await db.rooms.find_one(_room_owner_query(room_id, user["id"]))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid room id")
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    proj = await db.projects.find_one({"_id": ObjectId(room["project_id"]), "user_id": user["id"]})
+    if not proj:
+        raise HTTPException(status_code=404, detail="Parent project missing")
+
+    # Assemble context from pinned items.
+    all_rows = ((proj.get("mock_analysis") or {}).get("rows")) or []
+    pinned_rows = [r for r in all_rows
+                   if str(r.get("id") or r.get("row_id") or r.get("zone") or "") in set(room.get("pinned_material_row_ids", []))]
+    all_products = ((proj.get("products_detected") or {}).get("products")) or []
+    pinned_products = [p for p in all_products
+                       if str(p.get("id") or "") in set(room.get("pinned_product_ids", []))]
+
+    ctx_lines = [f"Room: {room.get('name')} ({room.get('room_type')})"]
+    if pinned_rows:
+        ctx_lines.append("Pinned material specifications:")
+        for r in pinned_rows[:10]:
+            ctx_lines.append(f"  - {r.get('surface') or r.get('zone') or 'surface'}: "
+                             f"{r.get('material_name') or r.get('material') or ''} "
+                             f"({r.get('finish') or ''}), {r.get('color') or ''}")
+    if pinned_products:
+        ctx_lines.append("Pinned products:")
+        for p in pinned_products[:10]:
+            ctx_lines.append(f"  - {p.get('product_name')} ({p.get('category')}) — "
+                             f"{p.get('estimated_price_inr') or ''}")
+    if room.get("designer_notes"):
+        ctx_lines.append(f"Designer notes: {room['designer_notes'][:500]}")
+
+    ctx = "\n".join(ctx_lines)
+
+    system = (
+        "You are an interior designer's writing assistant. You DRAFT a warm, "
+        "client-facing 'concept overview' paragraph (3–5 sentences, 60–120 words) "
+        "describing the design intent for one room. Speak in a confident, human "
+        "voice — no bullet lists, no headings, no jargon. The DESIGNER will edit "
+        "your draft, so leave room for their voice."
+    )
+    prompt = (
+        "Draft a concept overview paragraph for this room based on the pinned "
+        "materials, products and designer notes below. Focus on mood, palette, "
+        "texture and how the space will feel. Do NOT list SKUs or prices. Return "
+        "ONLY the paragraph text — no markdown, no preamble.\n\n" + ctx
+    )
+
+    if not (EMERGENT_LLM_KEY and ENABLE_REAL_PRODUCTS):
+        # Deterministic mock fallback so the flow is demoable without the LLM.
+        draft = (
+            f"{room.get('name', 'This room')} is designed to feel calm, considered "
+            "and warmly modern. A restrained palette anchors the space, layering "
+            "natural materials with soft, tactile finishes for quiet contrast. "
+            "Curated lighting and sculptural accents introduce a sense of intimacy "
+            "and rhythm, while every specification supports a client-ready look "
+            "that is both timeless and inviting."
+        )
+    else:
+        try:
+            import asyncio
+            chat = LlmChat(
+                api_key=EMERGENT_LLM_KEY,
+                session_id=f"overview-{room_id}-{secrets.token_hex(4)}",
+                system_message=system,
+            ).with_model("openai", LLM_MODEL_PRODUCTS)
+            raw = await asyncio.wait_for(chat.send_message(UserMessage(text=prompt)),
+                                         timeout=LLM_OVERVIEW_TIMEOUT_S)
+            draft = (raw or "").strip().strip("`").strip()
+            # Strip any accidental JSON/markdown wrapping.
+            if draft.startswith("{") or draft.startswith("["):
+                draft = ""
+            draft = draft[:1500]
+        except Exception:
+            logger.exception(f"overview LLM failed room={room_id}")
+            raise HTTPException(status_code=502, detail="AI service failed to generate a draft. Please try again.")
+
+    await db.rooms.update_one(
+        _room_owner_query(room_id, user["id"]),
+        {"$set": {"concept_overview_ai_draft": draft,
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"draft": draft}
+
+
+class SharePayload(BaseModel):
+    enabled: bool
+
+
+@api_router.post("/rooms/{room_id}/share")
+async def toggle_share(room_id: str, payload: SharePayload,
+                       user: dict = Depends(get_current_user)):
+    try:
+        room = await db.rooms.find_one(_room_owner_query(room_id, user["id"]))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid room id")
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    slug = room.get("share_slug") or _make_slug()
+    await db.rooms.update_one(
+        _room_owner_query(room_id, user["id"]),
+        {"$set": {"share_enabled": bool(payload.enabled),
+                  "share_slug": slug,
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"ok": True, "share_enabled": bool(payload.enabled), "share_slug": slug}
+
+
+@api_router.get("/public/rooms/{slug}")
+async def public_room(slug: str):
+    """Public read-only view of a shared room. No auth required.
+    Also embeds the pinned material rows and pinned products from the parent
+    project so a client can see the full presentation without any DB round-trips."""
+    room = await db.rooms.find_one({"share_slug": slug, "share_enabled": True})
+    if not room:
+        raise HTTPException(status_code=404, detail="Not found")
+    # Pull parent project context for pinned items (no auth, but expose only
+    # the specific rows/products the designer pinned — nothing else).
+    proj = await db.projects.find_one({"_id": ObjectId(room["project_id"])})
+    project_name = proj.get("name") if proj else None
+    client_name = proj.get("client_name") if proj else None
+    pinned_row_ids = set(room.get("pinned_material_row_ids", []))
+    pinned_product_ids = set(room.get("pinned_product_ids", []))
+    rows_all = ((proj or {}).get("mock_analysis") or {}).get("rows") or []
+    products_all = ((proj or {}).get("products_detected") or {}).get("products") or []
+    pinned_rows = [r for r in rows_all if str(r.get("id") or r.get("row_id") or r.get("zone") or "") in pinned_row_ids]
+    pinned_products = [p for p in products_all if str(p.get("id") or "") in pinned_product_ids]
+
+    # Serialize room without heavy base64 bytes; expose image ids so the public
+    # image endpoint can serve them.
+    def _img_list(field):
+        return [{"id": img.get("id"), "mime": img.get("mime")}
+                for img in room.get(field, [])]
+
+    return {
+        "id": str(room["_id"]),
+        "name": room.get("name"),
+        "room_type": room.get("room_type"),
+        "concept_overview": room.get("concept_overview") or "",
+        "designer_notes": room.get("designer_notes") or "",
+        "current_site_photos": _img_list("current_site_photos"),
+        "moodboards": _img_list("moodboards"),
+        "reference_images": _img_list("reference_images"),
+        "pinned_material_rows": pinned_rows,
+        "pinned_products": pinned_products,
+        "project_name": project_name,
+        "client_name": client_name,
+        "share_slug": slug,
+        "updated_at": room.get("updated_at"),
+    }
+
+
+@api_router.get("/public/rooms/{slug}/images/{kind}/{img_id}")
+async def public_room_image(slug: str, kind: str, img_id: str):
+    if kind not in IMAGE_KINDS:
+        raise HTTPException(status_code=400, detail="Invalid kind")
+    room = await db.rooms.find_one({"share_slug": slug, "share_enabled": True})
+    if not room:
+        raise HTTPException(status_code=404, detail="Not found")
+    for img in room.get(_kind_field(kind), []):
+        if img.get("id") == img_id:
+            return {"data_url": f"data:{img['mime']};base64,{img['b64']}"}
+    raise HTTPException(status_code=404, detail="Image not found")
+
+
 app.include_router(api_router)
 # (CORS middleware was registered earlier — before any routes — so OPTIONS
 # preflights are answered without hitting a handler.)
