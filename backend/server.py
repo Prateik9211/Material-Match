@@ -3168,15 +3168,21 @@ async def delete_room_image(room_id: str, kind: str, img_id: str,
         raise HTTPException(status_code=400, detail="Invalid kind")
     field = _kind_field(kind)
     try:
-        res = await db.rooms.update_one(
-            _room_owner_query(room_id, user["id"]),
-            {"$pull": {field: {"id": img_id}},
-             "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}},
-        )
+        room = await db.rooms.find_one(_room_owner_query(room_id, user["id"]))
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid room id")
-    if res.modified_count == 0:
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    # Verify image exists before mutating — a single $pull+$set update op leaves
+    # modified_count == 1 even when nothing was pulled (because updated_at
+    # changes), so we can't rely on modified_count alone to detect misses.
+    if not any(img.get("id") == img_id for img in room.get(field, [])):
         raise HTTPException(status_code=404, detail="Image not found")
+    await db.rooms.update_one(
+        _room_owner_query(room_id, user["id"]),
+        {"$pull": {field: {"id": img_id}},
+         "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
     return {"ok": True}
 
 

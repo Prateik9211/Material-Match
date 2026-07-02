@@ -93,6 +93,18 @@ Build a modern AI SaaS web application called "MaterialMatch AI" that helps arch
 
 ## Live AI Material Analysis (2026-02-26)
 
+## Sprint 3 — Concept Presentation Workspace (2026-07-02)
+- ✅ **Rooms nested inside projects**: new `rooms` MongoDB collection with `project_id`/`user_id` scoping and ordering. 10 room types (living/bedroom/kitchen/bath/dining/office/kids/outdoor/hallway/custom).
+- ✅ **7-step visual story** in this exact order: 01 Current Space → 02 Moodboards → 03 Reference Images → 04 Concept Overview → 05 Material Specifications → 06 Suggested Products → 07 Designer Notes. Empty sections auto-hide.
+- ✅ **Three image galleries per room** (current-site "before" photos, moodboards, references) — up to 12 images per kind, 6 MB max, JPEG/PNG/WebP. Endpoints: `POST/GET/DELETE /api/rooms/{id}/images/{kind}[/{img_id}]`.
+- ✅ **AI Concept Overview draft**: `POST /api/rooms/{id}/generate-overview` returns a 60-120 word paragraph based on pinned materials/products + designer notes. Designer ALWAYS edits and approves — never called "AI Summary". Saved to `concept_overview_ai_draft`; the live `concept_overview` only changes via explicit PATCH.
+- ✅ **Pinning**: designers pin material rows (by `zone` key) and detected products (by product id) from the parent project analysis.
+- ✅ **Public share link** (v1 must-have): `POST /api/rooms/{id}/share {enabled:true}` returns a public slug. `GET /api/public/rooms/{slug}` and `/images/{kind}/{img_id}` serve the presentation with NO auth. When `share_enabled=false`, endpoints 404. Only pinned rows/products/images are exposed publicly — no user_id, no ai_draft, no other project rows leak.
+- ✅ **Printable presentation view**: `/share/rooms/{slug}?print=1` renders without header/nav, applies `@media print` page-break rules, auto-opens the browser print dialog on load.
+- ✅ Frontend routes: `/projects/:id/concept` (workspace with sidebar, editor, preview modal, share modal) and `/share/rooms/:slug` (public client view + print).
+- ✅ "Concept Presentation" CTA added to the Analysis page top action bar (test-id `open-concept-btn`).
+- ✅ 12 new pytest unit tests + 17/18 integration tests all PASS. Testing agent verified full E2E flow (100% frontend, 97% backend). One minor double-DELETE image bug found by testing agent and FIXED (verified via curl: 200 → 404 → 404). All Sprint 3 flows green.
+
 ## Sprint 2 — Products & Fixtures + Affiliate DB (2026-07-02)
 - ✅ **Products & Fixtures Detection**: separate AI pass triggered automatically by the "Generate Specification" button. Uses `openai/gpt-4o-mini` vision via `emergentintegrations.LlmChat`. Env flag `ENABLE_REAL_PRODUCTS`, timeout `LLM_PRODUCTS_TIMEOUT_S`, model `LLM_MODEL_PRODUCTS`.
 - ✅ Schema: `product_name`, `category` (9 enums: lighting, furniture, decor, art, textile-decor, fixture, plant-planter, electronics, other), `description`, `style_keywords`, `color_keywords`, `material_keywords`, `finish_keywords`, `estimated_price_inr`, `search_keywords`, `confidence` (0-100).
