@@ -20,8 +20,8 @@ export default function DemoModeBanner({ className = "" }) {
       >
         <Info className="w-3.5 h-3.5 text-emerald-700" strokeWidth={1.75} />
         <span className="text-xs">
-          <span className="font-semibold">Live AI</span>
-          <span className="text-emerald-800/70"> · material analysis &amp; catalogue matching powered by OpenAI</span>
+          <span className="font-semibold">Live specification</span>
+          <span className="text-emerald-800/70"> · material analysis &amp; catalogue matching</span>
         </span>
       </div>
     );
@@ -37,8 +37,8 @@ export default function DemoModeBanner({ className = "" }) {
       >
         <Info className="w-3.5 h-3.5 text-neutral-500" strokeWidth={1.75} />
         <span className="text-xs">
-          <span className="font-semibold text-neutral-900">AI material analysis active</span>
-          <span className="text-neutral-500"> · catalogue matching still in demo mode</span>
+          <span className="font-semibold text-neutral-900">Live material analysis active</span>
+          <span className="text-neutral-500"> · catalogue matching in sample mode</span>
         </span>
       </div>
     );
@@ -55,7 +55,7 @@ export default function DemoModeBanner({ className = "" }) {
         <Info className="w-3.5 h-3.5 text-neutral-500" strokeWidth={1.75} />
         <span className="text-xs">
           <span className="font-semibold text-neutral-900">Live catalogue matching</span>
-          <span className="text-neutral-500"> · material analysis still in demo mode</span>
+          <span className="text-neutral-500"> · material analysis in sample mode</span>
         </span>
       </div>
     );
@@ -72,9 +72,9 @@ export default function DemoModeBanner({ className = "" }) {
         <Sparkles className="w-3.5 h-3.5" strokeWidth={1.75} />
       </div>
       <div className="flex-1 min-w-0">
-        <div className="text-xs font-semibold tracking-wider uppercase">Demo mode active</div>
+        <div className="text-xs font-semibold tracking-wider uppercase">Sample mode active</div>
         <div className="text-xs text-white/70 mt-0.5">
-          Mock material analysis &amp; catalogue matching · Real AI integration coming next.
+          Sample material analysis &amp; catalogue matching · Live specification coming next.
         </div>
       </div>
     </div>

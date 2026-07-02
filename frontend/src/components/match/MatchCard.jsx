@@ -48,10 +48,22 @@ export default function MatchCard({ match, index }) {
         <div className="col-span-9 sm:col-span-10 p-5 space-y-3">
           <div className="flex items-start justify-between gap-4 flex-wrap">
             <div className="min-w-0">
+              {m.page_number && (
+                <div className="text-[10px] uppercase tracking-widest text-emerald-700 font-semibold mb-0.5">
+                  Found inside your catalogue
+                </div>
+              )}
               <h3 className="font-display text-lg font-semibold truncate">{m.product_name}</h3>
               <p className="text-xs text-neutral-500 mt-0.5 truncate">
                 {m.catalogue_ref}
-                {m.page_number ? ` · page ${m.page_number}` : ""}
+                {m.page_number && (
+                  <>
+                    {" · "}
+                    <span className="inline-flex items-center gap-1 font-mono font-semibold text-neutral-900 bg-emerald-50 border border-emerald-100 text-[10px] px-1.5 py-0.5 rounded" data-testid={`match-page-number-${i}`}>
+                      PAGE {m.page_number}
+                    </span>
+                  </>
+                )}
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">

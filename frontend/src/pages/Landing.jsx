@@ -19,7 +19,7 @@ export default function Landing() {
           <div className="lg:col-span-7 space-y-8 animate-fade-in-up">
             <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white border border-black/5 text-overline">
               <span className="w-1.5 h-1.5 rounded-full bg-black"></span>
-              AI specification & sourcing workspace · Beta
+              Specification & Sourcing Workspace · Beta
             </div>
             <h1 className="font-display text-5xl sm:text-6xl lg:text-7xl tracking-tight leading-[0.95] font-bold">
               Keep designing.<br />
@@ -27,8 +27,9 @@ export default function Landing() {
               <span className="text-neutral-400">everything after.</span>
             </h1>
             <p className="text-lg text-neutral-600 max-w-xl leading-relaxed">
-              Upload references, detect materials and finishes, match supplier catalogues,
-              and get India-first sourcing guidance — without replacing your creative process.
+              Upload inspiration images, generate specifications, compare supplier
+              catalogues and discover India-first sourcing options — without replacing
+              your creative process.
             </p>
             <p className="text-sm text-neutral-500 italic max-w-xl border-l-2 border-black/20 pl-4" data-testid="hero-philosophy">
               MaterialMatch does not design for you. It removes the repetitive work
@@ -51,10 +52,11 @@ export default function Landing() {
                 See how it works
               </a>
             </div>
-            <div className="flex items-center gap-6 pt-4 text-sm text-neutral-500">
-              <div className="flex items-center gap-2"><Check className="w-4 h-4" strokeWidth={1.5} /> India-first sourcing</div>
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-2 pt-4 text-sm text-neutral-500">
+              <div className="flex items-center gap-2"><Check className="w-4 h-4" strokeWidth={1.5} /> Designer-first</div>
               <div className="flex items-center gap-2"><Check className="w-4 h-4" strokeWidth={1.5} /> Catalogue-first</div>
-              <div className="flex items-center gap-2"><Check className="w-4 h-4" strokeWidth={1.5} /> Designer-in-control</div>
+              <div className="flex items-center gap-2"><Check className="w-4 h-4" strokeWidth={1.5} /> India-first sourcing</div>
+              <div className="flex items-center gap-2"><Check className="w-4 h-4" strokeWidth={1.5} /> Specification-ready</div>
             </div>
           </div>
 

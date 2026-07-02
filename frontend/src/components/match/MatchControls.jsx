@@ -89,7 +89,7 @@ export default function MatchControls({
           </div>
         )}
         <span className="text-xs text-neutral-400 ml-auto" data-testid="match-mode-label">
-          {realMatchActive ? "AI matching" : "Mock matching"}
+          {realMatchActive ? "Live matching" : "Sample matching"}
         </span>
       </div>
     </div>

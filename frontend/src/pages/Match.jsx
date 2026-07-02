@@ -5,6 +5,7 @@ import DemoModeBanner from "@/components/DemoModeBanner";
 import MatchSidebar from "@/components/match/MatchSidebar";
 import MatchControls from "@/components/match/MatchControls";
 import MatchResults from "@/components/match/MatchResults";
+import MatchStepFlow from "@/components/match/MatchStepFlow";
 import api, { formatApiError, useConfig } from "@/lib/api";
 import { ArrowLeft, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
@@ -150,9 +151,9 @@ export default function Match() {
         </Link>
 
         <div className="mb-10">
-          <div className="text-overline mb-2">Match Engine · {project?.name || "—"}</div>
+          <div className="text-overline mb-2">Catalogue Match · {project?.name || "—"}</div>
           <h1 className="font-display text-4xl sm:text-5xl font-bold tracking-tight">
-            Find products for <span className="text-neutral-400">{selected.zone}</span>.
+            Match catalogues for <span className="text-neutral-400">{selected.zone}</span>.
           </h1>
           {project?.client_name && (
             <p className="text-neutral-500 mt-2">Client: {project.client_name}</p>
@@ -170,6 +171,12 @@ export default function Match() {
 
           <section className="lg:col-span-7 space-y-6">
             <DemoModeBanner />
+
+            <MatchStepFlow
+              current={
+                busy ? 2 : hasResults ? 3 : (pdfFiles.length + imgFiles.length > 0 ? 2 : 1)
+              }
+            />
 
             <MatchControls
               prompt={prompt}

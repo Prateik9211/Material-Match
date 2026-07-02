@@ -30,29 +30,30 @@ function AnalysisSummaryCard({ summary }) {
   const hasAnything = summary.design_style || summary.material_palette ||
     summary.key_finishes || summary.sourcing_note;
   if (!hasAnything) return null;
-  const items = [
-    ["Design style", summary.design_style],
-    ["Material palette", summary.material_palette],
-    ["Key finishes", summary.key_finishes],
-  ].filter(([, v]) => v);
+  const sections = [
+    { key: "design_style", label: "Design Style", value: summary.design_style },
+    { key: "material_palette", label: "Material Palette", value: summary.material_palette },
+    { key: "key_finishes", label: "Primary Finishes", value: summary.key_finishes },
+  ].filter((s) => s.value);
   return (
-    <div className="bg-black text-white rounded-2xl p-6 sm:p-8 shadow-soft" data-testid="analysis-summary-card">
-      <div className="flex items-center gap-2 mb-4">
-        <Sparkles className="w-4 h-4" strokeWidth={1.5} />
-        <div className="text-overline text-white/60">AI Project Summary</div>
+    <div className="bg-white border border-black/5 rounded-2xl shadow-soft overflow-hidden" data-testid="analysis-summary-card">
+      <div className="px-6 sm:px-8 pt-6 pb-4 border-b border-black/5">
+        <div className="text-overline text-neutral-500">Specification Overview</div>
       </div>
-      <div className="grid sm:grid-cols-3 gap-6 mb-5">
-        {items.map(([k, v]) => (
-          <div key={k}>
-            <div className="text-[10px] uppercase tracking-widest text-white/50 mb-1">{k}</div>
-            <div className="text-sm text-white/90 leading-snug">{v}</div>
+      <div className="grid sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-black/5">
+        {sections.map((s) => (
+          <div key={s.key} className="p-6 sm:p-8" data-testid={`summary-section-${s.key}`}>
+            <div className="text-[10px] uppercase tracking-widest text-neutral-500 mb-2">{s.label}</div>
+            <p className="text-sm text-neutral-900 leading-relaxed">{s.value}</p>
           </div>
         ))}
       </div>
       {summary.sourcing_note && (
-        <div className="pt-4 border-t border-white/10">
-          <div className="text-[10px] uppercase tracking-widest text-white/50 mb-1">India sourcing guidance</div>
-          <p className="text-sm text-white/90 leading-relaxed" data-testid="analysis-summary-sourcing">
+        <div className="px-6 sm:px-8 py-6 bg-[#FCFBF7] border-t border-amber-100" data-testid="summary-section-sourcing">
+          <div className="text-[10px] uppercase tracking-widest text-amber-900/70 mb-2">
+            Indian Sourcing Summary
+          </div>
+          <p className="text-sm text-amber-900 leading-relaxed" data-testid="analysis-summary-sourcing">
             {summary.sourcing_note}
           </p>
         </div>
@@ -171,7 +172,7 @@ export default function Analysis() {
         <div className="mb-10">
           <div className="text-overline mb-2">Specification · {project?.name || "—"}</div>
           <h1 className="font-display text-4xl sm:text-5xl font-bold tracking-tight">
-            {hasAnalysis ? "Specification ready." : "Ready to specify."}
+            {hasAnalysis ? "Specification generated." : "Ready to specify."}
           </h1>
           {project?.client_name && (
             <p className="text-neutral-500 mt-2">Client: {project.client_name}</p>
@@ -223,7 +224,7 @@ export default function Analysis() {
                       )}
                     </button>
                     <span className="text-xs text-neutral-400" data-testid="analysis-mode-label">
-                      {realAnalysisActive ? "AI specification" : "Mock analysis"}
+                      {realAnalysisActive ? "Live specification" : "Sample specification"}
                     </span>
                   </div>
                 </div>
@@ -296,7 +297,7 @@ export default function Analysis() {
                                     className="inline-flex items-center gap-1.5 bg-black text-white hover:bg-black/80 rounded-full px-3 py-1.5 text-xs font-medium transition-colors"
                                     data-testid={`find-matches-btn-${i}`}
                                   >
-                                    {savedMatch ? "View matches" : "Match With My Catalogue"}
+                                    {savedMatch ? "View matches" : "Match With Catalogue"}
                                     <ArrowUpRight className="w-3 h-3" strokeWidth={1.75} />
                                   </button>
                                 </td>
