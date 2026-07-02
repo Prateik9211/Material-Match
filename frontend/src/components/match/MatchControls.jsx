@@ -40,7 +40,7 @@ export default function MatchControls({
       <div className="grid sm:grid-cols-2 gap-6">
         <UploadZone
           label="Catalogue PDF"
-          description="Optional · PDF only"
+          description="First 8 pages will be analysed"
           accept="application/pdf"
           multiple
           files={pdfFiles}
@@ -59,6 +59,10 @@ export default function MatchControls({
           testid="match-upload-images"
         />
       </div>
+
+      <p className="text-xs text-neutral-500 italic" data-testid="match-pdf-note">
+        PDF catalogue matching is experimental. Clean product / material images give better accuracy.
+      </p>
 
       <div className="flex items-center gap-3 pt-2 border-t border-black/5">
         <button

@@ -63,7 +63,7 @@ def test_analysis_validator_accepts_indian_alternative():
         "keywords": ["wood"], "confidence": 80,
         "indian_alternative": "Indian teak veneer + PU matt finish (Greenlam range).",
     }]}
-    cleaned = _validate_analysis_payload(payload)
+    cleaned = _validate_analysis_payload(payload)["rows"]
     assert cleaned[0]["indian_alternative"].startswith("Indian teak")
 
 
@@ -74,7 +74,7 @@ def test_analysis_validator_handles_null_indian_alternative():
         "keywords": ["wood"], "confidence": 80,
         "indian_alternative": None,
     }]}
-    cleaned = _validate_analysis_payload(payload)
+    cleaned = _validate_analysis_payload(payload)["rows"]
     assert cleaned[0]["indian_alternative"] is None
 
 
@@ -84,7 +84,7 @@ def test_analysis_validator_works_without_indian_alternative():
         "color": "warm", "texture": "grain", "finish": "matt", "design_style": "scandi",
         "keywords": ["wood"], "confidence": 80,
     }]}
-    cleaned = _validate_analysis_payload(payload)
+    cleaned = _validate_analysis_payload(payload)["rows"]
     assert cleaned[0]["indian_alternative"] is None
 
 

@@ -704,8 +704,19 @@ async def mock_analyze(project_id: str, user: dict = Depends(get_current_user)):
 
     mock_analysis = {
         "rows": rows,
+        "summary": {
+            "design_style": "Warm modern (mock)",
+            "material_palette": "Wood, stone, textile, plaster",
+            "key_finishes": "Matt PU, honed stone, woven fabric",
+            "sourcing_note": (
+                "Similar finishes are widely available across Indian dealers "
+                "(Greenlam, Century, Kajaria, Asian Paints)."
+                if region == "India"
+                else "Common materials sourceable from most global suppliers."
+            ),
+        },
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "version": "mock-v2",
+        "version": "mock-v3",
         "region": region,
     }
 
@@ -739,54 +750,84 @@ MATERIAL_FAMILIES = [
 ]
 
 ANALYSIS_SYSTEM_PROMPT_V2 = (
-    "You are an expert interior design materials analyst. You inspect interior "
-    "reference images and identify materials, finishes, colors, and textures with "
-    "precision suitable for architects and interior designers. Be conservative — "
-    "only report zones whose material you can clearly identify from the image. "
-    "Always respond with ONLY a valid JSON object. No markdown fences, no prose, "
-    "no commentary outside the JSON."
+    "You are an EXPERT INTERIOR SPECIFICATION CONSULTANT — not a generic object "
+    "detector. Your job is to help an architect / interior designer specify, "
+    "source and communicate materials to their client. Think in terms of "
+    "SURFACES, FINISHES and SPECIFICATION ZONES, not objects.\n\n"
+    "PRIORITISE detecting sourcing-relevant surfaces:\n"
+    " • Headboard finish · feature wall · wall paneling · fluted panels\n"
+    " • Laminate / veneer / joinery / wardrobe / cabinet finishes\n"
+    " • Upholstery fabric · rugs / carpets · flooring\n"
+    " • Wall paint · ceiling finish · marble / stone / tile surfaces\n"
+    " • Side-table / lighting-fixture finishes\n"
+    " • Artwork or frame material · handles / hardware finish\n"
+    " • Decorative metal finish · glass / mirror finish\n\n"
+    "AVOID generic object rows like 'Bed → Wood' or 'Sofa → Fabric' UNLESS "
+    "the object itself is the sourcing target and no more specific surface can "
+    "be named. For a bed, prefer 'Headboard Feature Panel'. For a sofa, prefer "
+    "'Sofa Upholstery Fabric'. For a table, prefer 'Table-top Finish'.\n\n"
+    "Be conservative — only report zones you can clearly identify. Reply with "
+    "ONLY a valid JSON object. No markdown fences, no prose."
 )
 
+PROCUREMENT_DIFFICULTY = ["Easy", "Medium", "Difficult"]
+
 ANALYSIS_USER_PROMPT = (
-    "Analyse this interior reference image. For each clearly identifiable material "
-    "zone, return one entry. Do NOT pad the list — quality over quantity. If a zone "
-    "is ambiguous or occluded, omit it.\n\n"
+    "Analyse this interior reference image like a specification consultant. "
+    "Return SURFACE-level rows, not object rows. Aim for 4–8 rows.\n\n"
     "Return ONLY this JSON shape:\n"
     "{\n"
+    '  "summary": {\n'
+    '    "design_style": "one-line style label, e.g. Warm modern / contemporary",\n'
+    '    "material_palette": "one line naming the main materials (e.g. Walnut veneer, textured paint, brushed brass, natural woven fibre)",\n'
+    '    "key_finishes": "one line naming key finish types (e.g. Matt PU, satin veneer, honed stone)",\n'
+    '    "sourcing_note": "one line India sourcing guidance if region is India, else global tone"\n'
+    "  },\n"
     '  "rows": [\n'
     "    {\n"
-    '      "zone": "string — e.g. Floor, Walls, Ceiling, Sofa, Coffee Table",\n'
+    '      "zone": "SPECIFICATION zone — e.g. Headboard Feature Panel, Wall Paint, Bedroom Flooring, Ceiling Finish, Sofa Upholstery Fabric",\n'
     '      "material_family": "one of: ' + ", ".join(MATERIAL_FAMILIES) + '",\n'
-    '      "material_type": "concise product-category, e.g. Engineered Oak",\n'
-    '      "color": "short descriptive colour name",\n'
-    '      "texture": "short texture descriptor",\n'
-    '      "finish": "short finish descriptor",\n'
-    '      "design_style": "short style label, e.g. Scandinavian",\n'
+    '      "material_type": "concise finish/product description, e.g. Fluted walnut laminate or veneer panel",\n'
+    '      "color": "short descriptive colour, e.g. Warm walnut brown",\n'
+    '      "texture": "short texture descriptor, e.g. Vertical ribbed/fluted",\n'
+    '      "finish": "short finish descriptor, e.g. Matt PU / satin",\n'
+    '      "design_style": "short style label",\n'
     '      "keywords": ["3-6 short lowercase tags"],\n'
-    '      "confidence": 0\n'
+    '      "confidence": 0,\n'
+    '      "procurement_difficulty": "one of: ' + ", ".join(PROCUREMENT_DIFFICULTY) + '"\n'
     "    }\n"
     "  ]\n"
     "}\n\n"
     "Rules:\n"
-    "- confidence is an INTEGER between 0 and 100, NOT a float between 0 and 1.\n"
+    "- confidence is an INTEGER 0–100 (NOT a float 0–1).\n"
+    "- procurement_difficulty reflects how easy the material is to source in "
+    "an urban Indian design context (Easy = mainstream dealers / e-commerce; "
+    "Medium = need specific brand or fabricator; Difficult = imported / bespoke).\n"
     "- material_family MUST be one of the listed enum values.\n"
-    "- Return 1 to 12 rows. Prefer fewer high-confidence rows over many guesses.\n"
+    "- Prefer SURFACE zones ('Headboard Panel', 'Feature Wall', 'Sofa Upholstery') "
+    "over object zones ('Bed', 'Sofa'). Only fall back to object zones if no "
+    "specific surface is visible.\n"
+    "- Return 4 to 8 rows. Skip ambiguous / occluded surfaces.\n"
     "- Reply with ONLY the JSON object."
 )
 
 INDIA_ANALYSIS_BLOCK = (
     "\n\n" + INDIAN_BRAND_CONTEXT + "\n\n"
-    "BECAUSE the user prefers India sourcing, add ONE extra field per row:\n"
-    '  "indian_alternative": "short ≤ 120 char hint naming an Indian-market '
-    'equivalent or category, e.g. \\"Kota stone honed — comparable to Travertine, '
-    'widely stocked by Indian regional suppliers\\" or \\"Greenlam laminate over '
-    'MDF — common Indian flooring substitute\\""\n'
-    "Populate this field for EVERY row where an Indian-market equivalent is "
-    "genuinely useful (most rows should have one). Set to null only when the "
-    "material truly has no plausible Indian-market alternative. Use Indian "
-    "interior-design terminology in the main fields too where natural — PU matt, "
-    "MDF + laminate, vitrified tile, teak veneer, Kota stone — but never invent "
-    "brand-SKU pairs."
+    "BECAUSE the user prefers India sourcing, ADD these 4 optional fields per "
+    "row (populate for EVERY row where useful):\n"
+    '  "indian_alternative": "≤ 120 chars naming an Indian-market equivalent, '
+    'e.g. \\"Walnut laminate on routed MDF (Greenlam / Century range)\\"",\n'
+    '  "brands_to_check": ["array of 2–5 Indian brand names to check, from '
+    'the context list above — e.g. [\\"Greenlam\\", \\"Merino\\", \\"Century\\"]"],\n'
+    '  "vendor_type": "≤ 60 chars naming the vendor category, e.g. '
+    '\\"Laminate dealer + carpenter/CNC panel fabricator\\"",\n'
+    '  "sourcing_keywords": ["array of 2–5 Indian-market search phrases, '
+    'e.g. [\\"walnut fluted panel India\\", \\"ribbed MDF panel\\", '
+    '\\"walnut laminate sheet\\"]"]\n'
+    "Also update the top-level summary.sourcing_note to reflect India sourcing "
+    "clearly (mention typical Indian brands / vendor categories where natural). "
+    "Never invent brand-SKU pairs; only reference the brand names from the "
+    "context list above."
 )
 
 
@@ -803,8 +844,36 @@ ANALYSIS_RETRY_NUDGE = (
 )
 
 
-def _validate_analysis_payload(data) -> list:
-    """Strictly validate the LLM payload. Raises ValueError on any deviation. Returns clean rows."""
+def _clean_optional_list(value, item_max: int = 60, max_items: int = 5) -> list:
+    """Coerce an optional LLM list-of-strings field into a clean list (may be empty)."""
+    if not isinstance(value, list):
+        return []
+    out: list = []
+    for item in value[:max_items]:
+        if not isinstance(item, str):
+            continue
+        s = item.strip()[:item_max]
+        if s:
+            out.append(s)
+    return out
+
+
+def _clean_summary(value) -> dict:
+    """Coerce the optional top-level 'summary' object into a stable shape.
+    Always returns a dict with the same 4 string keys (empty when absent)."""
+    src = value if isinstance(value, dict) else {}
+    return {
+        "design_style": _clean_optional_text(src.get("design_style"), max_len=120) or "",
+        "material_palette": _clean_optional_text(src.get("material_palette"), max_len=240) or "",
+        "key_finishes": _clean_optional_text(src.get("key_finishes"), max_len=240) or "",
+        "sourcing_note": _clean_optional_text(src.get("sourcing_note"), max_len=400) or "",
+    }
+
+
+def _validate_analysis_payload(data) -> dict:
+    """Strictly validate the LLM payload. Raises ValueError on any deviation.
+    Returns {'rows': [...], 'summary': {...}} — summary is optional (may be empty).
+    """
     if not isinstance(data, dict) or "rows" not in data or not isinstance(data["rows"], list):
         raise ValueError("payload missing 'rows' array")
     raw_rows = data["rows"]
@@ -838,6 +907,10 @@ def _validate_analysis_payload(data) -> list:
         if not (0 <= conf_int <= 100):
             raise ValueError(f"row {i} confidence {conf_int} outside 0-100")
 
+        # Optional: procurement_difficulty (soft-coerced, never blocks)
+        proc = r.get("procurement_difficulty")
+        proc_val = proc if proc in PROCUREMENT_DIFFICULTY else None
+
         cleaned.append({
             "zone": r["zone"].strip(),
             "material_family": family,
@@ -848,9 +921,14 @@ def _validate_analysis_payload(data) -> list:
             "design_style": r["design_style"].strip(),
             "keywords": [k.strip().lower() for k in kws[:6] if k.strip()],
             "confidence": conf_int,
+            "procurement_difficulty": proc_val,
+            # V2 India sourcing fields — optional, tolerant to omission.
             "indian_alternative": _clean_optional_text(r.get("indian_alternative"), max_len=120),
+            "brands_to_check": _clean_optional_list(r.get("brands_to_check"), item_max=48, max_items=5),
+            "vendor_type": _clean_optional_text(r.get("vendor_type"), max_len=60),
+            "sourcing_keywords": _clean_optional_list(r.get("sourcing_keywords"), item_max=80, max_items=5),
         })
-    return cleaned
+    return {"rows": cleaned, "summary": _clean_summary(data.get("summary"))}
 
 
 def _clean_optional_text(value, max_len: int = 120):
@@ -916,9 +994,10 @@ async def run_real_analysis(project_id: str, user_id: str, ref_b64: str, region:
             parsed = _parse_json(raw)
             cleaned = _validate_analysis_payload(parsed)
             return {
-                "rows": cleaned,
+                "rows": cleaned["rows"],
+                "summary": cleaned["summary"],
                 "generated_at": datetime.now(timezone.utc).isoformat(),
-                "version": f"real-openai-{LLM_MODEL_ANALYSIS}-v1",
+                "version": f"real-openai-{LLM_MODEL_ANALYSIS}-v2",
                 "region": region,
             }
         except asyncio.TimeoutError:
@@ -1334,6 +1413,91 @@ def _normalize_image_to_b64(content: bytes) -> str | None:
         return None
 
 
+# ----------------------------------------------------------------------------
+# PDF catalogue support — Phase 2 of Real Catalogue Match
+# ----------------------------------------------------------------------------
+MATCH_PDF_MAX_PAGES = int(os.environ.get("MATCH_PDF_MAX_PAGES", "8"))
+MATCH_PDF_MAX_FILE_BYTES = int(os.environ.get("MATCH_PDF_MAX_FILE_BYTES", str(20 * 1024 * 1024)))  # 20 MiB
+MATCH_PDF_RENDER_MAX_PX = int(os.environ.get("MATCH_PDF_RENDER_MAX_PX", "1024"))
+MATCH_PDF_THUMB_MAX_PX = int(os.environ.get("MATCH_PDF_THUMB_MAX_PX", "260"))
+
+
+def _render_pdf_pages_to_candidates(content: bytes, filename: str, warnings: list) -> list:
+    """Render the first MATCH_PDF_MAX_PAGES of a PDF to JPEG-base64 candidates.
+
+    Each candidate has {name, size, b64, page_number, thumb_b64}. Thumb is a
+    smaller base64 JPEG for UI preview (kept separate so it never goes to the LLM).
+    Returns [] if the PDF is unopenable; appends warnings for oversize / empty PDFs.
+    """
+    import fitz  # PyMuPDF
+    from PIL import Image
+
+    if len(content) > MATCH_PDF_MAX_FILE_BYTES:
+        warnings.append(
+            f"Skipped {filename}: PDF is larger than "
+            f"{MATCH_PDF_MAX_FILE_BYTES // (1024 * 1024)} MiB limit."
+        )
+        return []
+    try:
+        doc = fitz.open(stream=content, filetype="pdf")
+    except Exception as e:  # noqa: BLE001
+        warnings.append(f"Could not open PDF {filename}: {type(e).__name__}")
+        logger.warning(f"pdf-open-fail file={filename} err={e}")
+        return []
+
+    total_pages = doc.page_count
+    if total_pages == 0:
+        doc.close()
+        warnings.append(f"Skipped {filename}: PDF has no pages.")
+        return []
+
+    pages_to_render = min(total_pages, MATCH_PDF_MAX_PAGES)
+    if total_pages > MATCH_PDF_MAX_PAGES:
+        warnings.append(
+            f"{filename}: only the first {MATCH_PDF_MAX_PAGES} of "
+            f"{total_pages} pages were analysed."
+        )
+
+    out = []
+    for i in range(pages_to_render):
+        try:
+            page = doc.load_page(i)
+            # Render @ 2x zoom, then downsize with PIL for consistent target width.
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+            im = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            w, h = im.size
+            if max(w, h) > MATCH_PDF_RENDER_MAX_PX:
+                scale = MATCH_PDF_RENDER_MAX_PX / max(w, h)
+                im = im.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+            # Full page b64 → LLM
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=85, optimize=True)
+            page_bytes = buf.getvalue()
+            b64 = base64.b64encode(page_bytes).decode("utf-8")
+            # Thumbnail (data URL) → UI only, never sent to LLM
+            thumb = im.copy()
+            tw, th = thumb.size
+            if max(tw, th) > MATCH_PDF_THUMB_MAX_PX:
+                s = MATCH_PDF_THUMB_MAX_PX / max(tw, th)
+                thumb = thumb.resize((int(tw * s), int(th * s)), Image.LANCZOS)
+            tbuf = io.BytesIO()
+            thumb.save(tbuf, format="JPEG", quality=70, optimize=True)
+            thumb_data_url = "data:image/jpeg;base64," + base64.b64encode(tbuf.getvalue()).decode("utf-8")
+            out.append({
+                "name": filename or "catalogue.pdf",
+                "size": len(page_bytes),
+                "b64": b64,
+                "page_number": i + 1,
+                "thumb_b64": thumb_data_url,
+            })
+        except Exception:  # noqa: BLE001
+            logger.exception(f"pdf-render-fail file={filename} page={i + 1}")
+            warnings.append(f"{filename}: could not render page {i + 1}, skipped.")
+            continue
+    doc.close()
+    return out
+
+
 # ---- Per-field validators (used by _validate_batch_result, kept small/testable) ----
 def _coerce_candidate_index(raw_idx, raw_pos: int, expected_n: int, seen_idx: set) -> int:
     """Validate a candidate_index. Allow positional fallback when LLM forgets the index."""
@@ -1586,29 +1750,49 @@ async def _prepare_match_candidates(catalogue_files: list, warnings: list) -> li
         content = await f.read()
         if not content:
             continue
-        mime = f.content_type or ""
-        if mime not in ("image/jpeg", "image/png", "image/webp"):
-            warnings.append(f"Skipped non-image file: {f.filename}")
+        mime = (f.content_type or "").lower()
+        fname = f.filename or ""
+        fname_lower = fname.lower()
+        is_pdf = mime == "application/pdf" or fname_lower.endswith(".pdf")
+        is_img = mime in ("image/jpeg", "image/png", "image/webp") or \
+            fname_lower.endswith((".jpg", ".jpeg", ".png", ".webp"))
+
+        if is_pdf:
+            page_cands = _render_pdf_pages_to_candidates(content, fname or "catalogue.pdf", warnings)
+            raw_candidates.extend(page_cands)
+            continue
+
+        if not is_img:
+            warnings.append(f"Skipped unsupported file: {fname} ({mime or 'unknown MIME'})")
             continue
         if len(content) > MATCH_MAX_FILE_BYTES:
-            warnings.append(f"Skipped oversized file (>5 MiB): {f.filename}")
+            warnings.append(f"Skipped oversized file (>5 MiB): {fname}")
             continue
         b64 = _normalize_image_to_b64(content)
         if not b64:
-            warnings.append(f"Could not decode: {f.filename}")
+            warnings.append(f"Could not decode: {fname}")
             continue
-        raw_candidates.append({"name": f.filename or "untitled",
-                               "size": len(content), "b64": b64})
+        raw_candidates.append({"name": fname or "untitled",
+                               "size": len(content), "b64": b64,
+                               "page_number": None, "thumb_b64": None})
 
     if not raw_candidates:
         raise HTTPException(
             status_code=400,
-            detail="No valid product images provided. Upload JPEG/PNG/WEBP files under 5 MiB.",
+            detail=(
+                "No valid product images or catalogue PDFs provided. Upload JPEG/PNG/WEBP "
+                "files under 5 MiB or a PDF catalogue (first "
+                f"{MATCH_PDF_MAX_PAGES} pages will be analysed)."
+            ),
         )
     if len(raw_candidates) > MATCH_MAX_PRODUCT_IMAGES:
         raise HTTPException(
             status_code=422,
-            detail=f"Too many images. Maximum {MATCH_MAX_PRODUCT_IMAGES} per match.",
+            detail=(
+                f"Too many candidates ({len(raw_candidates)}). Maximum "
+                f"{MATCH_MAX_PRODUCT_IMAGES} per match. Try fewer images or a "
+                "shorter catalogue PDF."
+            ),
         )
     return raw_candidates
 
@@ -1703,30 +1887,34 @@ def _aggregate_batch_results(batches: list, batch_results: list,
                 "reasons": r["reasons"],
                 "disqualifier": r["disqualifier"],
                 "indian_alternative": r.get("indian_alternative"),
+                "page_number": cand.get("page_number"),
+                "thumb_b64": cand.get("thumb_b64"),
             })
     return scored
 
 
 def _shape_match_response(scored: list) -> list:
     """Top-5 deterministic ordering + final wire-format for the frontend."""
-    scored.sort(key=lambda x: (-x["match_percent"], x["name"]))
+    scored.sort(key=lambda x: (-x["match_percent"], x["name"], (x.get("page_number") or 0)))
     top = scored[:5]
     matches = []
     for i, s in enumerate(top):
-        product_name = (
-            os.path.splitext(s["name"])[0].replace("_", " ").replace("-", " ").strip().title()
-            or s["name"]
-        )
+        stem = os.path.splitext(s["name"])[0].replace("_", " ").replace("-", " ").strip().title() or s["name"]
+        page = s.get("page_number")
+        # For PDF pages, product_name = "Catalogue Name — Page N"; for images it's just the stem.
+        product_name = f"{stem} — Page {page}" if page else stem
         matches.append({
             "id": f"match_{i + 1}",
             "product_name": product_name,
             "catalogue_ref": s["name"],
+            "page_number": page,
+            "thumb_b64": s.get("thumb_b64"),
             "match_percent": s["match_percent"],
             "score_label": _score_label(s["match_percent"]),
             "reasons": _format_reasons_for_storage(s["reasons"]),
             "disqualifier": s["disqualifier"],
             "indian_alternative": s.get("indian_alternative"),
-            "thumbnail_color": "#" + hashlib.sha256(s["name"].encode()).hexdigest()[:6],
+            "thumbnail_color": "#" + hashlib.sha256(f"{s['name']}#{page or 0}".encode()).hexdigest()[:6],
         })
     return matches
 
@@ -1753,7 +1941,10 @@ async def _run_real_match(
     warnings: list = []
 
     raw_candidates = await _prepare_match_candidates(catalogue_files, warnings)
-    cand_hash = _candidate_hash([{"name": c["name"], "size": c["size"]} for c in raw_candidates])
+    cand_hash = _candidate_hash([
+        {"name": c["name"], "size": c["size"], "page": c.get("page_number")}
+        for c in raw_candidates
+    ])
 
     hit = _dedup_hit(existing_match, cand_hash, project_id)
     if hit is not None:

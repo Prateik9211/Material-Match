@@ -70,7 +70,8 @@ export default function MatchResults({ busy, hasResults, result }) {
         >
           <AlertTriangle className="w-8 h-8 text-amber-500 mx-auto mb-3" strokeWidth={1.25} />
           <p className="text-sm text-neutral-500">
-            No candidates met the similarity threshold. Try uploading more product images.
+            No strong matches found. Try a more specific catalogue section or upload
+            clean product images from the same material family.
           </p>
         </div>
       )}

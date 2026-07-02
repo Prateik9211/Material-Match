@@ -19,15 +19,20 @@ export default function Landing() {
           <div className="lg:col-span-7 space-y-8 animate-fade-in-up">
             <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white border border-black/5 text-overline">
               <span className="w-1.5 h-1.5 rounded-full bg-black"></span>
-              For Architects & Interior Designers
+              AI specification & sourcing workspace · Beta
             </div>
             <h1 className="font-display text-5xl sm:text-6xl lg:text-7xl tracking-tight leading-[0.95] font-bold">
-              Match every<br />
-              material to its<br />
-              <span className="text-neutral-400">inspiration.</span>
+              Keep designing.<br />
+              We&apos;ll handle<br />
+              <span className="text-neutral-400">everything after.</span>
             </h1>
             <p className="text-lg text-neutral-600 max-w-xl leading-relaxed">
-              Upload a reference photo. Drop in your catalogue. Our AI identifies materials, finishes, and finishes — then matches them to products from your library, with percentage scores and visual reasoning.
+              Upload references, detect materials and finishes, match supplier catalogues,
+              and get India-first sourcing guidance — without replacing your creative process.
+            </p>
+            <p className="text-sm text-neutral-500 italic max-w-xl border-l-2 border-black/20 pl-4" data-testid="hero-philosophy">
+              MaterialMatch does not design for you. It removes the repetitive work
+              around sourcing, catalogues, specifications and presentations.
             </p>
             <div className="flex flex-wrap items-center gap-3">
               <Link
@@ -35,7 +40,7 @@ export default function Landing() {
                 className="inline-flex items-center gap-2 bg-black text-white hover:bg-black/80 rounded-full px-7 py-3.5 font-medium transition-colors"
                 data-testid="hero-cta-primary"
               >
-                Start matching
+                Start Free Beta
                 <ArrowRight className="w-4 h-4" strokeWidth={1.5} />
               </Link>
               <a
@@ -47,9 +52,9 @@ export default function Landing() {
               </a>
             </div>
             <div className="flex items-center gap-6 pt-4 text-sm text-neutral-500">
-              <div className="flex items-center gap-2"><Check className="w-4 h-4" strokeWidth={1.5} /> No render generation</div>
+              <div className="flex items-center gap-2"><Check className="w-4 h-4" strokeWidth={1.5} /> India-first sourcing</div>
               <div className="flex items-center gap-2"><Check className="w-4 h-4" strokeWidth={1.5} /> Catalogue-first</div>
-              <div className="flex items-center gap-2"><Check className="w-4 h-4" strokeWidth={1.5} /> PDF reports</div>
+              <div className="flex items-center gap-2"><Check className="w-4 h-4" strokeWidth={1.5} /> Designer-in-control</div>
             </div>
           </div>
 
@@ -189,7 +194,7 @@ export default function Landing() {
               className="inline-flex items-center gap-2 rounded-full px-6 py-3 font-medium transition-colors bg-white text-black hover:bg-white/90"
               data-testid="pricing-cta-beta"
             >
-              Request Early Access
+              Start Free Beta
               <ArrowRight className="w-4 h-4" strokeWidth={1.5} />
             </Link>
 

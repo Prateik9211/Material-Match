@@ -15,23 +15,44 @@ export default function MatchCard({ match, index }) {
       data-testid={`match-card-${i}`}
     >
       <div className="grid grid-cols-12 gap-0">
-        <div
-          className="col-span-3 sm:col-span-2 grain relative"
-          style={{ background: m.thumbnail_color }}
-          data-testid={`match-thumb-${i}`}
-        >
-          <div className="absolute inset-0 grid place-items-center">
-            <span className="font-display font-bold text-white/70 text-2xl">
-              {(m.product_name || "?")[0]}
-            </span>
+        {m.thumb_b64 ? (
+          <div
+            className="col-span-3 sm:col-span-2 bg-neutral-100 relative"
+            data-testid={`match-thumb-${i}`}
+          >
+            <img
+              src={m.thumb_b64}
+              alt={`${m.catalogue_ref} page ${m.page_number}`}
+              className="absolute inset-0 w-full h-full object-cover"
+            />
+            {m.page_number && (
+              <span className="absolute bottom-1 right-1 text-[10px] font-mono bg-black/80 text-white px-1.5 py-0.5 rounded">
+                p{m.page_number}
+              </span>
+            )}
           </div>
-        </div>
+        ) : (
+          <div
+            className="col-span-3 sm:col-span-2 grain relative"
+            style={{ background: m.thumbnail_color }}
+            data-testid={`match-thumb-${i}`}
+          >
+            <div className="absolute inset-0 grid place-items-center">
+              <span className="font-display font-bold text-white/70 text-2xl">
+                {(m.product_name || "?")[0]}
+              </span>
+            </div>
+          </div>
+        )}
 
         <div className="col-span-9 sm:col-span-10 p-5 space-y-3">
           <div className="flex items-start justify-between gap-4 flex-wrap">
             <div className="min-w-0">
               <h3 className="font-display text-lg font-semibold truncate">{m.product_name}</h3>
-              <p className="text-xs text-neutral-500 mt-0.5 truncate">{m.catalogue_ref}</p>
+              <p className="text-xs text-neutral-500 mt-0.5 truncate">
+                {m.catalogue_ref}
+                {m.page_number ? ` · page ${m.page_number}` : ""}
+              </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
               <span
