@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import api from "@/lib/api";
-import { LogOut, LayoutGrid } from "lucide-react";
+import { LogOut, LayoutGrid, Shield } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Header({ variant = "app" }) {
@@ -53,6 +53,18 @@ export default function Header({ variant = "app" }) {
                 <LayoutGrid className="w-4 h-4" strokeWidth={1.5} />
                 Dashboard
               </button>
+
+              {user.role === "admin" && (
+                <button
+                  onClick={() => navigate("/admin/affiliates")}
+                  className="hidden sm:inline-flex items-center gap-2 text-sm text-neutral-700 hover:text-black px-3 py-2"
+                  data-testid="nav-admin-affiliates"
+                  title="Manage curated affiliate products"
+                >
+                  <Shield className="w-4 h-4" strokeWidth={1.5} />
+                  Affiliates
+                </button>
+              )}
 
               {/* Region preference toggle — drives AI prompt context (India sourcing brands, terminology). Server-only signal, never surfaced as vendor data. */}
               <div

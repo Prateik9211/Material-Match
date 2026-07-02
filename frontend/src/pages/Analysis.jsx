@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import Header from "@/components/Header";
 import DemoModeBanner from "@/components/DemoModeBanner";
+import ProductsSection from "@/components/analysis/ProductsSection";
 import api, { formatApiError, useConfig } from "@/lib/api";
 import { ArrowLeft, Sparkles, RefreshCw, ArrowUpRight, ChevronDown, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
@@ -119,18 +120,21 @@ export default function Analysis() {
   const realAnalysisActive = !!config?.enable_real_analysis;
   const [project, setProject] = useState(null);
   const [refImg, setRefImg] = useState(null);
+  const [products, setProducts] = useState([]);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [expandedRow, setExpandedRow] = useState(null);
 
   const fetchProject = useCallback(async () => {
     try {
-      const [p, r] = await Promise.all([
+      const [p, r, prod] = await Promise.all([
         api.get(`/projects/${id}`),
         api.get(`/projects/${id}/reference-image`).catch(() => null),
+        api.get(`/projects/${id}/products`).catch(() => null),
       ]);
       setProject(p.data);
       if (r) setRefImg(r.data.data_url);
+      if (prod) setProducts(prod.data.products || []);
     } catch (err) {
       toast.error(formatApiError(err));
     } finally {
@@ -145,6 +149,7 @@ export default function Analysis() {
     try {
       const { data } = await api.post(`/projects/${id}/analyze`);
       setProject((prev) => ({ ...(prev || {}), mock_analysis: data, status: "completed" }));
+      if (Array.isArray(data.products)) setProducts(data.products);
       toast.success("Specification generated");
     } catch (err) {
       toast.error(formatApiError(err));
@@ -232,6 +237,8 @@ export default function Analysis() {
             </div>
 
             <AnalysisSummaryCard summary={summary} />
+
+            <ProductsSection products={products} />
 
             <section>
               {!hasAnalysis ? (

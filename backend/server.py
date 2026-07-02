@@ -68,6 +68,15 @@ EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 LLM_PROVIDER = "anthropic"
 LLM_MODEL = "claude-sonnet-4-5-20250929"
 
+# Comma-separated list of emails that are auto-promoted to role="admin".
+# Users can add/edit/delete curated affiliate products only via this list.
+_ADMIN_EMAILS_RAW = os.environ.get("ADMIN_EMAILS", "").strip()
+ADMIN_EMAILS = {e.strip().lower() for e in _ADMIN_EMAILS_RAW.split(",") if e.strip()}
+# The legacy ADMIN_EMAIL var (single email) is also honoured for backward-compat.
+_legacy_admin = (os.environ.get("ADMIN_EMAIL") or "").strip().lower()
+if _legacy_admin:
+    ADMIN_EMAILS.add(_legacy_admin)
+
 app = FastAPI(title="MaterialMatch AI")
 api_router = APIRouter(prefix="/api")
 
@@ -239,11 +248,26 @@ async def get_current_user(request: Request) -> dict:
         # Backfill default preferred_region for older users so callers can rely on it.
         if user.get("preferred_region") not in SUPPORTED_REGIONS:
             user["preferred_region"] = DEFAULT_REGION
+        # Auto-promote admin emails. Idempotent — DB write only when needed.
+        email_lc = (user.get("email") or "").lower()
+        if email_lc in ADMIN_EMAILS and user.get("role") != "admin":
+            await db.users.update_one(
+                {"_id": ObjectId(user["id"])},
+                {"$set": {"role": "admin"}},
+            )
+            user["role"] = "admin"
         return user
     except pyjwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
     except pyjwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+
+async def require_admin(user: dict = Depends(get_current_user)) -> dict:
+    """Dependency: require role='admin' (auto-promoted via ADMIN_EMAILS)."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
 
 
 # ============================================================================
@@ -1116,7 +1140,510 @@ async def real_analyze(project_id: str, user: dict = Depends(get_current_user)):
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }}
     )
+
+    # Sprint 2: run products & fixtures detection alongside materials.
+    # Best-effort — failures are logged but don't break material analysis.
+    try:
+        products_result = await _run_products_pipeline(
+            project_id, user["id"], ref_b64,
+            region=user.get("preferred_region", DEFAULT_REGION),
+        )
+        if products_result:
+            analysis["products"] = products_result.get("products", [])
+            analysis["products_generated_at"] = products_result.get("generated_at")
+            await db.projects.update_one(
+                {"_id": ObjectId(project_id)},
+                {"$set": {
+                    "products_detected": products_result,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }}
+            )
+    except Exception:
+        logger.exception(f"products-pipeline failed project={project_id}")
+
     return analysis
+
+
+# ============================================================================
+# Sprint 2: Products & Fixtures Detection (separate AI pass from materials)
+# ============================================================================
+ENABLE_REAL_PRODUCTS = os.environ.get("ENABLE_REAL_PRODUCTS", "true").lower() == "true"
+LLM_MODEL_PRODUCTS = os.environ.get("LLM_MODEL_PRODUCTS", "gpt-4o-mini")
+LLM_PRODUCTS_TIMEOUT_S = int(os.environ.get("LLM_PRODUCTS_TIMEOUT_S", "45"))
+
+PRODUCT_CATEGORIES = [
+    "lighting", "furniture", "decor", "art", "textile-decor",
+    "fixture", "plant-planter", "electronics", "other",
+]
+
+PRODUCTS_SYSTEM_PROMPT = (
+    "You are an INTERIOR PRODUCT & FIXTURE identifier. Your job is to spot "
+    "SHOPPABLE PRODUCTS visible in an interior reference image — NOT surface "
+    "materials or finishes. Focus on named product categories a designer would "
+    "source from a supplier catalogue or Indian e-commerce site (Pepperfry, "
+    "Urban Ladder, IKEA India, WoodenStreet, Hafele India, Amazon.in). "
+    "Reply with ONLY a valid JSON object. No markdown fences, no prose."
+)
+
+PRODUCTS_USER_PROMPT = (
+    "Identify 3–8 distinct SHOPPABLE PRODUCTS or FIXTURES visible in this "
+    "interior. SKIP surface materials (walls, floors, paint, plaster, tiles). "
+    "Focus on standalone items a designer would BUY from a store or catalogue: "
+    "lighting fixtures, furniture pieces, decor objects, art frames, cushions, "
+    "rugs, curtains, plants + planters, mirrors, hardware, faucets, sanitary "
+    "fittings, etc.\n\n"
+    "Return ONLY this JSON shape:\n"
+    "{\n"
+    '  "products": [\n'
+    "    {\n"
+    '      "product_name": "concise product name, e.g. Brass Pendant Light",\n'
+    '      "category": "one of: ' + ", ".join(PRODUCT_CATEGORIES) + '",\n'
+    '      "description": "one sentence describing the product ≤ 140 chars",\n'
+    '      "style_keywords": ["3-5 style tags, e.g. modern, minimalist, mid-century"],\n'
+    '      "color_keywords": ["1-3 dominant colour tags, e.g. brass, warm white"],\n'
+    '      "material_keywords": ["1-3 material tags, e.g. brass, glass, wood"],\n'
+    '      "finish_keywords": ["0-3 finish tags, e.g. brushed, matte, polished"],\n'
+    '      "estimated_price_inr": "INR price band string, e.g. ₹4,000–₹12,000",\n'
+    '      "search_keywords": ["2-4 India-market search phrases, e.g. brass pendant light india"],\n'
+    '      "confidence": 0\n'
+    "    }\n"
+    "  ]\n"
+    "}\n\n"
+    "Rules:\n"
+    "- confidence is an INTEGER 0-100.\n"
+    "- category MUST be one of the listed enum values.\n"
+    "- estimated_price_inr should reflect typical Indian market prices for the "
+    "product type (use ₹ symbol, e.g. '₹2,000–₹6,000').\n"
+    "- search_keywords should be phrases a designer would type into Amazon.in "
+    "or Pepperfry to find similar products.\n"
+    "- Return 3–8 products. Skip ambiguous or heavily-occluded items.\n"
+    "- Reply with ONLY the JSON object."
+)
+
+# Mock products library — deterministic fallback when real AI is off.
+MOCK_PRODUCTS_LIBRARY = [
+    {
+        "product_name": "Brushed Brass Pendant Light",
+        "category": "lighting",
+        "description": "Modern brass pendant with fluted glass shade.",
+        "style_keywords": ["modern", "minimalist", "warm"],
+        "color_keywords": ["brass", "gold"],
+        "material_keywords": ["brass", "glass"],
+        "finish_keywords": ["brushed", "matte"],
+        "estimated_price_inr": "₹4,000–₹14,000",
+        "search_keywords": ["brass pendant light india", "modern pendant lamp"],
+        "confidence": 88,
+    },
+    {
+        "product_name": "Bouclé Accent Chair",
+        "category": "furniture",
+        "description": "Curved lounge chair upholstered in cream bouclé fabric.",
+        "style_keywords": ["contemporary", "cozy", "sculptural"],
+        "color_keywords": ["cream", "beige"],
+        "material_keywords": ["bouclé", "wood"],
+        "finish_keywords": ["soft", "matte"],
+        "estimated_price_inr": "₹18,000–₹45,000",
+        "search_keywords": ["boucle accent chair india", "curved lounge chair"],
+        "confidence": 85,
+    },
+    {
+        "product_name": "Hand-tufted Wool Rug",
+        "category": "textile-decor",
+        "description": "Neutral sand-tone wool rug with subtle loop-pile texture.",
+        "style_keywords": ["japandi", "neutral", "layered"],
+        "color_keywords": ["sand", "ivory"],
+        "material_keywords": ["wool"],
+        "finish_keywords": ["hand-tufted"],
+        "estimated_price_inr": "₹8,000–₹30,000",
+        "search_keywords": ["wool rug india", "hand tufted rug"],
+        "confidence": 82,
+    },
+    {
+        "product_name": "Ceramic Vase Set",
+        "category": "decor",
+        "description": "Set of matte ceramic vases in warm neutral tones.",
+        "style_keywords": ["organic", "minimalist"],
+        "color_keywords": ["beige", "off-white"],
+        "material_keywords": ["ceramic"],
+        "finish_keywords": ["matte"],
+        "estimated_price_inr": "₹1,500–₹4,500",
+        "search_keywords": ["ceramic vase set india", "decorative vase"],
+        "confidence": 78,
+    },
+    {
+        "product_name": "Solid Wood Coffee Table",
+        "category": "furniture",
+        "description": "Low-profile coffee table in solid sheesham or teak wood.",
+        "style_keywords": ["modern", "warm", "natural"],
+        "color_keywords": ["walnut", "brown"],
+        "material_keywords": ["sheesham", "teak"],
+        "finish_keywords": ["oiled", "satin"],
+        "estimated_price_inr": "₹9,000–₹28,000",
+        "search_keywords": ["sheesham coffee table india", "wooden coffee table"],
+        "confidence": 84,
+    },
+    {
+        "product_name": "Framed Botanical Print",
+        "category": "art",
+        "description": "Neutral botanical wall art in a slim wood frame.",
+        "style_keywords": ["minimalist", "calm"],
+        "color_keywords": ["green", "sage"],
+        "material_keywords": ["paper", "wood-frame"],
+        "finish_keywords": ["matte"],
+        "estimated_price_inr": "₹800–₹3,500",
+        "search_keywords": ["botanical wall art india", "framed print"],
+        "confidence": 74,
+    },
+]
+
+
+def _validate_products_payload(data) -> dict:
+    """Strict validation for products payload from the LLM."""
+    if not isinstance(data, dict) or "products" not in data or not isinstance(data["products"], list):
+        raise ValueError("payload missing 'products' array")
+    raw = data["products"]
+    if not (1 <= len(raw) <= 12):
+        raise ValueError(f"products count {len(raw)} outside 1-12")
+    cleaned = []
+    for i, p in enumerate(raw):
+        if not isinstance(p, dict):
+            raise ValueError(f"product {i} not an object")
+        name = p.get("product_name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"product {i} missing product_name")
+        category = p.get("category")
+        if category not in PRODUCT_CATEGORIES:
+            category = "other"
+        conf = p.get("confidence")
+        try:
+            conf_int = max(0, min(100, int(round(float(conf)))))
+        except (TypeError, ValueError):
+            conf_int = 60
+        cleaned.append({
+            "product_name": name.strip()[:120],
+            "category": category,
+            "description": _clean_optional_text(p.get("description"), max_len=180) or "",
+            "style_keywords": _clean_optional_list(p.get("style_keywords"), item_max=40, max_items=6),
+            "color_keywords": _clean_optional_list(p.get("color_keywords"), item_max=40, max_items=4),
+            "material_keywords": _clean_optional_list(p.get("material_keywords"), item_max=40, max_items=4),
+            "finish_keywords": _clean_optional_list(p.get("finish_keywords"), item_max=40, max_items=4),
+            "estimated_price_inr": _clean_optional_text(p.get("estimated_price_inr"), max_len=60) or "",
+            "search_keywords": _clean_optional_list(p.get("search_keywords"), item_max=100, max_items=5),
+            "confidence": conf_int,
+        })
+    return {"products": cleaned}
+
+
+async def _run_products_pipeline(project_id: str, user_id: str, ref_b64: str,
+                                 region: str = DEFAULT_REGION) -> dict:
+    """Detect products/fixtures. Uses real AI when enabled, else mock. Also
+    enriches each product with an affiliate DB match (curated) and fallback
+    search URLs.
+
+    Returns {'products': [...], 'generated_at': ...}. Never raises — a failure
+    inside is logged and returned as an empty products list."""
+    products: list = []
+    if ENABLE_REAL_PRODUCTS and EMERGENT_LLM_KEY:
+        try:
+            products = await _run_real_products(project_id, ref_b64)
+        except Exception:
+            logger.exception(f"real-products failed project={project_id}, falling back to mock")
+            products = _mock_products(project_id)
+    else:
+        products = _mock_products(project_id)
+
+    # Enrich each detected product with affiliate match + fallback search URLs.
+    enriched = []
+    for idx, p in enumerate(products):
+        matched = await _match_product_to_affiliates(p)
+        p_out = dict(p)
+        p_out["id"] = f"product_{idx + 1}"
+        p_out["matched_affiliate"] = matched
+        p_out["search_urls"] = _build_search_urls(p)
+        enriched.append(p_out)
+
+    return {
+        "products": enriched,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "region": region,
+        "version": ("real-openai-" + LLM_MODEL_PRODUCTS + "-v1") if (ENABLE_REAL_PRODUCTS and EMERGENT_LLM_KEY) else "mock-products-v1",
+    }
+
+
+async def _run_real_products(project_id: str, ref_b64: str) -> list:
+    """Single-call real-AI product detection. Returns validated products list."""
+    import asyncio
+    chat = LlmChat(
+        api_key=EMERGENT_LLM_KEY,
+        session_id=f"products-{project_id}-{secrets.token_hex(4)}",
+        system_message=PRODUCTS_SYSTEM_PROMPT,
+    ).with_model("openai", LLM_MODEL_PRODUCTS)
+    msg = UserMessage(text=PRODUCTS_USER_PROMPT,
+                      file_contents=[ImageContent(image_base64=ref_b64)])
+    raw = await asyncio.wait_for(chat.send_message(msg), timeout=LLM_PRODUCTS_TIMEOUT_S)
+    parsed = _parse_json(raw)
+    cleaned = _validate_products_payload(parsed)
+    return cleaned["products"]
+
+
+def _mock_products(project_id: str) -> list:
+    """Deterministic 4-item mock product set per project_id."""
+    seed = int(ObjectId(project_id).binary[-4:].hex(), 16)
+    start = seed % len(MOCK_PRODUCTS_LIBRARY)
+    return [dict(MOCK_PRODUCTS_LIBRARY[(start + i) % len(MOCK_PRODUCTS_LIBRARY)])
+            for i in range(4)]
+
+
+def _build_search_urls(product: dict) -> dict:
+    """Return {'amazon_in': url, 'google': url} using the first search keyword."""
+    from urllib.parse import quote_plus
+    kws = product.get("search_keywords") or []
+    q = kws[0] if kws else product.get("product_name", "")
+    q = (q or "").strip()
+    if not q:
+        return {}
+    # Ensure "india" appears once in the google query without duplicating.
+    google_q = q if "india" in q.lower() else f"{q} india"
+    return {
+        "amazon_in": f"https://www.amazon.in/s?k={quote_plus(q)}",
+        "google": f"https://www.google.com/search?tbm=shop&q={quote_plus(google_q)}",
+    }
+
+
+# ============================================================================
+# Sprint 2: Affiliate Products database (admin-managed curated DB)
+# ============================================================================
+AFFILIATE_MATCH_MIN_SCORE = float(os.environ.get("AFFILIATE_MATCH_MIN_SCORE", "0.20"))
+
+AFFILIATE_PLATFORMS = [
+    "Pepperfry", "Urban Ladder", "IKEA India", "WoodenStreet",
+    "Hafele India", "Amazon India", "Jaipur Rugs", "Fabindia", "Other",
+]
+
+
+class AffiliateProductCreate(BaseModel):
+    product_name: str = Field(min_length=1, max_length=200)
+    product_category: str  # one of PRODUCT_CATEGORIES
+    style_keywords: List[str] = []
+    color_keywords: List[str] = []
+    material_keywords: List[str] = []
+    finish_keywords: List[str] = []
+    affiliate_url: str = Field(min_length=1)
+    platform: str = "Other"
+    product_image_url: Optional[str] = ""
+    price_inr: Optional[str] = ""
+    notes: Optional[str] = ""
+
+
+class AffiliateProductUpdate(BaseModel):
+    product_name: Optional[str] = None
+    product_category: Optional[str] = None
+    style_keywords: Optional[List[str]] = None
+    color_keywords: Optional[List[str]] = None
+    material_keywords: Optional[List[str]] = None
+    finish_keywords: Optional[List[str]] = None
+    affiliate_url: Optional[str] = None
+    platform: Optional[str] = None
+    product_image_url: Optional[str] = None
+    price_inr: Optional[str] = None
+    notes: Optional[str] = None
+
+
+def _affiliate_to_dict(doc: dict) -> dict:
+    """Normalise a stored affiliate document for API response."""
+    if not doc:
+        return doc
+    out = dict(doc)
+    out["id"] = str(out.pop("_id", ""))
+    return out
+
+
+def _sanitize_kw_list(v) -> list:
+    if not isinstance(v, list):
+        return []
+    return [s.strip().lower() for s in v if isinstance(s, str) and s.strip()][:12]
+
+
+@api_router.get("/admin/affiliates")
+async def list_affiliates(admin: dict = Depends(require_admin)):
+    cursor = db.affiliate_products.find({}).sort("created_at", -1)
+    return [_affiliate_to_dict(d) async for d in cursor]
+
+
+@api_router.post("/admin/affiliates")
+async def create_affiliate(payload: AffiliateProductCreate, admin: dict = Depends(require_admin)):
+    if payload.product_category not in PRODUCT_CATEGORIES:
+        raise HTTPException(status_code=400, detail=f"product_category must be one of {PRODUCT_CATEGORIES}")
+    doc = {
+        "product_name": payload.product_name.strip(),
+        "product_category": payload.product_category,
+        "style_keywords": _sanitize_kw_list(payload.style_keywords),
+        "color_keywords": _sanitize_kw_list(payload.color_keywords),
+        "material_keywords": _sanitize_kw_list(payload.material_keywords),
+        "finish_keywords": _sanitize_kw_list(payload.finish_keywords),
+        "affiliate_url": payload.affiliate_url.strip(),
+        "platform": (payload.platform or "Other").strip(),
+        "product_image_url": (payload.product_image_url or "").strip(),
+        "price_inr": (payload.price_inr or "").strip(),
+        "notes": (payload.notes or "").strip(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": admin["id"],
+    }
+    res = await db.affiliate_products.insert_one(doc)
+    doc["id"] = str(res.inserted_id)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.get("/admin/affiliates/{aff_id}")
+async def get_affiliate(aff_id: str, admin: dict = Depends(require_admin)):
+    try:
+        doc = await db.affiliate_products.find_one({"_id": ObjectId(aff_id)})
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid id")
+    if not doc:
+        raise HTTPException(status_code=404, detail="Not found")
+    return _affiliate_to_dict(doc)
+
+
+@api_router.put("/admin/affiliates/{aff_id}")
+async def update_affiliate(aff_id: str, payload: AffiliateProductUpdate,
+                           admin: dict = Depends(require_admin)):
+    updates: dict = {}
+    if payload.product_name is not None:
+        updates["product_name"] = payload.product_name.strip()
+    if payload.product_category is not None:
+        if payload.product_category not in PRODUCT_CATEGORIES:
+            raise HTTPException(status_code=400, detail="Invalid product_category")
+        updates["product_category"] = payload.product_category
+    for k in ("style_keywords", "color_keywords", "material_keywords", "finish_keywords"):
+        val = getattr(payload, k)
+        if val is not None:
+            updates[k] = _sanitize_kw_list(val)
+    for k in ("affiliate_url", "platform", "product_image_url", "price_inr", "notes"):
+        val = getattr(payload, k)
+        if val is not None:
+            updates[k] = str(val).strip()
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        res = await db.affiliate_products.find_one_and_update(
+            {"_id": ObjectId(aff_id)},
+            {"$set": updates},
+            return_document=True,
+        )
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid id")
+    if not res:
+        raise HTTPException(status_code=404, detail="Not found")
+    return _affiliate_to_dict(res)
+
+
+@api_router.delete("/admin/affiliates/{aff_id}")
+async def delete_affiliate(aff_id: str, admin: dict = Depends(require_admin)):
+    try:
+        res = await db.affiliate_products.delete_one({"_id": ObjectId(aff_id)})
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid id")
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"ok": True}
+
+
+# --- Keyword-similarity matching -------------------------------------------
+def _tokenize_text(s: str) -> set:
+    if not isinstance(s, str):
+        return set()
+    return {t for t in re.findall(r"[a-z0-9]+", s.lower()) if len(t) > 1}
+
+
+def _jaccard(a: set, b: set) -> float:
+    if not a or not b:
+        return 0.0
+    inter = len(a & b)
+    union = len(a | b)
+    return inter / union if union else 0.0
+
+
+def _kw_set(items) -> set:
+    if not isinstance(items, list):
+        return set()
+    return {s.strip().lower() for s in items if isinstance(s, str) and s.strip()}
+
+
+def _score_affiliate_match(product: dict, aff: dict) -> float:
+    """Weighted Jaccard similarity between a detected product and an affiliate."""
+    p_name = _tokenize_text(product.get("product_name", ""))
+    a_name = _tokenize_text(aff.get("product_name", ""))
+    p_style = _kw_set(product.get("style_keywords"))
+    a_style = _kw_set(aff.get("style_keywords"))
+    p_mat = _kw_set(product.get("material_keywords"))
+    a_mat = _kw_set(aff.get("material_keywords"))
+    p_color = _kw_set(product.get("color_keywords"))
+    a_color = _kw_set(aff.get("color_keywords"))
+    p_finish = _kw_set(product.get("finish_keywords"))
+    a_finish = _kw_set(aff.get("finish_keywords"))
+    return (
+        0.30 * _jaccard(p_name, a_name)
+        + 0.25 * _jaccard(p_style, a_style)
+        + 0.20 * _jaccard(p_mat, a_mat)
+        + 0.15 * _jaccard(p_color, a_color)
+        + 0.10 * _jaccard(p_finish, a_finish)
+    )
+
+
+async def _match_product_to_affiliates(product: dict) -> Optional[dict]:
+    """Find best affiliate DB match for a detected product. Returns match dict or None."""
+    category = product.get("category")
+    # Prefer same category, but also consider items with no/other category as fallback.
+    query = {"product_category": category} if category else {}
+    best = None
+    best_score = 0.0
+    async for aff in db.affiliate_products.find(query):
+        score = _score_affiliate_match(product, aff)
+        if score > best_score:
+            best_score = score
+            best = aff
+    # Fallback: if no same-category match, try across ALL categories with a
+    # stricter score bar so we don't cross-match wildly.
+    if best is None or best_score < AFFILIATE_MATCH_MIN_SCORE:
+        async for aff in db.affiliate_products.find({}):
+            if aff.get("product_category") == category:
+                continue
+            score = _score_affiliate_match(product, aff) * 0.75  # penalise cross-category
+            if score > best_score:
+                best_score = score
+                best = aff
+    if best is None or best_score < AFFILIATE_MATCH_MIN_SCORE:
+        return None
+    return {
+        "id": str(best["_id"]),
+        "product_name": best.get("product_name"),
+        "product_category": best.get("product_category"),
+        "platform": best.get("platform"),
+        "affiliate_url": best.get("affiliate_url"),
+        "product_image_url": best.get("product_image_url") or "",
+        "price_inr": best.get("price_inr") or "",
+        "match_score": round(best_score, 3),
+    }
+
+
+@api_router.get("/projects/{project_id}/products")
+async def get_project_products(project_id: str, user: dict = Depends(get_current_user)):
+    """Return the last-run detected products (with affiliate matches) for a project.
+    Returns 200 with empty list if none yet."""
+    try:
+        doc = await db.projects.find_one({"_id": ObjectId(project_id), "user_id": user["id"]})
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid project id")
+    if not doc:
+        raise HTTPException(status_code=404, detail="Project not found")
+    pd = doc.get("products_detected") or {}
+    return {"products": pd.get("products", []),
+            "generated_at": pd.get("generated_at"),
+            "version": pd.get("version")}
 
 
 
@@ -2209,6 +2736,8 @@ async def startup_event():
         await db.usage_counters.create_index([("user_id", 1), ("day", 1)], unique=True)
         # auto-expire counters after 32 days
         await db.usage_counters.create_index("created_at", expireAfterSeconds=32 * 86400)
+        await db.affiliate_products.create_index("product_category")
+        await db.affiliate_products.create_index("product_name")
     except Exception:
         logger.exception("Index creation failed")
 
@@ -2230,6 +2759,160 @@ async def startup_event():
             {"email": admin_email},
             {"$set": {"password_hash": hash_password(admin_password)}}
         )
+
+    # Sprint 2: seed a small set of curated Indian affiliate products so the
+    # matching flow is demoable out of the box. Idempotent (skips if collection
+    # already has any docs).
+    try:
+        existing_count = await db.affiliate_products.count_documents({})
+        if existing_count == 0:
+            await db.affiliate_products.insert_many(_seed_affiliate_products())
+            logger.info(f"Seeded {len(_seed_affiliate_products())} affiliate products")
+    except Exception:
+        logger.exception("Affiliate seed failed")
+
+
+def _seed_affiliate_products() -> list:
+    """Return a list of curated Indian affiliate products for initial demo.
+    Every entry uses Indian platforms only (Pepperfry, Urban Ladder, IKEA India,
+    WoodenStreet, Hafele India, Amazon India, Jaipur Rugs)."""
+    now = datetime.now(timezone.utc).isoformat()
+    entries = [
+        {
+            "product_name": "Brass Pendant Light – Fluted Glass Shade",
+            "product_category": "lighting",
+            "style_keywords": ["modern", "minimalist", "warm", "pendant"],
+            "color_keywords": ["brass", "gold", "amber"],
+            "material_keywords": ["brass", "glass"],
+            "finish_keywords": ["brushed", "matte"],
+            "affiliate_url": "https://www.pepperfry.com/product/pendant-light-brass",
+            "platform": "Pepperfry",
+            "product_image_url": "https://images.unsplash.com/photo-1524634126442-357e0eac3c14?w=600",
+            "price_inr": "₹5,499",
+            "notes": "Brass finish pendant light with fluted glass, popular Indian modern spec.",
+        },
+        {
+            "product_name": "Boucle Accent Lounge Chair – Cream",
+            "product_category": "furniture",
+            "style_keywords": ["contemporary", "cozy", "sculptural", "curved"],
+            "color_keywords": ["cream", "beige", "ivory"],
+            "material_keywords": ["boucle", "fabric", "wood"],
+            "finish_keywords": ["soft", "matte"],
+            "affiliate_url": "https://www.urbanladder.com/products/boucle-lounge-chair",
+            "platform": "Urban Ladder",
+            "product_image_url": "https://images.unsplash.com/photo-1592078615290-033ee584e267?w=600",
+            "price_inr": "₹27,999",
+            "notes": "Curved lounge chair with textured bouclé upholstery.",
+        },
+        {
+            "product_name": "Sheesham Wood Coffee Table – Rectangular",
+            "product_category": "furniture",
+            "style_keywords": ["modern", "natural", "warm"],
+            "color_keywords": ["walnut", "brown", "honey"],
+            "material_keywords": ["sheesham", "wood"],
+            "finish_keywords": ["oiled", "satin"],
+            "affiliate_url": "https://www.woodenstreet.com/coffee-tables/sheesham",
+            "platform": "WoodenStreet",
+            "product_image_url": "https://images.unsplash.com/photo-1594026112284-02bb6f3352fe?w=600",
+            "price_inr": "₹14,499",
+            "notes": "Solid sheesham (Indian rosewood) coffee table.",
+        },
+        {
+            "product_name": "Hand-Tufted Wool Area Rug – Sand",
+            "product_category": "textile-decor",
+            "style_keywords": ["japandi", "neutral", "layered", "natural"],
+            "color_keywords": ["sand", "ivory", "beige"],
+            "material_keywords": ["wool"],
+            "finish_keywords": ["hand-tufted", "loop-pile"],
+            "affiliate_url": "https://www.jaipurrugs.com/rugs/hand-tufted-wool-sand",
+            "platform": "Jaipur Rugs",
+            "product_image_url": "https://images.unsplash.com/photo-1600166898405-da9535204843?w=600",
+            "price_inr": "₹18,900",
+            "notes": "Neutral hand-tufted wool rug from Jaipur Rugs.",
+        },
+        {
+            "product_name": "Terracotta Ceramic Vase Set of 3",
+            "product_category": "decor",
+            "style_keywords": ["organic", "minimalist", "earthy"],
+            "color_keywords": ["beige", "terracotta", "off-white"],
+            "material_keywords": ["ceramic"],
+            "finish_keywords": ["matte"],
+            "affiliate_url": "https://www.amazon.in/s?k=terracotta+vase+set",
+            "platform": "Amazon India",
+            "product_image_url": "https://images.unsplash.com/photo-1578500494198-246f612d3b3d?w=600",
+            "price_inr": "₹2,199",
+            "notes": "Matte terracotta vase set — organic modern look.",
+        },
+        {
+            "product_name": "Framed Botanical Wall Art – Set of 2",
+            "product_category": "art",
+            "style_keywords": ["minimalist", "calm", "natural"],
+            "color_keywords": ["green", "sage", "beige"],
+            "material_keywords": ["paper", "wood-frame", "glass"],
+            "finish_keywords": ["matte"],
+            "affiliate_url": "https://www.pepperfry.com/product/framed-botanical-print",
+            "platform": "Pepperfry",
+            "product_image_url": "https://images.unsplash.com/photo-1513519245088-0e12902e5a38?w=600",
+            "price_inr": "₹1,899",
+            "notes": "Set of two botanical prints in slim wood frames.",
+        },
+        {
+            "product_name": "IKEA STOCKHOLM Table Lamp – Brass & Linen",
+            "product_category": "lighting",
+            "style_keywords": ["mid-century", "warm", "elegant"],
+            "color_keywords": ["brass", "off-white"],
+            "material_keywords": ["brass", "linen"],
+            "finish_keywords": ["brushed"],
+            "affiliate_url": "https://www.ikea.com/in/en/p/stockholm-table-lamp",
+            "platform": "IKEA India",
+            "product_image_url": "https://images.unsplash.com/photo-1507473885765-e6ed057f782c?w=600",
+            "price_inr": "₹6,990",
+            "notes": "Table lamp with brass base and linen shade.",
+        },
+        {
+            "product_name": "Hafele Brushed Brass Cabinet Handle",
+            "product_category": "fixture",
+            "style_keywords": ["modern", "warm", "premium"],
+            "color_keywords": ["brass", "gold"],
+            "material_keywords": ["brass"],
+            "finish_keywords": ["brushed", "satin"],
+            "affiliate_url": "https://www.hafeleindia.com/handles/brushed-brass",
+            "platform": "Hafele India",
+            "product_image_url": "https://images.unsplash.com/photo-1615529182904-14819c35db37?w=600",
+            "price_inr": "₹399",
+            "notes": "Brushed brass cabinet handle from Hafele India range.",
+        },
+        {
+            "product_name": "Fiddle Leaf Fig Plant with Ceramic Planter",
+            "product_category": "plant-planter",
+            "style_keywords": ["organic", "modern", "biophilic"],
+            "color_keywords": ["green", "off-white"],
+            "material_keywords": ["ceramic", "plant"],
+            "finish_keywords": ["matte"],
+            "affiliate_url": "https://www.amazon.in/s?k=fiddle+leaf+fig+plant+planter",
+            "platform": "Amazon India",
+            "product_image_url": "https://images.unsplash.com/photo-1509423350716-97f9360b4e09?w=600",
+            "price_inr": "₹1,499",
+            "notes": "Live fiddle-leaf fig with matte ceramic planter.",
+        },
+        {
+            "product_name": "Cotton Linen Cushion Cover Set of 5",
+            "product_category": "textile-decor",
+            "style_keywords": ["cozy", "layered", "neutral"],
+            "color_keywords": ["beige", "off-white", "sand"],
+            "material_keywords": ["cotton", "linen"],
+            "finish_keywords": ["woven"],
+            "affiliate_url": "https://www.pepperfry.com/product/cushion-cover-cotton-linen",
+            "platform": "Pepperfry",
+            "product_image_url": "https://images.unsplash.com/photo-1584100936595-c0654b55a2e2?w=600",
+            "price_inr": "₹899",
+            "notes": "Cotton-linen cushion covers in warm neutral tones.",
+        },
+    ]
+    for e in entries:
+        e["created_at"] = now
+        e["updated_at"] = now
+    return entries
 
 
 @app.on_event("shutdown")

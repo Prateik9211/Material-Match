@@ -54,7 +54,7 @@ export default function Landing() {
             </div>
             <div className="flex flex-wrap items-center gap-x-6 gap-y-2 pt-4 text-sm text-neutral-500">
               <div className="flex items-center gap-2"><Check className="w-4 h-4" strokeWidth={1.5} /> Designer-first</div>
-              <div className="flex items-center gap-2"><Check className="w-4 h-4" strokeWidth={1.5} /> Catalogue-first</div>
+              <div className="flex items-center gap-2" data-testid="hero-trust-products"><Check className="w-4 h-4" strokeWidth={1.5} /> Products &amp; Fixtures Detection</div>
               <div className="flex items-center gap-2"><Check className="w-4 h-4" strokeWidth={1.5} /> India-first sourcing</div>
               <div className="flex items-center gap-2"><Check className="w-4 h-4" strokeWidth={1.5} /> Specification-ready</div>
             </div>

@@ -9,6 +9,7 @@ import Dashboard from "@/pages/Dashboard";
 import NewProject from "@/pages/NewProject";
 import Analysis from "@/pages/Analysis";
 import Match from "@/pages/Match";
+import AdminAffiliates from "@/pages/AdminAffiliates";
 
 function App() {
   return (
@@ -47,6 +48,14 @@ function App() {
             element={
               <ProtectedRoute>
                 <Match />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/affiliates"
+            element={
+              <ProtectedRoute>
+                <AdminAffiliates />
               </ProtectedRoute>
             }
           />

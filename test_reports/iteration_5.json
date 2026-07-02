@@ -1,0 +1,29 @@
+{
+  "summary": "Sprint 2 full backend + frontend E2E testing. Backend: 36 unit tests (test_products_and_affiliates.py, test_batch_validator.py, test_v2_analysis_and_pdf.py) + 12 new integration tests (test_sprint2_integration.py) — all 48 PASS. Frontend: admin CRUD flow (add/edit/delete affiliate), non-admin gating (link hidden + /admin/affiliates redirects to /dashboard), Products & Fixtures section renders with 4 cards, all with curated green recommendation box + Amazon.in + Google Shopping fallback links, spec zones table + region toggle + Match With Catalogue button all regression-clean. Landing page: hero-trust-products bullet reads 'Products & Fixtures Detection' and 'Catalogue-first' is gone.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_sprint2_integration.py",
+    "/app/backend/tests/test_products_and_affiliates.py",
+    "/app/test_reports/pytest/sprint2.xml",
+    "/app/test_reports/pytest/sprint2_integration.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now 2927 lines — well above 700-line guideline. Sprint 2 added ~350 more lines. Strongly recommend extracting: (a) affiliate DB models + CRUD -> /app/backend/affiliates.py, (b) products detection + validator + seed -> /app/backend/products.py, (c) match engine -> /app/backend/match_engine.py. Current monolith makes future changes risky.",
+    "AdminAffiliates.jsx uses native window.confirm() for delete (screenshot-friendly but non-standard for the rest of the design system that uses sonner toasts + shadcn dialogs). Consider a shadcn AlertDialog for consistency.",
+    "Header.jsx role check runs on first render before /auth/me resolves — briefly the Affiliates link is missing then appears after auth hydrate. Minor UX flicker; not blocking.",
+    "AffiliateProductCreate.price_inr is Optional[str] — API accepts anything. Consider a light regex (₹ + digits + range) or auto-format on server. Not blocking.",
+    "test_products_and_affiliates.py imports from `server` — only runs correctly when pytest is invoked from /app/backend. Add /app/conftest.py or update rootdir so tests run from /app too (test_finish agents that cd to /app will otherwise ImportError)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sprint2_integration.py (new — 12 integration tests)"
+  ],
+  "success_rate": {"backend": "100% (48/48 relevant tests)", "frontend": "100% (all Sprint 2 flows verified end-to-end)"},
+  "test_credentials": "Admin: admin@materialmatch.ai / MaterialAdmin2026! (works, role=admin). Non-admin: designer@test.com / Designer2026! (works, role=user).",
+  "seed_data_creation": "Verified 10 seeded Indian affiliate products load on first admin visit (Pepperfry, Urban Ladder, IKEA India, WoodenStreet, Jaipur Rugs, Amazon India, etc.). Integration tests create+edit+delete TEST_-prefixed rows and clean up.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Sprint 2 fully green. Backend suite: `cd /app/backend && pytest tests/test_sprint2_integration.py tests/test_products_and_affiliates.py tests/test_batch_validator.py tests/test_v2_analysis_and_pdf.py -v` = 48/48. The integration file uses REACT_APP_BACKEND_URL and hits real endpoints — takes ~20s due to real gpt-4o-mini analyze call. Auth uses Authorization: Bearer <token> from /api/auth/login response. Frontend testids in play: nav-admin-affiliates, admin-affiliates-page, affiliate-row-{id}, affiliate-edit-{id}, affiliate-delete-{id}, add-affiliate-btn, affiliate-modal, affiliate-input-{name|category|platform|url|image|price|style_keywords|color_keywords|material_keywords|finish_keywords|notes}, affiliate-modal-save, products-section, products-count, product-card-{i}, product-name-{i}, product-price-{i}, product-curated-{i}, product-curated-name-{i}, product-curated-link-{i}, product-search-amazon-{i}, product-search-google-{i}, hero-trust-products. Pre-existing failures noted by main agent (test_start_analysis, test_mock_analyze happy_path, test_region_india HTTPS-cookie tests) NOT re-verified — flagged as out of scope for Sprint 2.",
+  "rca of the issue": "No bugs found. Every acceptance criterion in review_request confirmed: admin/user role gating (frontend + backend 403/401), 10-item Indian seed loads, admin CRUD works end-to-end, bad category rejected (422), /projects/{id}/analyze returns both rows and products (4 items, all with search_urls containing amazon.in/s?k= and tbm=shop), /projects/{id}/products caches results and cross-user access returns 404, ProductsSection renders on Analysis page with curated recommendation badges and fallback search buttons on every card, Landing 'Catalogue-first' bullet replaced by 'Products & Fixtures Detection', no regressions on region toggle / Match with Catalogue / spec zones table."
+}
