@@ -3150,19 +3150,6 @@ def _room_owner_query(room_id: str, user_id: str) -> dict:
     return {"_id": ObjectId(room_id), "user_id": user_id}
 
 
-def _room_public_projection() -> dict:
-    """Fields we want on the read-only public share view."""
-    return {
-        "name": 1, "room_type": 1, "order": 1,
-        "current_site_photos": 1, "moodboards": 1, "reference_images": 1,
-        "concept_overview": 1, "designer_notes": 1,
-        "pinned_material_row_ids": 1, "pinned_product_ids": 1,
-        "share_slug": 1, "share_enabled": 1,
-        "project_id": 1, "user_id": 1,
-        "updated_at": 1,
-    }
-
-
 def _room_out(doc: dict) -> dict:
     """Serialize a room doc — drop image bytes to keep response small."""
     if not doc:
