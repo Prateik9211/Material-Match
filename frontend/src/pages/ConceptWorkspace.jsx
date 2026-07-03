@@ -250,6 +250,7 @@ export default function ConceptWorkspace() {
 
   const projectSpecs = (project?.mock_analysis?.rows) || [];
   const projectProducts = project?._products || [];
+  const projectCatalogueMatches = (project?.match_results?.top_matches) || [];
   const pinnedRowIds = new Set(activeRoomFull?.pinned_material_row_ids || []);
   const pinnedProdIds = new Set(activeRoomFull?.pinned_product_ids || []);
   const pinnedSpecs = projectSpecs.filter((r) => pinnedRowIds.has(String(r.id || r.row_id || r.zone || "")));
@@ -407,9 +408,11 @@ export default function ConceptWorkspace() {
                 room={activeRoomFull}
                 specs={pinnedSpecs}
                 products={pinnedProducts}
+                catalogueMatches={projectCatalogueMatches}
                 resolveImageUrl={resolveEditorImageUrl}
                 projectName={project?.name}
                 clientName={project?.client_name}
+                showCover={false}
               />
             </div>
           </div>

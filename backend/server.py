@@ -2934,6 +2934,7 @@ async def _seed_demo_project() -> None:
         "current_site_photos": [],
         "moodboards": [],
         "reference_images": [],
+        "final_render_images": [],
         "concept_overview": (
             "This living room is designed to feel calm, warm and considered. A restrained "
             "palette of honey oak, sand-beige stone and ivory bouclé creates a quiet contrast "
@@ -3122,7 +3123,7 @@ ROOM_TYPES = [
     "office", "kids", "outdoor", "hallway", "custom",
 ]
 
-IMAGE_KINDS = ["current_site", "moodboard", "reference"]
+IMAGE_KINDS = ["current_site", "moodboard", "reference", "final_render"]
 
 MAX_IMAGES_PER_KIND = 12
 MAX_ROOM_IMAGE_BYTES = 6 * 1024 * 1024  # 6MB per image
@@ -3181,6 +3182,7 @@ def _kind_field(kind: str) -> str:
         "current_site": "current_site_photos",
         "moodboard": "moodboards",
         "reference": "reference_images",
+        "final_render": "final_render_images",
     }[kind]
 
 
@@ -3200,6 +3202,17 @@ async def create_room(project_id: str, payload: RoomCreate,
     now = datetime.now(timezone.utc).isoformat()
     # Determine order = current count
     order = await db.rooms.count_documents({"project_id": project_id})
+    # Sprint 5A: auto-populate pins from the parent project so the room is
+    # presentation-ready immediately after creation. Designer edits later.
+    proj_rows = ((proj.get("mock_analysis") or {}).get("rows")) or []
+    proj_products = ((proj.get("products_detected") or {}).get("products")) or []
+    default_pinned_rows = [
+        str(r.get("id") or r.get("row_id") or r.get("zone") or "")
+        for r in proj_rows if (r.get("zone") or r.get("id"))
+    ][:16]
+    default_pinned_products = [
+        str(p.get("id") or "") for p in proj_products if p.get("id")
+    ][:16]
     doc = {
         "project_id": project_id,
         "user_id": user["id"],
@@ -3209,11 +3222,12 @@ async def create_room(project_id: str, payload: RoomCreate,
         "current_site_photos": [],
         "moodboards": [],
         "reference_images": [],
+        "final_render_images": [],
         "concept_overview": "",
         "concept_overview_ai_draft": "",
         "designer_notes": "",
-        "pinned_material_row_ids": [],
-        "pinned_product_ids": [],
+        "pinned_material_row_ids": default_pinned_rows,
+        "pinned_product_ids": default_pinned_products,
         "share_slug": _make_slug(),
         "share_enabled": False,
         "created_at": now,
@@ -3488,7 +3502,9 @@ async def toggle_share(room_id: str, payload: SharePayload,
 async def public_room(slug: str):
     """Public read-only view of a shared room. No auth required.
     Also embeds the pinned material rows and pinned products from the parent
-    project so a client can see the full presentation without any DB round-trips."""
+    project so a client can see the full presentation without any DB round-trips.
+    Sprint 5A: also returns catalogue top_matches and the designer's name for
+    the presentation cover page."""
     room = await db.rooms.find_one({"share_slug": slug, "share_enabled": True})
     if not room:
         raise HTTPException(status_code=404, detail="Not found")
@@ -3503,9 +3519,19 @@ async def public_room(slug: str):
     products_all = ((proj or {}).get("products_detected") or {}).get("products") or []
     pinned_rows = [r for r in rows_all if str(r.get("id") or r.get("row_id") or r.get("zone") or "") in pinned_row_ids]
     pinned_products = [p for p in products_all if str(p.get("id") or "") in pinned_product_ids]
+    catalogue_matches = ((proj or {}).get("match_results") or {}).get("top_matches") or []
 
-    # Serialize room without heavy base64 bytes; expose image ids so the public
-    # image endpoint can serve them.
+    # Lookup designer name (best-effort — do NOT leak user_id or email).
+    designer_name = None
+    try:
+        if proj and proj.get("user_id") and proj["user_id"] != "system-demo":
+            owner = await db.users.find_one({"_id": ObjectId(proj["user_id"])},
+                                            {"name": 1})
+            if owner:
+                designer_name = owner.get("name")
+    except Exception:
+        pass
+
     def _img_list(field):
         return [{"id": img.get("id"), "mime": img.get("mime")}
                 for img in room.get(field, [])]
@@ -3519,10 +3545,13 @@ async def public_room(slug: str):
         "current_site_photos": _img_list("current_site_photos"),
         "moodboards": _img_list("moodboards"),
         "reference_images": _img_list("reference_images"),
+        "final_render_images": _img_list("final_render_images"),
         "pinned_material_rows": pinned_rows,
         "pinned_products": pinned_products,
+        "catalogue_matches": catalogue_matches,
         "project_name": project_name,
         "client_name": client_name,
+        "designer_name": designer_name,
         "share_slug": slug,
         "updated_at": room.get("updated_at"),
     }

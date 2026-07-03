@@ -24,8 +24,9 @@ def test_room_type_enum_covers_common_indian_home_types():
     assert "custom" in ROOM_TYPES
 
 
-def test_image_kinds_are_the_three_story_layers():
-    assert set(IMAGE_KINDS) == {"current_site", "moodboard", "reference"}
+def test_image_kinds_are_the_four_story_layers():
+    # Sprint 5A adds 'final_render' for the merged Design Direction section.
+    assert set(IMAGE_KINDS) == {"current_site", "moodboard", "reference", "final_render"}
 
 
 def test_max_images_per_kind_is_capped_sensibly():

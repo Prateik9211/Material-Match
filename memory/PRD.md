@@ -93,6 +93,15 @@ Build a modern AI SaaS web application called "MaterialMatch AI" that helps arch
 
 ## Live AI Material Analysis (2026-02-26)
 
+## Sprint 4 — Warm Palette Polish + First Experience (2026-07-02)
+- ✅ **Warm minimal palette** applied globally — paper `#FAF8F5` (page bg), stone panels `#F5F1EC`, stone borders `#D8CEC2`, charcoal `#2B2724` (primary text), warm-grey `#7A7168` (secondary text), sage `#7F9D7A` (success), ochre-soft (warning). Primary CTAs kept charcoal-on-paper for contrast. Named tokens added to `tailwind.config.js` (paper, stone-panel, charcoal, warm-grey, sage, sand, ochre) so future work can use `bg-paper`, `text-charcoal`, etc.
+- ✅ **Landing page rewrite**: hero "Keep designing. We'll handle everything after.", subhead, philosophy line ("MaterialMatch does not design for you…"), 5 trust bullets (Designer-first, India-first sourcing, Catalogue matching, Products & Fixtures detection, Client-ready presentations), two CTAs (Explore Interactive Demo → `/demo`, Create Your First Project → auth/new). USD pricing / GPT / OpenAI / technical wording all removed.
+- ✅ **Public read-only Demo Project** seeded at backend startup — `GET /api/demo/project` and `GET /api/demo/reference-image` (no auth). Demo includes: reference image, specification overview (palette + dominant materials), 4 specification zones, 4 products with curated affiliate matches, 3 catalogue matches, and a shareable Concept Presentation at `/share/rooms/materialmatch-demo`. Idempotent seed — safe to redeploy.
+- ✅ **First-run Welcome Panel** on empty dashboard: 2 CTAs (Explore Demo, Create Project) + 5-step workflow cards. When projects exist, a small "Explore Demo" button appears in the header row.
+- ✅ **Microcopy sweep**: "Analysing…" → "Reading finishes and specification zones…", "Matching…" → "Scanning catalogue pages…", "Loading presentation…" → "Preparing your design story…". Stat card "Mock" label replaced with "Sourcing region". No GPT/OpenAI/backend/mock strings in user-facing copy.
+- ✅ **Made with Emergent badge** removed from `/app/frontend/public/index.html` (app-code-removable; not platform-enforced).
+- ✅ Testing agent: 100% frontend + 100% backend (56/56 tests, 7 new Sprint 4 demo tests all green). Zero issues found. Prior regression suites (Sprint 2 + Sprint 3, 49 tests) all still pass.
+
 ## Sprint 3 — Concept Presentation Workspace (2026-07-02)
 - ✅ **Rooms nested inside projects**: new `rooms` MongoDB collection with `project_id`/`user_id` scoping and ordering. 10 room types (living/bedroom/kitchen/bath/dining/office/kids/outdoor/hallway/custom).
 - ✅ **7-step visual story** in this exact order: 01 Current Space → 02 Moodboards → 03 Reference Images → 04 Concept Overview → 05 Material Specifications → 06 Suggested Products → 07 Designer Notes. Empty sections auto-hide.

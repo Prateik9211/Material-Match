@@ -74,17 +74,17 @@ export default function PublicRoom() {
   }
 
   return (
-    <div className={printMode ? "bg-white" : "min-h-screen bg-[#FAF8F5]"} data-testid="public-room-page">
+    <div className={printMode ? "bg-paper" : "min-h-screen bg-[#FAF8F5]"} data-testid="public-room-page">
       {!printMode && (
-        <div className="sticky top-0 z-40 bg-white/90 backdrop-blur border-b border-black/5">
+        <div className="sticky top-0 z-40 bg-paper/90 backdrop-blur border-b border-stone-border-soft">
           <div className="max-w-5xl mx-auto px-6 py-3 flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <div className="w-6 h-6 rounded-full bg-black" />
-              <span className="text-sm font-medium">MaterialMatch<span className="text-neutral-400">.ai</span></span>
+              <div className="w-6 h-6 rounded-full bg-charcoal" />
+              <span className="text-sm font-medium text-charcoal">MaterialMatch<span className="text-warm-grey">.ai</span></span>
             </div>
             <a
               href={`?print=1`}
-              className="inline-flex items-center gap-2 text-sm border border-neutral-200 rounded-full px-4 py-1.5 hover:bg-neutral-50"
+              className="inline-flex items-center gap-2 text-sm border border-stone-border rounded-full px-4 py-1.5 hover:bg-stone-panel text-charcoal"
               data-testid="public-print-btn"
             >
               <Printer className="w-3.5 h-3.5" strokeWidth={1.5} /> Print / Save PDF
@@ -96,17 +96,20 @@ export default function PublicRoom() {
         room={room}
         specs={room.pinned_material_rows || []}
         products={room.pinned_products || []}
+        catalogueMatches={room.catalogue_matches || []}
         resolveImageUrl={resolveUrl}
         printMode={printMode}
         projectName={room.project_name}
         clientName={room.client_name}
+        designerName={room.designer_name}
       />
       <style>{`
         @media print {
           @page { margin: 18mm 14mm; }
-          body { background: white !important; }
+          body { background: #FAF8F5 !important; }
           .print-story section { break-inside: avoid; page-break-inside: avoid; }
           .print-story header, .print-story footer { break-inside: avoid; }
+          .print-story .page-break-after { break-after: page; page-break-after: always; }
         }
       `}</style>
     </div>
