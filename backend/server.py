@@ -1164,6 +1164,69 @@ async def real_analyze(project_id: str, user: dict = Depends(get_current_user)):
     return analysis
 
 
+class RegionAnalyzePayload(BaseModel):
+    crop_b64: str = Field(min_length=32)  # base64 (no data-url prefix)
+    note: Optional[str] = ""
+
+
+@api_router.post("/projects/{project_id}/analyze-region")
+async def analyze_region(project_id: str, payload: RegionAnalyzePayload,
+                         user: dict = Depends(get_current_user)):
+    """Sprint 7: interactive region analysis. Runs the same real-AI material
+    pipeline against a user-selected crop of the reference image. Does NOT
+    persist to the project — the crop analysis is ephemeral, so the designer
+    can freely explore different areas without polluting the main spec."""
+    doc = await db.projects.find_one({"_id": ObjectId(project_id), "user_id": user["id"]})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Project not found")
+    crop = payload.crop_b64
+    if crop.startswith("data:"):
+        crop = crop.split(",", 1)[-1]
+    crop_bytes_len = (len(crop) * 3) // 4
+    if crop_bytes_len > LLM_ANALYSIS_REF_IMAGE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Cropped area too large")
+    if not (ENABLE_REAL_ANALYSIS and EMERGENT_LLM_KEY):
+        # Deterministic fallback: return a small demo-style set so the flow
+        # is demoable without live AI.
+        return {
+            "rows": [{
+                "zone": "Selected Area",
+                "material_family": "Wood",
+                "material_type": "Warm oak veneer (sample)",
+                "color": "Warm honey",
+                "texture": "Straight grain",
+                "finish": "Matte oiled",
+                "confidence": 78,
+                "brands_to_check": ["Century Ply", "Greenlam"],
+                "vendor_type": "Panel supplier",
+                "sourcing_keywords": ["warm oak veneer india"],
+                "indian_alternative": "Century Ply Sainik warm-oak veneer",
+                "alternatives": [
+                    {"name": "HPL Laminate — warm oak", "why": "Cheaper, high durability", "cost_tier": "budget",
+                     "durability": "Very High", "maintenance": "Low", "brands_to_check": ["Merino"]},
+                    {"name": "Fluted MDF slat panel", "why": "Ready-to-fit slatted look", "cost_tier": "mid",
+                     "durability": "Medium", "maintenance": "Dust", "brands_to_check": ["Action Tesa"]},
+                ],
+            }],
+            "summary": {"overall_style": "Selected area — sample analysis", "palette": ["Warm oak"]},
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "version": "region-mock-v1",
+            "ephemeral": True,
+        }
+    try:
+        await _check_and_increment_quota(user["id"])
+        result = await run_real_analysis(project_id, user["id"], crop,
+                                         region=user.get("preferred_region", DEFAULT_REGION))
+        result["ephemeral"] = True
+        result["region_note"] = (payload.note or "").strip()[:200]
+        return result
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception(f"analyze-region failed project={project_id}")
+        raise HTTPException(status_code=502, detail="Region analysis failed. Please try again.")
+
+
 # ============================================================================
 # Sprint 2: Products & Fixtures Detection (separate AI pass from materials)
 # ============================================================================
@@ -2791,7 +2854,7 @@ async def _seed_demo_project() -> None:
     marker = {"is_demo": True, "demo_slug": "materialmatch-demo-warm-living"}
     existing = await db.projects.find_one(marker)
     now = datetime.now(timezone.utc).isoformat()
-    demo_ref_url = ("https://images.unsplash.com/photo-1600585154340-be6161a56a0c"
+    demo_ref_url = ("https://images.unsplash.com/photo-1616486338812-3dadae4b4ace"
                     "?w=1600&q=80&auto=format&fit=crop")
     demo_ref_b64 = ""
     try:
@@ -2802,36 +2865,103 @@ async def _seed_demo_project() -> None:
     except Exception:
         logger.warning("Demo reference image fetch failed — demo will have no image")
 
+    def _alt(name, why, cost, durability, maintenance, brands, use_case=""):
+        return {"name": name, "why": why, "cost_tier": cost, "durability": durability,
+                "maintenance": maintenance, "brands_to_check": brands, "use_case": use_case}
     analysis_rows = [
-        {"zone": "Wall Feature", "material_family": "Wood", "material_type": "Warm Oak Slat Panel",
-         "color": "Honey oak", "texture": "Vertical slat panelling", "finish": "Oiled matte",
+        {"zone": "Headboard Wall Panel", "material_family": "Wood", "material_type": "Warm Oak Veneer with Vertical Slats",
+         "color": "Warm walnut", "texture": "Vertical grain slat", "finish": "Matte oiled",
          "design_style": "Warm modern", "keywords": ["oak slats", "vertical panelling", "warm wood"],
          "confidence": 92, "procurement_difficulty": "Easy in India",
-         "indian_alternative": "Century Ply Sainik Oak veneer with slat overlay",
-         "brands_to_check": ["Century Ply", "Greenlam", "Merino"],
-         "vendor_type": "Panel supplier",
-         "sourcing_keywords": ["oak slat wall india", "wooden slat panel"]},
-        {"zone": "Flooring", "material_family": "Stone", "material_type": "Warm Limestone Tile",
-         "color": "Sand beige", "texture": "Fine grain, subtle veining", "finish": "Honed matte",
-         "design_style": "Calm minimal", "keywords": ["limestone", "beige floor", "matte stone"],
-         "confidence": 88, "procurement_difficulty": "Moderate",
-         "indian_alternative": "Kota beige or Dholpur beige with honed finish",
-         "brands_to_check": ["Kajaria", "Somany", "Nitco"], "vendor_type": "Tile showroom",
-         "sourcing_keywords": ["kota beige tile india", "honed limestone floor"]},
-        {"zone": "Sofa Upholstery", "material_family": "Textile", "material_type": "Bouclé Fabric",
-         "color": "Ivory cream", "texture": "Looped bouclé weave", "finish": "Soft matte",
-         "design_style": "Contemporary cozy", "keywords": ["boucle", "cream sofa", "textured weave"],
-         "confidence": 87, "procurement_difficulty": "Easy",
-         "indian_alternative": "D'Decor bouclé range or Fabindia linen-cotton weave",
-         "brands_to_check": ["D'Decor", "Fabindia", "Sarita Handa"], "vendor_type": "Fabric house",
-         "sourcing_keywords": ["boucle upholstery fabric india"]},
-        {"zone": "Ceiling", "material_family": "Paint", "material_type": "Warm White Emulsion",
+         "indian_alternative": "Century Ply Sainik Oak or Merino warm-oak laminate over slat MDF",
+         "brands_to_check": ["Century Ply", "Greenlam", "Merino"], "vendor_type": "Panel supplier",
+         "sourcing_keywords": ["oak slat wall india", "wooden slat panel"],
+         "alternatives": [
+             _alt("Natural Oak Veneer", "Same warm grain, real wood feel", "premium", "High", "Occasional oiling", ["Century Ply", "Greenlam"], "Bedroom feature walls"),
+             _alt("Warm Oak HPL Laminate", "Cheaper wood-look with better durability", "mid", "Very High", "Low — wipe clean", ["Merino", "Greenlam", "Century Laminates"], "High-traffic accent walls"),
+             _alt("Fluted MDF Panels", "Same slatted look, ready-to-fit", "mid", "Medium", "Dust regularly", ["Duroply", "Action Tesa"], "Bedrooms, hallways"),
+             _alt("Wood-Look Porcelain Tile", "Water-resistant if area is near bath", "premium", "Very High", "Very low", ["Kajaria", "Somany"], "Bath adjoining walls"),
+         ]},
+        {"zone": "Bedding & Upholstery", "material_family": "Textile", "material_type": "Warm Ivory Linen Bedcover",
+         "color": "Ivory cream", "texture": "Woven linen", "finish": "Soft matte",
+         "design_style": "Calm modern", "keywords": ["linen bedding", "ivory", "cozy"],
+         "confidence": 88, "procurement_difficulty": "Easy",
+         "indian_alternative": "Fabindia linen or Sarita Handa organic cotton set",
+         "brands_to_check": ["Fabindia", "Sarita Handa", "D'Decor"], "vendor_type": "Home textile",
+         "sourcing_keywords": ["ivory linen bedding india"],
+         "alternatives": [
+             _alt("Washed Cotton", "More budget-friendly, similar drape", "budget", "High", "Machine washable", ["Fabindia", "Chumbak"]),
+             _alt("Linen-Cotton Blend", "Warmer look with less wrinkling", "mid", "High", "Easy", ["D'Decor", "House of MG"]),
+             _alt("Mulmul", "Breathable Indian classic", "budget", "Medium", "Gentle wash", ["Fabindia"]),
+         ]},
+        {"zone": "Flooring", "material_family": "Wood", "material_type": "Engineered Warm Oak Plank",
+         "color": "Honey brown", "texture": "Long plank grain", "finish": "Satin oiled",
+         "design_style": "Contemporary warm", "keywords": ["engineered oak", "warm plank floor"],
+         "confidence": 90, "procurement_difficulty": "Moderate",
+         "indian_alternative": "Pergo XP engineered oak or Action Tesa oak laminate",
+         "brands_to_check": ["Pergo", "Action Tesa", "Square Foot"], "vendor_type": "Flooring showroom",
+         "sourcing_keywords": ["engineered oak flooring india"],
+         "alternatives": [
+             _alt("Solid Teak Plank", "Traditional Indian hardwood option", "premium", "Very High", "Periodic polish", ["Teak Craft"], "Long-term investment"),
+             _alt("Warm Oak Laminate (AC5)", "Practical high-traffic option", "budget", "High", "Very low", ["Pergo", "Action Tesa"]),
+             _alt("Wood-look Vinyl SPC", "Water-safe, click-lock install", "mid", "High", "Very low", ["Welspun", "Responsive Industries"]),
+         ]},
+        {"zone": "Rug", "material_family": "Textile", "material_type": "Hand-Tufted Sand Wool Rug",
+         "color": "Sand beige", "texture": "Low-loop pile", "finish": "Hand-tufted matte",
+         "design_style": "Japandi neutral", "keywords": ["wool rug", "sand", "neutral"],
+         "confidence": 84, "procurement_difficulty": "Easy",
+         "indian_alternative": "Jaipur Rugs Manchaha or Obeetee hand-tufted line",
+         "brands_to_check": ["Jaipur Rugs", "Obeetee", "Cocoon"], "vendor_type": "Rug atelier",
+         "sourcing_keywords": ["hand tufted wool rug india"],
+         "alternatives": [
+             _alt("Jute Rug", "Warmer texture, lower cost", "budget", "Medium", "Vacuum only", ["Fabindia"]),
+             _alt("Wool-Silk Blend", "Adds subtle sheen", "premium", "High", "Professional clean", ["Jaipur Rugs"]),
+             _alt("Machine-Made Polypropylene", "Stain resistant, budget", "budget", "Medium", "Easy", ["Amazon India"]),
+         ]},
+        {"zone": "Wall Paint", "material_family": "Paint", "material_type": "Warm White Matte Emulsion",
          "color": "Warm white with pink undertone", "texture": "Smooth", "finish": "Matte",
-         "design_style": "Warm minimal", "keywords": ["warm white paint", "matte ceiling"],
+         "design_style": "Calm modern", "keywords": ["warm white", "matte paint"],
          "confidence": 95, "procurement_difficulty": "Very easy",
-         "indian_alternative": "Asian Paints Royale Aspira 'Cotton White'",
+         "indian_alternative": "Asian Paints Royale Aspira 'Cotton White' or Berger Silk Breathe",
          "brands_to_check": ["Asian Paints", "Berger", "Nerolac"], "vendor_type": "Paint retailer",
-         "sourcing_keywords": ["asian paints cotton white", "warm white emulsion"]},
+         "sourcing_keywords": ["asian paints cotton white"],
+         "alternatives": [
+             _alt("Limewash Finish", "Chalky organic texture, artisan look", "premium", "High", "Delicate touch-up", ["Sabya Lime"]),
+             _alt("Textured Plaster", "Depth via subtle troweling", "mid", "High", "Periodic sealer", ["Oikos India"]),
+         ]},
+        {"zone": "Ceiling Cove", "material_family": "Metal", "material_type": "Brushed Brass Cove Trim",
+         "color": "Antique brass", "texture": "Fine brushed lines", "finish": "Brushed satin",
+         "design_style": "Warm modern", "keywords": ["brass cove", "warm accent"],
+         "confidence": 80, "procurement_difficulty": "Moderate",
+         "indian_alternative": "Häfele brass profile trim or local fabricator brass strips",
+         "brands_to_check": ["Häfele India", "Jaquar Artize"], "vendor_type": "Hardware fabricator",
+         "sourcing_keywords": ["brass ceiling trim india"],
+         "alternatives": [
+             _alt("Brushed Gold Aluminium", "Same look, lower cost, lighter", "budget", "High", "Wipe clean", ["Häfele"]),
+             _alt("Warm Rose Gold Steel", "Modern warm metallic", "mid", "Very High", "Very low", ["Jindal Stainless"]),
+         ]},
+        {"zone": "Side Table Top", "material_family": "Stone", "material_type": "Warm Beige Marble",
+         "color": "Cream with subtle veining", "texture": "Fine veining", "finish": "Honed",
+         "design_style": "Refined modern", "keywords": ["beige marble", "honed"],
+         "confidence": 78, "procurement_difficulty": "Moderate",
+         "indian_alternative": "Rajasthan Katni beige or Makrana cream marble",
+         "brands_to_check": ["RK Marble", "Bhandari Marble"], "vendor_type": "Stone yard",
+         "sourcing_keywords": ["katni beige marble slab"],
+         "alternatives": [
+             _alt("Beige Quartzite", "Harder, less staining", "premium", "Very High", "Low", ["Levantina India"]),
+             _alt("Beige Quartz Engineered", "Consistent pattern, budget", "mid", "Very High", "Very low", ["Kalinga Stone", "Caesarstone"]),
+         ]},
+        {"zone": "Curtains", "material_family": "Textile", "material_type": "Sheer Ivory Linen Panels",
+         "color": "Ivory", "texture": "Loose weave sheer", "finish": "Soft drape",
+         "design_style": "Calm modern", "keywords": ["sheer linen", "ivory curtain"],
+         "confidence": 82, "procurement_difficulty": "Easy",
+         "indian_alternative": "The White Window or Deco Window sheer linen",
+         "brands_to_check": ["Deco Window", "The White Window"], "vendor_type": "Window furnishing",
+         "sourcing_keywords": ["sheer linen curtain india"],
+         "alternatives": [
+             _alt("Cotton Voile", "More budget-friendly", "budget", "Medium", "Gentle wash", ["Fabindia"]),
+             _alt("Poly-Linen Blend", "Wrinkle-resistant", "mid", "High", "Easy", ["Deco Window"]),
+         ]},
     ]
     products_list = [
         {"id": "product_1", "product_name": "Brushed Brass Pendant Light",

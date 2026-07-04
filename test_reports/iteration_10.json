@@ -1,0 +1,43 @@
+{
+  "summary": "Sprint 7 (Interactive Material Intelligence — region-selector + video-style Demo Modal + Materials→Alternatives→Catalogue→Products hierarchy) fully verified. Backend: NEW /app/backend/tests/test_sprint7_analyze_region.py with 6 tests (unauth 401, foreign project 404, oversized crop 413 via 9MB payload, 200 with rows/summary/ephemeral=True on valid crop, data-url prefix accepted, short crop <32chars 422) — 6/6 PASS in 28.7s. Full regression sprint7 + sprint6 + sprint5a + sprint4 + rooms + products_affiliates = 58/59 (one pre-existing sprint5a public-share test unrelated to Sprint 7). Frontend Landing (unauth): hero-cta-demo opens video-style demo-modal with all 11 required testids VISIBLE (demo-video-frame, demo-caption, demo-caption-detail, demo-play-toggle, demo-timeline, demo-elapsed, demo-total, demo-prev, demo-next, demo-modal-open-project, demo-modal-close). All 6 chapter markers demo-chapter-0..5 VISIBLE. Timings render as mm:ss (elapsed '0:00', total '0:25' = 6*4.2s). Chapter-3 click switches caption from 'Upload a reference image.' → 'Match against your uploaded catalogues.' Auto-advance verified — after 5s (with play resumed) caption advanced to 'Discover Indian-market products.' Play-toggle pauses/resumes cleanly. demo-modal-open-project navigates to /demo (verified). demo-modal-close closes the modal (DOM removed). Login as designer@test.com/Designer2026! succeeds, dashboard loads, 3 projects returned (1 completed: TEST_Sprint2_dfe910). /projects/{id}/analysis renders analysis-page with reference-card (968px tall, confirmed via DOM query) containing region-selector, region-toggle-btn, region-canvas. intelligence-panel-full renders by default with intelligence-design_style ('Minimalist'), intelligence-material_palette ('White paint, natural wood, soft textiles'), intelligence-key_finishes ('Matt paint, natural wood finish, soft touch') and intelligence-sourcing (Indian Sourcing Summary). MaterialsFirstSection renders 4 material-card-0..3 below reference. Region draw flow: click region-toggle-btn → mouse-down/move/up on region-canvas creates visible region-rect and reveals region-analyze-btn. Clicking region-analyze-btn POSTs /api/projects/{id}/analyze-region and right panel switches to intelligence-panel-zone with intelligence-crop-preview, clear-region-btn and intelligence-clear-zone all visible. Ephemeral material rows correctly HIDE the material-match-catalogue button (verified — element not present in ephemeral state). clear-region-btn restores intelligence-panel-full. material-shortlist-btn-0 add-to-shortlist flips text 'Add to Shortlist' → 'Shortlisted' and shortlist-section renders the new item. material-match-catalogue-0 navigates to /projects/{id}/match?zone=Wall%20Paint. Materials→Alternatives→Catalogue→Products→Shortlist order preserved. Ivory/beige aesthetic preserved.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/projects/{id}/analyze-region", "issue": "The endpoint uses ObjectId(project_id) without a bare try/except — malformed non-hex IDs will 500 rather than 404/400. Low priority (frontend always sends valid IDs)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "material shortlist add on Analysis", "issue": "Adding one material via material-shortlist-btn-0 results in shortlist-item query selector returning 2 elements — likely duplicated data-testid on nested wrapper inside ShortlistSection. Visible UI count and backend count are still 1; not functional. This was also noted in iteration_9 for product-shortlist. Consider making shortlist-item-{i} only apply to the outer wrapper.", "affected_selectors": ["shortlist-item-*"]}
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_sprint7_analyze_region.py",
+    "/app/test_reports/pytest/sprint7.xml",
+    "/app/test_reports/pytest/sprint7_full.xml"
+  ],
+  "action_items": [
+    "(Optional/minor) Dedupe shortlist-item-{i} data-testid on nested DOM so querySelectorAll returns 1 element per shortlist entry.",
+    "(Optional/minor) Wrap ObjectId(project_id) in analyze-region in try/except to return 404 for malformed IDs instead of 500."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 3908 lines; extraction into modules (rooms/demo/products/library/shortlist/region) remains open technical debt.",
+    "analyze-region uses same run_real_analysis path with a full image quota increment even for a small crop — could split quota tiers for zone-scoped analysis to avoid burning full-quota on region drills. Acceptable for Sprint 7 scope.",
+    "Analysis.jsx SummaryPanel component (~75 LOC) is inline in the page — worth extracting to /components/analysis/SummaryPanel.jsx alongside MaterialsFirstSection for consistency."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sprint7_analyze_region.py (new — 6 tests, all pass)"
+  ],
+  "success_rate": {
+    "backend": "100% for Sprint 7 (6/6). Full regression 58/59 (1 pre-existing sprint5a failure unrelated to Sprint 7).",
+    "frontend": "100% (landing demo-modal video-style with 6 chapter markers + auto-advance + jump + pause + open-project + close; analysis reference-card + region-selector draw→analyze→zone-panel→clear; MaterialsFirstSection 4 cards with shortlist/alts/match-catalogue; ephemeral state hides match-catalogue as expected; navigation to /projects/{id}/match?zone=... verified)"
+  },
+  "test_credentials": "designer@test.com / Designer2026! (existing test user) and admin@materialmatch.ai / MaterialAdmin2026! (for backend tests). TEST_sprint7_{hex}@example.com user created for cross-user 404 test (no cleanup — no user-delete endpoint).",
+  "seed_data_creation": "Backend fixture creates TEST_Sprint7_Region project under admin, deleted in teardown. Frontend test used pre-existing completed project 'TEST_Sprint2_dfe910' owned by designer@test.com — one shortlist item added via UI and left in place.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Sprint 7 regression: cd /app/backend && PYTHONPATH=/app/backend pytest tests/test_sprint7_analyze_region.py -v (6 tests, ~28s). Key new Sprint 7 testids on Landing (video-style DemoModal): demo-video-frame, demo-caption, demo-caption-detail, demo-play-toggle, demo-timeline, demo-chapter-0..5, demo-elapsed, demo-total, demo-prev, demo-next, demo-modal-open-project, demo-modal-close. Chapter length CHAPTER_MS=4200ms so totalMs=25.2s → displayed '0:25'. On Analysis (/projects/:id/analysis): reference-card, region-selector, region-toggle-btn, region-canvas, region-rect, region-analyze-btn, intelligence-panel-full/zone, intelligence-design_style/material_palette/key_finishes/sourcing, intelligence-crop-preview, intelligence-clear-zone, clear-region-btn, materials-section, material-card-{i}, material-shortlist-btn-{i}, material-alts-toggle-{i}, material-alts-{i}, material-alt-{i}-{j}, material-match-catalogue-{i} (hidden when ephemeral). Endpoint: POST /api/projects/{pid}/analyze-region body {crop_b64, note?} → 401 unauth, 404 foreign, 413 >6MB, 422 <32chars, 200 rows/summary/ephemeral=True. Accepts data:image/*;base64, prefix.",
+  "rca of the issue": "N/A — no functional issues. The shortlist-item duplicate-testid observation is a pre-existing DOM issue carried from Sprint 6 (iteration_9 also noted it) and does not affect backend state or UI counts."
+}

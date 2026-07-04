@@ -1,8 +1,8 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Header from "@/components/Header";
 import { useAuth } from "@/context/AuthContext";
-import { ArrowRight, Check, Camera, Layers, BookOpen, ShoppingBag, ListChecks, PenSquare, PlayCircle, X, ChevronRight } from "lucide-react";
+import { ArrowRight, Check, Camera, Layers, BookOpen, ShoppingBag, ListChecks, PenSquare, PlayCircle, PauseCircle, X, ChevronRight, Focus } from "lucide-react";
 
 const TRUST_BULLETS = [
   "Designer-first",
@@ -21,85 +21,204 @@ const WORKFLOW = [
   { n: "06", icon: ListChecks, title: "Sourceable Shortlist", body: "Build a shortlist to walk into vendor meetings prepared." },
 ];
 
-const DEMO_STEPS = [
-  "Upload a reference image.",
-  "MaterialMatch detects finishes and products.",
-  "Search your material library and supplier catalogues.",
-  "Compare closest material matches with confidence and reason.",
-  "Discover similar products with Indian-market keywords.",
-  "Build a sourceable shortlist before visiting vendors.",
+const DEMO_CHAPTERS = [
+  { t: "Reference", caption: "Upload a reference image.",
+    detail: "A Pinterest pin, a client mood board, or a photograph — anything can seed a specification.",
+    icon: Camera, accent: "bg-sand/60" },
+  { t: "Detection", caption: "MaterialMatch detects finishes and products.",
+    detail: "Zones, material families, colours and product categories surface automatically with confidence scores.",
+    icon: Layers, accent: "bg-stone-panel" },
+  { t: "Zone Focus", caption: "Draw over the image to zoom into one area.",
+    detail: "Google-Lens-style region selection returns ephemeral zone-specific materials without altering the project.",
+    icon: Focus, accent: "bg-sage-soft/60" },
+  { t: "Catalogue", caption: "Match against your uploaded catalogues.",
+    detail: "Ranked matches from PDF supplier catalogues with source, page and match reason.",
+    icon: BookOpen, accent: "bg-ochre-soft/60" },
+  { t: "Products", caption: "Discover Indian-market products.",
+    detail: "Curated affiliate suggestions where available, tuned search keywords everywhere else.",
+    icon: ShoppingBag, accent: "bg-white" },
+  { t: "Shortlist", caption: "Walk into vendor meetings prepared.",
+    detail: "A sourceable shortlist of materials and products with brands, notes and links.",
+    icon: ListChecks, accent: "bg-charcoal text-paper" },
 ];
 
-/* ---------------- Interactive Demo Modal ---------------- */
+/* ---------------- Interactive Demo Modal (Video-style) ---------------- */
+const CHAPTER_MS = 4200;
+
+function fmtTime(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${r.toString().padStart(2, "0")}`;
+}
+
 function DemoModal({ onClose }) {
   const [step, setStep] = useState(0);
+  const [playing, setPlaying] = useState(true);
+  const [progress, setProgress] = useState(0); // 0..1 within current chapter
+  const rafRef = useRef(null);
+  const chapterStartRef = useRef(performance.now());
   const navigate = useNavigate();
   const { user } = useAuth();
-  const total = DEMO_STEPS.length;
-  const next = () => setStep((s) => Math.min(total - 1, s + 1));
-  const prev = () => setStep((s) => Math.max(0, s - 1));
+  const total = DEMO_CHAPTERS.length;
+  const totalMs = CHAPTER_MS * total;
+  const current = DEMO_CHAPTERS[step];
+  const Icon = current.icon;
+
+  const goto = (i) => {
+    setStep(Math.max(0, Math.min(total - 1, i)));
+    setProgress(0);
+    chapterStartRef.current = performance.now();
+  };
+
+  useEffect(() => {
+    if (!playing) return;
+    const tick = () => {
+      const elapsed = performance.now() - chapterStartRef.current;
+      const p = Math.min(1, elapsed / CHAPTER_MS);
+      setProgress(p);
+      if (p >= 1) {
+        if (step < total - 1) {
+          setStep((s) => s + 1);
+          chapterStartRef.current = performance.now();
+          setProgress(0);
+        } else {
+          setPlaying(false);
+        }
+      }
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [playing, step, total]);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose();
+      if (e.key === "ArrowRight") goto(step + 1);
+      if (e.key === "ArrowLeft") goto(step - 1);
+      if (e.key === " ") { e.preventDefault(); setPlaying((p) => !p); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [step]);
+
+  const overallMs = step * CHAPTER_MS + progress * CHAPTER_MS;
+
   return (
-    <div className="fixed inset-0 z-50 bg-charcoal/60 grid place-items-center p-4" data-testid="demo-modal" onClick={onClose}>
+    <div className="fixed inset-0 z-50 bg-charcoal/70 grid place-items-center p-4 backdrop-blur-sm" data-testid="demo-modal" onClick={onClose}>
       <div
-        className="bg-paper rounded-3xl shadow-hover w-full max-w-3xl overflow-hidden border border-stone-border-soft"
+        className="bg-paper rounded-3xl shadow-hover w-full max-w-4xl overflow-hidden border border-stone-border-soft animate-fade-in-up"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="p-5 border-b border-stone-border-soft flex items-center justify-between">
+        {/* Top bar */}
+        <div className="px-5 py-3 border-b border-stone-border-soft flex items-center justify-between bg-white">
           <div className="flex items-center gap-2">
-            <PlayCircle className="w-4 h-4 text-charcoal" strokeWidth={1.5} />
-            <span className="text-overline">Interactive Demo</span>
+            <span className="w-2 h-2 rounded-full bg-rose-400"></span>
+            <span className="w-2 h-2 rounded-full bg-ochre"></span>
+            <span className="w-2 h-2 rounded-full bg-sage"></span>
+            <span className="text-overline ml-3">MaterialMatch · Interactive Walkthrough</span>
           </div>
-          <button type="button" onClick={onClose} className="p-1.5 rounded-full hover:bg-stone-panel" data-testid="demo-modal-close">
+          <button type="button" onClick={onClose} className="p-1.5 rounded-full hover:bg-stone-panel" data-testid="demo-modal-close" aria-label="Close">
             <X className="w-4 h-4" strokeWidth={1.5} />
           </button>
         </div>
 
-        {/* Video frame placeholder */}
-        <div className="aspect-video bg-stone-panel border-b border-stone-border-soft grid place-items-center relative" data-testid="demo-video-frame">
-          <div className="absolute inset-0 grid place-items-center">
-            <div className="text-center">
-              <div className="w-14 h-14 rounded-full bg-charcoal grid place-items-center mx-auto mb-3 shadow-hover">
-                <PlayCircle className="w-6 h-6 text-paper" strokeWidth={1.5} />
-              </div>
-              <div className="text-overline">Walkthrough</div>
-              <div className="font-display text-2xl font-semibold text-charcoal mt-1">
-                {DEMO_STEPS[step]}
-              </div>
-              <div className="text-xs text-warm-grey mt-3">Step {step + 1} of {total}</div>
+        {/* Video frame */}
+        <div
+          className={`aspect-video ${current.accent} border-b border-stone-border-soft grid place-items-center relative overflow-hidden transition-colors duration-500`}
+          data-testid="demo-video-frame"
+        >
+          {/* Ambient grid */}
+          <div className="absolute inset-0 opacity-[0.06] pointer-events-none" style={{
+            backgroundImage: "linear-gradient(#2b2724 1px, transparent 1px), linear-gradient(90deg, #2b2724 1px, transparent 1px)",
+            backgroundSize: "32px 32px",
+          }} />
+
+          {/* Big centered chapter card */}
+          <div className="relative text-center px-8 max-w-2xl animate-fade-in-up" key={`chapter-${step}`}>
+            <div className="w-14 h-14 rounded-full bg-paper/90 backdrop-blur border border-stone-border-soft grid place-items-center mx-auto mb-4 shadow-hover">
+              <Icon className="w-6 h-6 text-charcoal" strokeWidth={1.5} />
             </div>
+            <div className="text-overline mb-2 opacity-80">Chapter {step + 1} · {current.t}</div>
+            <div className="font-display text-2xl sm:text-3xl font-semibold leading-tight" data-testid="demo-caption">
+              {current.caption}
+            </div>
+            <p className="text-sm text-charcoal/70 mt-3 leading-relaxed" data-testid="demo-caption-detail">
+              {current.detail}
+            </p>
           </div>
-          <div className="absolute bottom-4 left-4 right-4 h-1 bg-stone-border-soft rounded-full overflow-hidden">
-            <div
-              className="h-full bg-charcoal transition-all duration-500"
-              style={{ width: `${((step + 1) / total) * 100}%` }}
-            />
+
+          {/* Play/Pause overlay */}
+          <button
+            type="button"
+            onClick={() => setPlaying((p) => !p)}
+            className="absolute bottom-16 left-1/2 -translate-x-1/2 w-12 h-12 rounded-full bg-charcoal text-paper grid place-items-center hover:scale-105 transition-transform shadow-hover"
+            data-testid="demo-play-toggle"
+            aria-label={playing ? "Pause walkthrough" : "Play walkthrough"}
+          >
+            {playing ? <PauseCircle className="w-6 h-6" strokeWidth={1.5} /> : <PlayCircle className="w-6 h-6" strokeWidth={1.5} />}
+          </button>
+
+          {/* Timeline (chapter markers) */}
+          <div className="absolute bottom-0 left-0 right-0 px-5 pb-4" data-testid="demo-timeline">
+            <div className="flex items-center gap-1 mb-1.5">
+              {DEMO_CHAPTERS.map((c, i) => {
+                const isDone = i < step;
+                const isActive = i === step;
+                const fill = isDone ? 1 : isActive ? progress : 0;
+                return (
+                  <button
+                    type="button"
+                    key={c.t}
+                    onClick={() => { goto(i); setPlaying(true); }}
+                    className="flex-1 h-1 rounded-full bg-charcoal/15 relative overflow-hidden cursor-pointer group"
+                    data-testid={`demo-chapter-${i}`}
+                    aria-label={`Go to chapter ${i + 1}`}
+                  >
+                    <span
+                      className="absolute inset-y-0 left-0 bg-charcoal transition-[width] duration-100 ease-linear"
+                      style={{ width: `${fill * 100}%` }}
+                    />
+                    <span className="absolute -bottom-4 left-0 text-[9px] uppercase tracking-widest text-charcoal/60 opacity-0 group-hover:opacity-100 whitespace-nowrap">
+                      {c.t}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="flex items-center justify-between text-[10px] font-mono text-charcoal/60">
+              <span data-testid="demo-elapsed">{fmtTime(overallMs)}</span>
+              <span>{current.t}</span>
+              <span data-testid="demo-total">{fmtTime(totalMs)}</span>
+            </div>
           </div>
         </div>
 
-        <div className="p-6 space-y-4">
-          <div className="flex items-center justify-between">
+        {/* Footer CTAs */}
+        <div className="p-6 flex flex-wrap items-center justify-between gap-4 bg-paper">
+          <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={prev}
+              onClick={() => goto(step - 1)}
               disabled={step === 0}
-              className="text-sm text-warm-grey hover:text-charcoal disabled:opacity-30"
+              className="text-sm text-warm-grey hover:text-charcoal disabled:opacity-30 px-2"
               data-testid="demo-prev"
             >
               ← Previous
             </button>
-            <div className="text-xs text-warm-grey">{step + 1} / {total}</div>
             <button
               type="button"
-              onClick={next}
+              onClick={() => goto(step + 1)}
               disabled={step === total - 1}
-              className="text-sm text-charcoal hover:underline disabled:opacity-30"
+              className="text-sm text-charcoal hover:underline disabled:opacity-30 px-2"
               data-testid="demo-next"
             >
               Next →
             </button>
+            <span className="text-xs text-warm-grey/70 ml-2">{step + 1} / {total}</span>
           </div>
-
-          <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-stone-border-soft">
+          <div className="flex flex-wrap items-center gap-3">
             <button
               type="button"
               onClick={() => { onClose(); navigate("/demo"); }}
