@@ -152,6 +152,16 @@ Refocused product around **Material Library + Catalogue Intelligence + Product D
 - ✅ Landing hero trust bullet updated: "Catalogue-first" → "Products & Fixtures Detection" (testid `hero-trust-products`).
 - ✅ 19 new pytest unit tests in `tests/test_products_and_affiliates.py` covering jaccard/tokenizer/score/validator/search URLs/seed invariants — all PASS. Testing agent verified 48/48 relevant tests + full E2E flows green.
 
+## Sprint 7 — Interactive Material Intelligence (2026-07-04)
+- ✅ **Region-based analysis backend** `POST /api/projects/{id}/analyze-region` — accepts `crop_b64` + `note`, returns ephemeral `rows/summary/ephemeral=True` without persisting to the project. Deterministic mock fallback when live AI disabled.
+- ✅ **RegionSelector** component (Google-Lens style) — click "Select area of interest", drag rectangle on the reference image, client-side canvas crop, POST to analyze-region.
+- ✅ **Analysis page redesign** — two-column reference + intelligence-panel layout. Right-side `SummaryPanel` shows full-image analysis by default; switches to zone-specific summary with crop preview when a region is analyzed. `Back to full image` restores default state.
+- ✅ **Materials-first hierarchy** — `MaterialsFirstSection` replaces the old spec table. Order: Materials → inline Alternatives (cost tiers + brands) → per-card Match with Catalogue → Products → Product Alternatives → Shortlist.
+- ✅ **Per-card Match with Catalogue** button on saved rows; correctly hidden for ephemeral region rows.
+- ✅ **Video-style Demo Modal** on Landing — 6 chapters (Reference, Detection, Zone Focus, Catalogue, Products, Shortlist) with auto-advance (4.2s), play/pause, chapter markers timeline, elapsed/total mm:ss counters, jump-to-chapter, keyboard (Space/Arrows/Esc), Open Demo Project CTA.
+- ✅ Backend tests: `tests/test_sprint7_analyze_region.py` — 6/6 PASS (unauth 401, foreign project 404, oversized crop 413, valid 200, data-url prefix accepted, short crop 422). Full regression 58/59 (one pre-existing sprint5a public-share failure unrelated).
+- ✅ Frontend E2E QA green (testing agent iteration_10): all new testids visible, region draw→analyze→zone-panel→clear flow verified, hierarchy preserved.
+
 ## Prioritized Backlog
 
 ### P1
