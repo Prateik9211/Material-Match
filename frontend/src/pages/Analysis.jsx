@@ -3,6 +3,7 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import Header from "@/components/Header";
 import DemoModeBanner from "@/components/DemoModeBanner";
 import ProductsSection from "@/components/analysis/ProductsSection";
+import ShortlistSection from "@/components/analysis/ShortlistSection";
 import api, { formatApiError, useConfig } from "@/lib/api";
 import { ArrowLeft, Sparkles, RefreshCw, ArrowUpRight, ChevronDown, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
@@ -121,20 +122,23 @@ export default function Analysis() {
   const [project, setProject] = useState(null);
   const [refImg, setRefImg] = useState(null);
   const [products, setProducts] = useState([]);
+  const [shortlist, setShortlist] = useState([]);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [expandedRow, setExpandedRow] = useState(null);
 
   const fetchProject = useCallback(async () => {
     try {
-      const [p, r, prod] = await Promise.all([
+      const [p, r, prod, sl] = await Promise.all([
         api.get(`/projects/${id}`),
         api.get(`/projects/${id}/reference-image`).catch(() => null),
         api.get(`/projects/${id}/products`).catch(() => null),
+        api.get(`/projects/${id}/shortlist`).catch(() => null),
       ]);
       setProject(p.data);
       if (r) setRefImg(r.data.data_url);
       if (prod) setProducts(prod.data.products || []);
+      if (sl) setShortlist(sl.data.items || []);
     } catch (err) {
       toast.error(formatApiError(err));
     } finally {
@@ -155,6 +159,26 @@ export default function Analysis() {
       toast.error(formatApiError(err));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const addToShortlist = async (payload) => {
+    try {
+      const { data } = await api.post(`/projects/${id}/shortlist`, payload);
+      setShortlist((cur) => [...cur, data]);
+      toast.success("Added to shortlist");
+    } catch (e) {
+      toast.error(formatApiError(e));
+    }
+  };
+
+  const removeFromShortlist = async (item) => {
+    try {
+      await api.delete(`/projects/${id}/shortlist/${item.id}`);
+      setShortlist((cur) => cur.filter((x) => x.id !== item.id));
+      toast.success("Removed from shortlist");
+    } catch (e) {
+      toast.error(formatApiError(e));
     }
   };
 
@@ -230,11 +254,15 @@ export default function Analysis() {
                     </button>
                     <Link
                       to={`/projects/${id}/concept`}
-                      className="inline-flex items-center justify-center gap-2 border border-neutral-200 hover:border-black text-neutral-800 rounded-full px-5 py-3 text-sm font-medium transition-colors"
+                      className="inline-flex items-center justify-center gap-2 border border-stone-border hover:border-charcoal text-charcoal rounded-full px-5 py-3 text-sm font-medium transition-colors"
                       data-testid="open-concept-btn"
+                      title="Concept Presentation is in beta"
                     >
                       <Sparkles className="w-4 h-4" strokeWidth={1.5} />
                       Concept Presentation
+                      <span className="text-[9px] uppercase tracking-widest bg-ochre-soft text-ochre px-1.5 py-0.5 rounded-full font-semibold">
+                        Beta
+                      </span>
                     </Link>
                     <span className="text-xs text-neutral-400" data-testid="analysis-mode-label">
                       {realAnalysisActive ? "Live specification" : "Sample specification"}
@@ -246,7 +274,23 @@ export default function Analysis() {
 
             <AnalysisSummaryCard summary={summary} />
 
-            <ProductsSection products={products} />
+            <ProductsSection
+              products={products}
+              onAddToShortlist={(p) => addToShortlist({
+                name: p.product_name,
+                source_type: "product",
+                source: p.matched_affiliate?.platform || "Detected",
+                category: p.category,
+                external_url: p.matched_affiliate?.affiliate_url || (p.search_urls?.amazon_in || ""),
+                notes: p.description || "",
+              })}
+              shortlistedNames={new Set(shortlist.filter(x => x.source_type === "product").map(x => x.name))}
+            />
+
+            <ShortlistSection
+              items={shortlist}
+              onRemove={removeFromShortlist}
+            />
 
             <section>
               {!hasAnalysis ? (

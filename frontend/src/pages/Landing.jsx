@@ -1,38 +1,212 @@
-import React from "react";
-import { Link, useNavigate } from "react-router-dom";
+import React, { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import Header from "@/components/Header";
 import { useAuth } from "@/context/AuthContext";
-import { ArrowRight, Check, Camera, Layers, Palette, ShoppingBag, PenSquare } from "lucide-react";
-
-const interiorImage = "https://images.unsplash.com/photo-1771371097061-3befd4b71b59?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MjJ8MHwxfHNlYXJjaHw0fHxtaW5pbWFsaXN0JTIwaW50ZXJpb3IlMjBsaXZpbmclMjByb29tJTIwYnJpZ2h0fGVufDB8fHx8MTc3OTgxNDY0OHww&ixlib=rb-4.1.0&q=85";
-const interiorImage2 = "https://images.unsplash.com/photo-1759722668087-efcc63c91ed2?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MjJ8MHwxfHNlYXJjaHwxfHxtaW5pbWFsaXN0JTIwaW50ZXJpb3IlMjBsaXZpbmclMjByb29tJTIwYnJpZ2h0fGVufDB8fHx8MTc3OTgxNDY0OHww&ixlib=rb-4.1.0&q=85";
-const materialWood = "https://images.unsplash.com/photo-1768320837734-02390d59dfea?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Nzd8MHwxfHNlYXJjaHwzfHxhcmNoaXRlY3R1cmFsJTIwbWF0ZXJpYWwlMjB0ZXh0dXJlJTIwd29vZCUyMHN0b25lfGVufDB8fHx8MTc3OTgxNDY0OHww&ixlib=rb-4.1.0&q=85";
-const materialClose = "https://images.unsplash.com/photo-1772423945486-8e941a5c01a9?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Nzd8MHwxfHNlYXJjaHwyfHxhcmNoaXRlY3R1cmFsJTIwbWF0ZXJpYWwlMjB0ZXh0dXJlJTIwd29vZCUyMHN0b25lfGVufDB8fHx8MTc3OTgxNDY0OHww&ixlib=rb-4.1.0&q=85";
+import { ArrowRight, Check, Camera, Layers, BookOpen, ShoppingBag, ListChecks, PenSquare, PlayCircle, X, ChevronRight } from "lucide-react";
 
 const TRUST_BULLETS = [
   "Designer-first",
   "India-first sourcing",
   "Catalogue matching",
   "Products & Fixtures detection",
-  "Client-ready presentations",
+  "Sourceable shortlist",
 ];
 
 const WORKFLOW = [
-  { n: "01", icon: Camera, title: "Upload reference", body: "Drop a Pinterest pin or interior photograph. Add a prompt to focus the specification, if needed." },
-  { n: "02", icon: Layers, title: "Generate specification", body: "We identify surfaces, finishes and specification zones — with India-first sourcing context surfaced automatically." },
-  { n: "03", icon: Palette, title: "Match your catalogue", body: "Upload a supplier PDF or product images. Materials are ranked by visual similarity with a clear reason for every match." },
-  { n: "04", icon: ShoppingBag, title: "Detect products & fixtures", body: "Lighting, furniture, decor and fixtures are identified separately — with curated Indian recommendations where they exist." },
-  { n: "05", icon: PenSquare, title: "Present to your client", body: "Assemble rooms into a design story — current space, moodboards, references, materials, products, notes — and share a link." },
+  { n: "01", icon: Camera, title: "Reference", body: "Upload an inspiration image — a client's Pinterest pin or a project photograph." },
+  { n: "02", icon: Layers, title: "Material Detection", body: "Zones, finishes, colour and material family surfaced automatically." },
+  { n: "03", icon: BookOpen, title: "Material Library Search", body: "Match against your uploaded catalogues and reusable library." },
+  { n: "04", icon: BookOpen, title: "Catalogue Matches", body: "Ranked matches with source, page number, confidence and match reason." },
+  { n: "05", icon: ShoppingBag, title: "Product Suggestions", body: "Lighting, furniture and decor detected — with curated Indian recommendations." },
+  { n: "06", icon: ListChecks, title: "Sourceable Shortlist", body: "Build a shortlist to walk into vendor meetings prepared." },
 ];
 
+const DEMO_STEPS = [
+  "Upload a reference image.",
+  "MaterialMatch detects finishes and products.",
+  "Search your material library and supplier catalogues.",
+  "Compare closest material matches with confidence and reason.",
+  "Discover similar products with Indian-market keywords.",
+  "Build a sourceable shortlist before visiting vendors.",
+];
+
+/* ---------------- Interactive Demo Modal ---------------- */
+function DemoModal({ onClose }) {
+  const [step, setStep] = useState(0);
+  const navigate = useNavigate();
+  const { user } = useAuth();
+  const total = DEMO_STEPS.length;
+  const next = () => setStep((s) => Math.min(total - 1, s + 1));
+  const prev = () => setStep((s) => Math.max(0, s - 1));
+  return (
+    <div className="fixed inset-0 z-50 bg-charcoal/60 grid place-items-center p-4" data-testid="demo-modal" onClick={onClose}>
+      <div
+        className="bg-paper rounded-3xl shadow-hover w-full max-w-3xl overflow-hidden border border-stone-border-soft"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="p-5 border-b border-stone-border-soft flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <PlayCircle className="w-4 h-4 text-charcoal" strokeWidth={1.5} />
+            <span className="text-overline">Interactive Demo</span>
+          </div>
+          <button type="button" onClick={onClose} className="p-1.5 rounded-full hover:bg-stone-panel" data-testid="demo-modal-close">
+            <X className="w-4 h-4" strokeWidth={1.5} />
+          </button>
+        </div>
+
+        {/* Video frame placeholder */}
+        <div className="aspect-video bg-stone-panel border-b border-stone-border-soft grid place-items-center relative" data-testid="demo-video-frame">
+          <div className="absolute inset-0 grid place-items-center">
+            <div className="text-center">
+              <div className="w-14 h-14 rounded-full bg-charcoal grid place-items-center mx-auto mb-3 shadow-hover">
+                <PlayCircle className="w-6 h-6 text-paper" strokeWidth={1.5} />
+              </div>
+              <div className="text-overline">Walkthrough</div>
+              <div className="font-display text-2xl font-semibold text-charcoal mt-1">
+                {DEMO_STEPS[step]}
+              </div>
+              <div className="text-xs text-warm-grey mt-3">Step {step + 1} of {total}</div>
+            </div>
+          </div>
+          <div className="absolute bottom-4 left-4 right-4 h-1 bg-stone-border-soft rounded-full overflow-hidden">
+            <div
+              className="h-full bg-charcoal transition-all duration-500"
+              style={{ width: `${((step + 1) / total) * 100}%` }}
+            />
+          </div>
+        </div>
+
+        <div className="p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <button
+              type="button"
+              onClick={prev}
+              disabled={step === 0}
+              className="text-sm text-warm-grey hover:text-charcoal disabled:opacity-30"
+              data-testid="demo-prev"
+            >
+              ← Previous
+            </button>
+            <div className="text-xs text-warm-grey">{step + 1} / {total}</div>
+            <button
+              type="button"
+              onClick={next}
+              disabled={step === total - 1}
+              className="text-sm text-charcoal hover:underline disabled:opacity-30"
+              data-testid="demo-next"
+            >
+              Next →
+            </button>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-stone-border-soft">
+            <button
+              type="button"
+              onClick={() => { onClose(); navigate("/demo"); }}
+              className="inline-flex items-center gap-2 bg-charcoal text-paper hover:bg-charcoal/85 rounded-full px-5 py-2.5 text-sm font-medium transition-colors"
+              data-testid="demo-modal-open-project"
+            >
+              Open Demo Project
+              <ArrowRight className="w-3.5 h-3.5" strokeWidth={1.75} />
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                navigate(user ? "/projects/new" : "/auth?mode=register&next=/projects/new");
+              }}
+              className="inline-flex items-center gap-2 bg-white text-charcoal border border-stone-border hover:border-charcoal rounded-full px-5 py-2.5 text-sm font-medium transition-colors"
+              data-testid="demo-modal-create-project"
+            >
+              Create Your First Project
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Hero workflow visual ---------------- */
+function WorkflowVisual() {
+  return (
+    <div className="relative" data-testid="hero-workflow-visual">
+      <div className="bg-white border border-stone-border-soft rounded-3xl p-6 sm:p-8 shadow-hover grid grid-cols-3 gap-4">
+        {/* LEFT — Reference */}
+        <div className="space-y-3 col-span-1">
+          <div className="text-overline">Reference</div>
+          <div className="aspect-[4/5] rounded-2xl bg-gradient-to-br from-sand via-stone-panel to-sage-soft/40 border border-stone-border-soft relative overflow-hidden">
+            <div className="absolute inset-0 grid place-items-center opacity-70">
+              <Camera className="w-8 h-8 text-charcoal" strokeWidth={1.25} />
+            </div>
+            <div className="absolute bottom-2 left-2 right-2 bg-paper/95 backdrop-blur rounded-md px-2 py-1.5">
+              <div className="text-[9px] uppercase tracking-widest text-warm-grey">Inspiration</div>
+              <div className="text-[11px] font-medium text-charcoal leading-tight">Warm modern living</div>
+            </div>
+          </div>
+        </div>
+
+        {/* MIDDLE — Detected materials/products */}
+        <div className="space-y-2 col-span-1">
+          <div className="text-overline">Detected</div>
+          <div className="p-2.5 rounded-xl bg-stone-panel border border-stone-border-soft">
+            <div className="text-[9px] uppercase tracking-widest text-warm-grey">Finish</div>
+            <div className="text-[11px] font-medium text-charcoal">Warm Oak Slat Panel</div>
+            <div className="text-[10px] text-sage font-mono mt-0.5">92%</div>
+          </div>
+          <div className="p-2.5 rounded-xl bg-sand/40 border border-stone-border-soft">
+            <div className="text-[9px] uppercase tracking-widest text-warm-grey">Product</div>
+            <div className="text-[11px] font-medium text-charcoal">Brass Pendant</div>
+            <div className="text-[10px] text-warm-grey mt-0.5">Lighting</div>
+          </div>
+          <div className="p-2.5 rounded-xl bg-white border border-stone-border-soft">
+            <div className="text-[9px] uppercase tracking-widest text-warm-grey">Finish</div>
+            <div className="text-[11px] font-medium text-charcoal">Kota Beige</div>
+            <div className="text-[10px] text-sage font-mono mt-0.5">88%</div>
+          </div>
+        </div>
+
+        {/* RIGHT — Matches, suggestions, shortlist */}
+        <div className="space-y-2 col-span-1">
+          <div className="text-overline">Sourceable</div>
+          <div className="p-2.5 rounded-xl bg-sage-soft/70 border border-sage/30">
+            <div className="flex items-center gap-1 text-[9px] uppercase tracking-widest text-sage font-semibold">
+              <BookOpen className="w-2.5 h-2.5" strokeWidth={2.5} /> Catalogue Match
+            </div>
+            <div className="text-[11px] font-medium text-charcoal mt-0.5 leading-tight">White Oak Slats · pg 3</div>
+            <div className="text-[10px] text-sage font-mono mt-0.5">94%</div>
+          </div>
+          <div className="p-2.5 rounded-xl bg-ochre-soft/60 border border-ochre/30">
+            <div className="text-[9px] uppercase tracking-widest text-ochre font-semibold">Indian Options</div>
+            <div className="text-[11px] font-medium text-charcoal leading-tight">Century Ply · Merino</div>
+          </div>
+          <div className="p-2.5 rounded-xl bg-charcoal text-paper">
+            <div className="flex items-center gap-1 text-[9px] uppercase tracking-widest text-paper/70 font-semibold">
+              <ListChecks className="w-2.5 h-2.5" strokeWidth={2.5} /> Shortlist
+            </div>
+            <div className="text-[11px] font-medium leading-tight">3 materials · 2 products</div>
+          </div>
+        </div>
+      </div>
+      {/* Connector labels */}
+      <div className="hidden sm:flex items-center justify-around text-[10px] uppercase tracking-widest text-warm-grey/70 mt-3 px-8">
+        <span>Reference</span>
+        <ChevronRight className="w-3 h-3" strokeWidth={2} />
+        <span>Detection</span>
+        <ChevronRight className="w-3 h-3" strokeWidth={2} />
+        <span>Sourceable</span>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- LANDING ---------------- */
 export default function Landing() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const [demoOpen, setDemoOpen] = useState(false);
 
-  const openDemo = () => {
-    // Public demo works whether or not user is signed in.
-    navigate("/demo");
-  };
+  const openDemoModal = () => setDemoOpen(true);
   const openCreate = () => {
     if (user) navigate("/projects/new");
     else navigate("/auth?mode=register&next=/projects/new");
@@ -43,31 +217,30 @@ export default function Landing() {
       <Header variant="marketing" />
 
       {/* HERO */}
-      <section className="max-w-7xl mx-auto px-6 pt-16 pb-20 grain">
+      <section className="max-w-7xl mx-auto px-6 pt-14 pb-20 grain">
         <div className="grid lg:grid-cols-12 gap-12 items-center">
-          <div className="lg:col-span-7 space-y-8 animate-fade-in-up">
+          <div className="lg:col-span-6 space-y-8 animate-fade-in-up">
             <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white border border-stone-border-soft text-overline">
               <span className="w-1.5 h-1.5 rounded-full bg-charcoal"></span>
-              Specification &amp; Sourcing Workspace · Beta
+              Sourcing acceleration for interior designers · Beta
             </div>
             <h1 className="font-display text-5xl sm:text-6xl lg:text-7xl tracking-tight leading-[0.95] font-bold text-charcoal">
-              Keep designing.<br />
-              We&apos;ll handle<br />
-              <span className="text-warm-grey/60">everything after.</span>
+              Turn inspiration<br />
+              into <span className="italic">sourceable</span><br />
+              <span className="text-warm-grey/60">materials.</span>
             </h1>
             <p className="text-lg text-charcoal/70 max-w-xl leading-relaxed" data-testid="hero-subhead">
-              Upload references, generate specifications, compare supplier catalogues,
-              discover products, and prepare client-ready presentations — without
-              replacing your creative process.
+              Upload a reference image, detect materials and products, match them with supplier catalogues,
+              and generate a shortlist of India-ready sourcing options.
             </p>
             <p className="text-sm text-warm-grey italic max-w-xl border-l-2 border-stone-border pl-4" data-testid="hero-philosophy">
-              MaterialMatch does not design for you. It removes repetitive work around
-              sourcing, catalogues, specifications, products and presentations.
+              MaterialMatch does not replace design judgement. It helps designers reach the right shortlist
+              faster before physical verification.
             </p>
             <div className="flex flex-wrap items-center gap-3">
               <button
                 type="button"
-                onClick={openDemo}
+                onClick={openDemoModal}
                 className="inline-flex items-center gap-2 bg-charcoal text-paper hover:bg-charcoal/85 rounded-full px-7 py-3.5 font-medium transition-colors"
                 data-testid="hero-cta-demo"
               >
@@ -92,36 +265,47 @@ export default function Landing() {
             </div>
           </div>
 
-          <div className="lg:col-span-5 relative animate-fade-in-up" style={{ animationDelay: "0.2s" }}>
-            <div className="relative aspect-[4/5] rounded-3xl overflow-hidden shadow-hover">
-              <img src={interiorImage} alt="Interior" className="w-full h-full object-cover" />
-              <div className="absolute top-4 left-4 px-3 py-1.5 rounded-full bg-paper/90 backdrop-blur text-overline">
-                Reference
-              </div>
-            </div>
-            <div className="absolute -bottom-6 -left-6 w-44 aspect-square rounded-2xl overflow-hidden shadow-hover border-4 border-paper">
-              <img src={materialWood} alt="Material" className="w-full h-full object-cover" />
-              <div className="absolute bottom-2 left-2 right-2 bg-paper/90 backdrop-blur px-2 py-1 rounded-md text-[10px]">
-                <div className="font-semibold text-charcoal">94% match</div>
-                <div className="text-warm-grey">White Oak Veneer</div>
-              </div>
-            </div>
-            <div className="absolute -top-6 -right-4 w-32 aspect-square rounded-2xl overflow-hidden shadow-hover border-4 border-paper hidden sm:block">
-              <img src={materialClose} alt="Material close" className="w-full h-full object-cover" />
-            </div>
+          <div className="lg:col-span-6 animate-fade-in-up" style={{ animationDelay: "0.15s" }}>
+            <WorkflowVisual />
+          </div>
+        </div>
+      </section>
+
+      {/* WHY MATERIALMATCH */}
+      <section className="max-w-6xl mx-auto px-6 py-20" data-testid="why-section">
+        <div className="grid lg:grid-cols-12 gap-10 items-center">
+          <div className="lg:col-span-5 space-y-4">
+            <div className="text-overline">Why MaterialMatch?</div>
+            <h2 className="font-display text-4xl sm:text-5xl font-bold tracking-tight text-charcoal leading-tight">
+              Sourcing acceleration —<br />
+              <span className="text-warm-grey">not design automation.</span>
+            </h2>
+          </div>
+          <div className="lg:col-span-7 space-y-5 text-charcoal/80 leading-relaxed">
+            <p>
+              Interior designers spend hours searching supplier catalogues and product websites after
+              clients share references.
+            </p>
+            <p>
+              MaterialMatch reduces that search time by detecting materials and products, comparing
+              catalogues, and producing sourceable shortlists.
+            </p>
+            <p className="text-charcoal font-medium">
+              This is not design automation. This is sourcing acceleration.
+            </p>
           </div>
         </div>
       </section>
 
       {/* WORKFLOW */}
-      <section id="workflow" className="max-w-7xl mx-auto px-6 py-24">
-        <div className="max-w-2xl mb-14">
+      <section id="workflow" className="max-w-7xl mx-auto px-6 py-20">
+        <div className="max-w-2xl mb-12">
           <div className="text-overline mb-3">The workflow</div>
           <h2 className="font-display text-4xl sm:text-5xl font-bold tracking-tight text-charcoal">
-            From inspiration to a <em className="not-italic text-warm-grey/70">client-ready presentation.</em>
+            From reference image to <em className="not-italic text-warm-grey/70">sourceable shortlist.</em>
           </h2>
           <p className="text-warm-grey mt-4 max-w-xl">
-            Five steps a designer already knows — accelerated end-to-end.
+            Six steps to reach the right shortlist faster — before physical verification.
           </p>
         </div>
 
@@ -143,34 +327,64 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* PRODUCT IMAGE SHOWCASE */}
-      <section className="max-w-7xl mx-auto px-6 py-16">
-        <div className="grid lg:grid-cols-12 gap-8 items-center">
-          <div className="lg:col-span-7 relative aspect-[16/10] rounded-3xl overflow-hidden">
-            <img src={interiorImage2} alt="Interior" className="w-full h-full object-cover" />
-          </div>
-          <div className="lg:col-span-5 flex flex-col justify-center space-y-6">
-            <div className="text-overline">Built for studios</div>
-            <h2 className="font-display text-3xl sm:text-4xl font-bold tracking-tight leading-tight text-charcoal">
-              Stop guessing. Start sourcing with confidence.
-            </h2>
-            <p className="text-warm-grey leading-relaxed">
-              Specify materials your client will love — backed by visual evidence. Cut hours
-              of catalogue flipping and material library searches into a single workflow.
-            </p>
-            <ul className="space-y-3">
+      {/* PRODUCT DISCOVERY BAND */}
+      <section className="max-w-7xl mx-auto px-6 py-16" data-testid="product-discovery-band">
+        <div className="rounded-3xl bg-stone-panel border border-stone-border-soft p-10 sm:p-14">
+          <div className="grid lg:grid-cols-12 gap-8 items-center">
+            <div className="lg:col-span-7 space-y-4">
+              <div className="text-overline">Products & Fixtures</div>
+              <h2 className="font-display text-3xl sm:text-4xl font-bold tracking-tight text-charcoal">
+                Product discovery built for Indian interiors.
+              </h2>
+              <p className="text-warm-grey leading-relaxed">
+                Detect lights, decor, furniture, rugs and fixtures from references and generate
+                search-ready suggestions. Curated affiliate links show up when we have a match — otherwise
+                we surface search keywords tuned for Indian marketplaces.
+              </p>
+            </div>
+            <div className="lg:col-span-5 space-y-3">
               {[
-                "Specification zones with confidence scores",
-                "Side-by-side visual reasoning on every match",
-                "India-first sourcing recommendations",
-                "Client-ready presentations, shareable in one link",
-              ].map((b) => (
-                <li key={b} className="flex items-start gap-3 text-sm text-charcoal">
-                  <Check className="w-4 h-4 mt-0.5 text-sage" strokeWidth={2} />
-                  {b}
-                </li>
+                { c: "Lighting", t: "Brushed Brass Pendant" },
+                { c: "Furniture", t: "Bouclé Accent Chair" },
+                { c: "Textile", t: "Hand-tufted Wool Rug" },
+              ].map((p) => (
+                <div key={p.t} className="bg-white rounded-2xl p-4 border border-stone-border-soft flex items-center gap-3">
+                  <ShoppingBag className="w-4 h-4 text-charcoal" strokeWidth={1.5} />
+                  <div className="flex-1">
+                    <div className="text-[10px] uppercase tracking-widest text-warm-grey">{p.c}</div>
+                    <div className="text-sm font-medium text-charcoal">{p.t}</div>
+                  </div>
+                  <div className="text-[10px] uppercase tracking-widest text-sage font-semibold">Curated</div>
+                </div>
               ))}
-            </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* PRESENTATION — COMING SOON */}
+      <section className="max-w-6xl mx-auto px-6 py-16" data-testid="presentation-coming-soon">
+        <div className="rounded-3xl border border-dashed border-stone-border p-10 sm:p-14 bg-paper-warm">
+          <div className="flex items-center gap-2 mb-3">
+            <PenSquare className="w-4 h-4 text-warm-grey" strokeWidth={1.5} />
+            <span className="text-[10px] uppercase tracking-widest text-warm-grey font-semibold px-2 py-0.5 rounded-full border border-stone-border">
+              Coming Soon
+            </span>
+          </div>
+          <h2 className="font-display text-3xl sm:text-4xl font-bold tracking-tight text-charcoal max-w-2xl">
+            Client-ready Design Story presentations.
+          </h2>
+          <p className="text-warm-grey mt-4 max-w-2xl leading-relaxed">
+            Turn existing room photos, references, specifications, catalogue matches and product
+            shortlists into visual client presentations.
+          </p>
+          <div className="mt-6 flex flex-wrap gap-2 text-xs">
+            {["Current Space", "Design Direction", "Materials", "Products", "Presentation"].map((s, i) => (
+              <div key={s} className="flex items-center gap-2">
+                <span className="px-3 py-1 rounded-full bg-stone-panel text-charcoal border border-stone-border-soft">{s}</span>
+                {i < 4 && <ChevronRight className="w-3 h-3 text-warm-grey" strokeWidth={2} />}
+              </div>
+            ))}
           </div>
         </div>
       </section>
@@ -182,13 +396,13 @@ export default function Landing() {
           See the full flow in under 3 minutes.
         </h2>
         <p className="text-warm-grey mt-4 max-w-xl mx-auto">
-          The interactive demo shows a fully-finished project — specification, catalogue matches,
-          products, and a shareable concept presentation. No signup required.
+          The interactive demo shows a completed project — specification, catalogue matches, products,
+          and a sourceable shortlist. No signup required.
         </p>
         <div className="flex flex-wrap items-center justify-center gap-3 mt-8">
           <button
             type="button"
-            onClick={openDemo}
+            onClick={openDemoModal}
             className="inline-flex items-center gap-2 bg-charcoal text-paper hover:bg-charcoal/85 rounded-full px-7 py-3.5 font-medium transition-colors"
             data-testid="closing-cta-demo"
           >
@@ -215,9 +429,11 @@ export default function Landing() {
             </div>
             <span className="font-display font-bold text-sm text-charcoal">MaterialMatch.AI</span>
           </div>
-          <div className="text-xs text-warm-grey">© 2026 MaterialMatch AI · Crafted for designers</div>
+          <div className="text-xs text-warm-grey">© 2026 MaterialMatch AI · Sourcing acceleration for designers</div>
         </div>
       </footer>
+
+      {demoOpen && <DemoModal onClose={() => setDemoOpen(false)} />}
     </div>
   );
 }

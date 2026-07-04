@@ -13,6 +13,7 @@ import AdminAffiliates from "@/pages/AdminAffiliates";
 import ConceptWorkspace from "@/pages/ConceptWorkspace";
 import PublicRoom from "@/pages/PublicRoom";
 import Demo from "@/pages/Demo";
+import MaterialLibrary from "@/pages/MaterialLibrary";
 
 function App() {
   return (
@@ -72,6 +73,14 @@ function App() {
           />
           <Route path="/share/rooms/:slug" element={<PublicRoom />} />
           <Route path="/demo" element={<Demo />} />
+          <Route
+            path="/library"
+            element={
+              <ProtectedRoute>
+                <MaterialLibrary />
+              </ProtectedRoute>
+            }
+          />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

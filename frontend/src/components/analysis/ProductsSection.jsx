@@ -1,5 +1,5 @@
 import React from "react";
-import { ExternalLink, Sparkles, ShoppingBag, Package, Search } from "lucide-react";
+import { ExternalLink, Sparkles, ShoppingBag, Package, Search, ListChecks, Check } from "lucide-react";
 
 const CATEGORY_LABEL = {
   lighting: "Lighting",
@@ -50,7 +50,7 @@ function KeywordChips({ items, testid }) {
   );
 }
 
-function ProductCard({ product, index }) {
+function ProductCard({ product, index, onAddToShortlist, alreadyShortlisted }) {
   const matched = product.matched_affiliate;
   const search = product.search_urls || {};
   return (
@@ -156,15 +156,31 @@ function ProductCard({ product, index }) {
               Google Shopping
             </a>
           )}
+          {onAddToShortlist && (
+            <button
+              type="button"
+              onClick={() => onAddToShortlist(product)}
+              disabled={alreadyShortlisted}
+              className={`inline-flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-full border transition-colors ${
+                alreadyShortlisted
+                  ? "bg-sage-soft text-sage border-sage/30 cursor-default"
+                  : "bg-charcoal text-paper border-charcoal hover:bg-charcoal/85"
+              }`}
+              data-testid={`product-shortlist-btn-${index}`}
+            >
+              {alreadyShortlisted ? <><Check className="w-3 h-3" strokeWidth={2} /> Shortlisted</> : <><ListChecks className="w-3 h-3" strokeWidth={2} /> Add to Shortlist</>}
+            </button>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-export default function ProductsSection({ products }) {
+export default function ProductsSection({ products, onAddToShortlist, shortlistedNames }) {
   if (!products || products.length === 0) return null;
   const withCurated = products.filter((p) => p.matched_affiliate).length;
+  const shortlisted = shortlistedNames || new Set();
   return (
     <section data-testid="products-section" className="space-y-4">
       <div className="flex items-baseline justify-between flex-wrap gap-2">
@@ -183,7 +199,13 @@ export default function ProductsSection({ products }) {
       </div>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {products.map((p, i) => (
-          <ProductCard key={p.id || `p-${i}`} product={p} index={i} />
+          <ProductCard
+            key={p.id || `p-${i}`}
+            product={p}
+            index={i}
+            onAddToShortlist={onAddToShortlist}
+            alreadyShortlisted={shortlisted.has(p.product_name)}
+          />
         ))}
       </div>
     </section>

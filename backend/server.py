@@ -3599,6 +3599,179 @@ async def get_demo_reference_image():
     return {"data_url": f"data:image/jpeg;base64,{doc['reference_image_b64']}"}
 
 
+# ============================================================================
+# Sprint 6: Sourceable Shortlist (per-project, designer-curated list of items
+# they intend to source — bridges detection and physical verification)
+# ============================================================================
+class ShortlistItemCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    source_type: str  # "catalogue_match" | "product" | "spec" | "custom"
+    source: Optional[str] = ""  # e.g. catalogue filename, platform name
+    match_percent: Optional[int] = None
+    category: Optional[str] = ""
+    zone: Optional[str] = ""
+    notes: Optional[str] = ""
+    image_ref: Optional[str] = ""  # optional image reference (URL or catalogue page)
+    external_url: Optional[str] = ""
+
+
+@api_router.get("/projects/{project_id}/shortlist")
+async def list_shortlist(project_id: str, user: dict = Depends(get_current_user)):
+    try:
+        doc = await db.projects.find_one(
+            {"_id": ObjectId(project_id), "user_id": user["id"]},
+            {"shortlist_items": 1},
+        )
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid project id")
+    if not doc:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {"items": doc.get("shortlist_items", [])}
+
+
+@api_router.post("/projects/{project_id}/shortlist")
+async def add_shortlist_item(project_id: str, payload: ShortlistItemCreate,
+                              user: dict = Depends(get_current_user)):
+    if payload.source_type not in {"catalogue_match", "product", "spec", "custom"}:
+        raise HTTPException(status_code=400, detail="Invalid source_type")
+    try:
+        doc = await db.projects.find_one({"_id": ObjectId(project_id), "user_id": user["id"]})
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid project id")
+    if not doc:
+        raise HTTPException(status_code=404, detail="Project not found")
+    item = {
+        "id": secrets.token_hex(8),
+        "name": payload.name.strip(),
+        "source_type": payload.source_type,
+        "source": (payload.source or "").strip(),
+        "match_percent": payload.match_percent,
+        "category": (payload.category or "").strip(),
+        "zone": (payload.zone or "").strip(),
+        "notes": (payload.notes or "").strip(),
+        "image_ref": (payload.image_ref or "").strip(),
+        "external_url": (payload.external_url or "").strip(),
+        "added_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.projects.update_one(
+        {"_id": ObjectId(project_id), "user_id": user["id"]},
+        {"$push": {"shortlist_items": item},
+         "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return item
+
+
+@api_router.delete("/projects/{project_id}/shortlist/{item_id}")
+async def remove_shortlist_item(project_id: str, item_id: str,
+                                 user: dict = Depends(get_current_user)):
+    try:
+        res = await db.projects.update_one(
+            {"_id": ObjectId(project_id), "user_id": user["id"]},
+            {"$pull": {"shortlist_items": {"id": item_id}},
+             "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid project id")
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {"ok": True}
+
+
+# ============================================================================
+# Sprint 6: Material Library — aggregate the user's catalogue history across
+# all their projects into a reusable-looking library. Also expose a small
+# "Global Library" placeholder that's transparently marked Coming Soon.
+# ============================================================================
+GLOBAL_LIBRARY_SEED = [
+    {
+        "id": "global-asianpaints-2026",
+        "name": "Asian Paints — Colour Cottage 2026",
+        "brand": "Asian Paints",
+        "category": "Paint",
+        "region": "India",
+        "coverage_note": "Warm neutrals, textured finishes, warm-white palettes.",
+        "status": "coming_soon",
+    },
+    {
+        "id": "global-kajaria-2026",
+        "name": "Kajaria — Prima Plus Tile Book",
+        "brand": "Kajaria",
+        "category": "Tile / Stone",
+        "region": "India",
+        "coverage_note": "Warm limestone, honed marble looks, matte porcelain.",
+        "status": "coming_soon",
+    },
+    {
+        "id": "global-centuryply-2026",
+        "name": "Century Ply — Sainik Veneer Volume",
+        "brand": "Century Ply",
+        "category": "Wood & Veneer",
+        "region": "India",
+        "coverage_note": "Oak, walnut, teak & warm-tone veneers.",
+        "status": "coming_soon",
+    },
+    {
+        "id": "global-hafele-2026",
+        "name": "Häfele India — Hardware & Fittings",
+        "brand": "Häfele India",
+        "category": "Fixture / Hardware",
+        "region": "India",
+        "coverage_note": "Brass, brushed nickel, matte black fittings.",
+        "status": "coming_soon",
+    },
+]
+
+
+@api_router.get("/library/global")
+async def library_global(user: dict = Depends(get_current_user)):
+    """Global (platform-managed) catalogue library. Currently seeded metadata
+    only — the actual PDF match against these is beta / coming soon."""
+    return {"items": GLOBAL_LIBRARY_SEED, "status": "beta"}
+
+
+@api_router.get("/library/my")
+async def library_my(user: dict = Depends(get_current_user)):
+    """Aggregate distinct catalogue filenames the user has uploaded across their
+    projects (via the match flow). Includes usage_count and last_used_at so it
+    feels like a real library. No re-upload / re-match yet — that is Coming Soon."""
+    cursor = db.projects.find(
+        {"user_id": user["id"]},
+        {"name": 1, "match_results": 1, "updated_at": 1, "created_at": 1},
+    )
+    library: dict = {}
+    async for p in cursor:
+        results = p.get("match_results") or {}
+        # match_results is keyed by zone -> {uploaded_files: [...]}
+        for zone_key, zone_val in results.items():
+            if not isinstance(zone_val, dict):
+                continue
+            for uf in zone_val.get("uploaded_files", []) or []:
+                name = (uf or {}).get("name")
+                if not name:
+                    continue
+                entry = library.setdefault(name, {
+                    "id": name,
+                    "name": name,
+                    "type": (uf or {}).get("type") or "",
+                    "usage_count": 0,
+                    "last_used_at": None,
+                    "projects": [],
+                })
+                entry["usage_count"] += 1
+                ts = zone_val.get("generated_at") or p.get("updated_at") or p.get("created_at")
+                if ts and (entry["last_used_at"] is None or ts > entry["last_used_at"]):
+                    entry["last_used_at"] = ts
+                pn = p.get("name")
+                if pn and pn not in entry["projects"]:
+                    entry["projects"].append(pn)
+    items = sorted(
+        library.values(),
+        key=lambda x: (x.get("last_used_at") or ""),
+        reverse=True,
+    )
+    return {"items": items, "reuse_status": "coming_soon"}
+
+
 app.include_router(api_router)
 # (CORS middleware was registered earlier — before any routes — so OPTIONS
 # preflights are answered without hitting a handler.)

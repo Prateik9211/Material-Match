@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import api from "@/lib/api";
-import { LogOut, LayoutGrid, Shield } from "lucide-react";
+import { LogOut, LayoutGrid, Shield, BookOpen } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Header({ variant = "app" }) {
@@ -52,6 +52,15 @@ export default function Header({ variant = "app" }) {
               >
                 <LayoutGrid className="w-4 h-4" strokeWidth={1.5} />
                 Dashboard
+              </button>
+
+              <button
+                onClick={() => navigate("/library")}
+                className="hidden sm:inline-flex items-center gap-2 text-sm text-neutral-700 hover:text-black px-3 py-2"
+                data-testid="nav-library"
+              >
+                <BookOpen className="w-4 h-4" strokeWidth={1.5} />
+                Material Library
               </button>
 
               {user.role === "admin" && (

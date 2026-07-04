@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import Header from "@/components/Header";
 import api, { formatApiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
-import { Plus, FileText, ArrowUpRight, Sparkles, Clock, PlayCircle, Camera, Layers, Palette, ShoppingBag, PenSquare } from "lucide-react";
+import { Plus, FileText, ArrowUpRight, Sparkles, Clock, PlayCircle, Camera, Layers, BookOpen, ShoppingBag, ListChecks } from "lucide-react";
 import { toast } from "sonner";
 
 const statusColor = {
@@ -16,21 +16,21 @@ const statusColor = {
 
 const WORKFLOW_STEPS = [
   { icon: Camera, title: "Upload a reference", body: "A Pinterest pin or an interior photograph." },
-  { icon: Layers, title: "Generate specifications", body: "Zones, finishes, colour, and India-first sourcing." },
-  { icon: Palette, title: "Match your catalogue", body: "Upload a supplier PDF or product images." },
-  { icon: ShoppingBag, title: "Detect products & fixtures", body: "Lighting, furniture, decor — with curated options." },
-  { icon: PenSquare, title: "Prepare presentation", body: "Assemble rooms into a shareable design story." },
+  { icon: Layers, title: "Detect materials & products", body: "Zones, finishes, colour and Indian sourcing context." },
+  { icon: BookOpen, title: "Match catalogues", body: "Upload a supplier PDF or search your Material Library." },
+  { icon: ShoppingBag, title: "Discover products", body: "Lighting, furniture, decor — with curated Indian options." },
+  { icon: ListChecks, title: "Build sourceable shortlist", body: "Walk into vendor meetings prepared." },
 ];
 
-function WelcomePanel({ onDemo, onCreate }) {
+function WelcomePanel({ onDemo, onCreate, onLibrary }) {
   return (
     <div className="bg-white border border-stone-border-soft rounded-3xl p-10 sm:p-12 shadow-soft" data-testid="welcome-panel">
       <div className="text-overline mb-3">Welcome to MaterialMatch</div>
       <h2 className="font-display text-3xl sm:text-4xl font-bold tracking-tight text-charcoal max-w-2xl">
-        Start with a demo or create your first project.
+        Turn inspiration into sourceable materials.
       </h2>
       <p className="text-warm-grey mt-3 max-w-2xl">
-        The demo project shows the full flow — specification, catalogue matches, products, and a client-ready presentation — in under three minutes.
+        Explore the demo project, start a new project, or begin building your reusable Material Library.
       </p>
       <div className="mt-6 flex flex-wrap items-center gap-3">
         <button
@@ -49,7 +49,16 @@ function WelcomePanel({ onDemo, onCreate }) {
           data-testid="welcome-create-btn"
         >
           <Plus className="w-4 h-4" strokeWidth={1.75} />
-          Create New Project
+          Create Your First Project
+        </button>
+        <button
+          type="button"
+          onClick={onLibrary}
+          className="inline-flex items-center gap-2 bg-white text-charcoal border border-stone-border hover:border-charcoal hover:bg-stone-panel rounded-full px-6 py-3 font-medium transition-colors"
+          data-testid="welcome-library-btn"
+        >
+          <BookOpen className="w-4 h-4" strokeWidth={1.75} />
+          Open Material Library
         </button>
       </div>
       <div className="mt-10 grid sm:grid-cols-2 lg:grid-cols-5 gap-4">
@@ -95,6 +104,7 @@ export default function Dashboard() {
   const projectRoute = (p) => `/projects/${p.id}/analysis`;
   const openDemo = () => navigate("/demo");
   const openCreate = () => navigate("/projects/new");
+  const openLibrary = () => navigate("/library");
 
   const renderProjectsSection = () => {
     if (loading) {
@@ -179,7 +189,7 @@ export default function Dashboard() {
         {/* Empty state welcome panel */}
         {!loading && !hasProjects && (
           <div className="mb-12">
-            <WelcomePanel onDemo={openDemo} onCreate={openCreate} />
+            <WelcomePanel onDemo={openDemo} onCreate={openCreate} onLibrary={openLibrary} />
           </div>
         )}
 
