@@ -131,7 +131,9 @@ class TestLibrary:
         r = admin_session.get(f"{API}/library/global", timeout=15)
         assert r.status_code == 200
         body = r.json()
-        assert body["status"] == "beta"
+        # Sprint 2 Revision — status flipped from "beta" to "seeded" once
+        # the global catalogue was hand-authored across 9 categories.
+        assert body["status"] == "seeded"
         items = body["items"]
         assert len(items) == 4
         brands = {i["brand"] for i in items}

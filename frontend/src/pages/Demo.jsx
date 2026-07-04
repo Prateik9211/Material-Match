@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import axios from "axios";
 import Header from "@/components/Header";
 import ProductsSection from "@/components/analysis/ProductsSection";
+import MaterialsFirstSection from "@/components/analysis/MaterialsFirstSection";
 import { ArrowLeft, Sparkles, ExternalLink, ArrowRight, Layers } from "lucide-react";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -147,37 +148,11 @@ export default function Demo() {
           </div>
         </section>
 
-        {/* Specification Zones */}
+        {/* Specification Zones — catalogue-first materials */}
         {rows.length > 0 && (
-          <section data-testid="demo-spec-zones">
-            <div className="mb-6">
-              <div className="text-overline mb-2">Specification Zones</div>
-              <h2 className="font-display text-3xl font-semibold tracking-tight text-charcoal">Surfaces &amp; finishes detected</h2>
-            </div>
-            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {rows.map((r, i) => (
-                <div key={r.zone || i} className="bg-white border border-stone-border-soft rounded-2xl p-5 shadow-soft hover:shadow-hover transition-shadow" data-testid={`demo-zone-${i}`}>
-                  <div className="flex items-baseline justify-between mb-2">
-                    <div className="text-overline">{r.zone}</div>
-                    <span className="text-[10px] font-mono text-warm-grey">{r.confidence}%</span>
-                  </div>
-                  <div className="font-display text-lg font-semibold text-charcoal leading-tight">
-                    {r.material_type || r.material_family}
-                  </div>
-                  <div className="text-xs text-warm-grey mt-1 space-y-0.5">
-                    {r.finish && <div>Finish · {r.finish}</div>}
-                    {r.color && <div>Color · {r.color}</div>}
-                    {r.material_family && <div>Family · {r.material_family}</div>}
-                  </div>
-                  {r.indian_alternative && (
-                    <div className="mt-3 text-xs italic text-ochre border-l-2 border-ochre-soft pl-2">
-                      Recommended Indian Option: {r.indian_alternative}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </section>
+          <div data-testid="demo-spec-zones">
+            <MaterialsFirstSection rows={rows} />
+          </div>
         )}
 
         {/* Products & Fixtures */}

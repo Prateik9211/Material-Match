@@ -9,7 +9,7 @@ import { toast } from "sonner";
  * then click "Analyze this area" — client-side crops and POSTs to
  * /api/projects/{id}/analyze-region and returns rows for the right panel.
  */
-export default function RegionSelector({ projectId, imgSrc, onAnalyzed }) {
+export default function RegionSelector({ projectId, imgSrc, onAnalyzed, pins, focusedPinIndex, onHoverPin }) {
   const wrapRef = useRef(null);
   const imgRef = useRef(null);
   const [mode, setMode] = useState("view"); // view | draw
@@ -119,6 +119,30 @@ export default function RegionSelector({ projectId, imgSrc, onAnalyzed }) {
         data-testid="region-canvas"
       >
         <img ref={imgRef} src={imgSrc} alt="Reference" crossOrigin="anonymous" className="w-full h-auto block select-none pointer-events-none" />
+        {/* Sprint 2 Revision — numbered pins linking image ↔ material card. */}
+        {mode !== "draw" && !rect && Array.isArray(pins) && pins.map((p, i) => {
+          if (!p || typeof p.x !== "number" || typeof p.y !== "number") return null;
+          const isFocused = focusedPinIndex === i;
+          return (
+            <button
+              type="button"
+              key={i}
+              onMouseEnter={() => onHoverPin && onHoverPin(i)}
+              onMouseLeave={() => onHoverPin && onHoverPin(null)}
+              className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-full font-mono text-[10px] font-semibold grid place-items-center transition-all shadow-hover ${
+                isFocused
+                  ? "w-8 h-8 bg-charcoal text-paper ring-4 ring-paper/70 z-20"
+                  : "w-6 h-6 bg-paper/95 text-charcoal border border-charcoal/40 hover:bg-charcoal hover:text-paper z-10"
+              }`}
+              style={{ left: `${p.x}%`, top: `${p.y}%` }}
+              data-testid={`image-pin-${i}`}
+              aria-label={p.label || `Zone ${i + 1}`}
+              title={p.label || `Zone ${i + 1}`}
+            >
+              {i + 1}
+            </button>
+          );
+        })}
         {rect && rect.w > 0.2 && rect.h > 0.2 && (
           <div
             className="absolute border-2 border-charcoal rounded-md pointer-events-none"

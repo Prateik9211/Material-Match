@@ -17,11 +17,11 @@ class TestDemoEndpoints:
         r = requests.get(f"{BASE_URL}/api/demo/project")
         assert r.status_code == 200
         d = r.json()
-        assert d.get("name") == "Warm Modern Living — Demo"
+        assert d.get("name") == "Warm Modern Bedroom — Demo"
         assert d.get("is_demo") is True
         assert len(d.get("mock_analysis", [])) == 4
         products = d.get("products_detected", {}).get("products", [])
-        assert len(products) == 4
+        assert len(products) == 5
         assert len(d.get("match_results", {}).get("top_matches", [])) == 3
         # security: no user_id / password_hash leak
         blob = str(d)

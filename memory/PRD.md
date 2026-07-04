@@ -159,8 +159,31 @@ Refocused product around **Material Library + Catalogue Intelligence + Product D
 - ✅ **Materials-first hierarchy** — `MaterialsFirstSection` replaces the old spec table. Order: Materials → inline Alternatives (cost tiers + brands) → per-card Match with Catalogue → Products → Product Alternatives → Shortlist.
 - ✅ **Per-card Match with Catalogue** button on saved rows; correctly hidden for ephemeral region rows.
 - ✅ **Video-style Demo Modal** on Landing — 6 chapters (Reference, Detection, Zone Focus, Catalogue, Products, Shortlist) with auto-advance (4.2s), play/pause, chapter markers timeline, elapsed/total mm:ss counters, jump-to-chapter, keyboard (Space/Arrows/Esc), Open Demo Project CTA.
-- ✅ Backend tests: `tests/test_sprint7_analyze_region.py` — 6/6 PASS (unauth 401, foreign project 404, oversized crop 413, valid 200, data-url prefix accepted, short crop 422). Full regression 58/59 (one pre-existing sprint5a public-share failure unrelated).
+- ✅ Backend tests: `tests/test_sprint7_analyze_region.py` — 6/6 PASS. Full regression 58/59 (one pre-existing sprint5a public-share failure unrelated).
 - ✅ Frontend E2E QA green (testing agent iteration_10): all new testids visible, region draw→analyze→zone-panel→clear flow verified, hierarchy preserved.
+
+## Sprint 2 Revision — Catalogue-First Material Intelligence (2026-07-04)
+**Philosophy change:** MaterialMatch stops proving *what* a material is and starts finding *the closest available catalogues* that resemble each selected region — Detect → Search → Compare → Decide.
+
+- ✅ **Seeded Global Catalogue** — 177 hand-authored records across 9 categories in `/app/backend/catalogue_seed.py`:
+  - Veneers (20 — Greenlam, Merino, Century Ply, Advance, ArchidPly, Anchor Wood, DesignLam)
+  - Laminates (20 — Greenlam, Merino, Century, Sundek, Formica, Wilsonart, Advance, Royale Touche, Duroply, Action Tesa)
+  - Stone (15 — RK Marble, Bhandari, Kalinga Stone, Caesarstone, Levantina, Kajaria, Somany, Nitco, Rex Granite)
+  - Tiles (15 — Kajaria, Somany, Nitco, Orient Bell, RAK, Simpolo, AGL, Nexion)
+  - Fabric (15 — Fabindia, Sarita Handa, D'Decor, Deco Window, The White Window, Jaipur Rugs, Obeetee, Cocoon, House of MG)
+  - Lighting (10), Hardware (10), Furniture (10)
+  - Paints (62 shades — Asian Paints, Berger, Nerolac, Dulux). **Real codes only** — every unknown code renders "Code unavailable in current database".
+- ✅ **Catalogue matcher** (`_score_catalogue_item`) — family-alias + keyword-Jaccard + RGB colour-similarity + finish + texture. Cap at 97 (we never claim exact certainty).
+- ✅ **Similarity breakdown** — per match: `overall`, `visual`, `color`, `finish`, `texture` (0–100 each).
+- ✅ **Region classification** — heuristic `_classify_row` returns Material Surface / Product / Fixture / Decor / Mixed / Unclear. Product-family rows switch the header to "Closest Product Matches".
+- ✅ **Alternative material systems** — 9 families with category-level swaps (e.g. Wood → Natural Veneer / HPL Laminate / Textured Laminate / PVC Panel / Fluted MDF / Wood-look Porcelain Tile).
+- ✅ **Enriched endpoints** — `/analyze-region`, `/analyze` (full-image) and `/mock-analyze` all now attach `classification`, `catalogue_matches` (top 5–10), `alternative_systems` to every row.
+- ✅ **/library/global upgraded** — status flipped from "beta" → "seeded", returns categories grouped map + total count. Legacy `items` field preserved for backwards compatibility.
+- ✅ **Demo project rebuilt** — Warm Modern Bedroom (Unsplash `1595526114035-0d45ed16cfbf`). 9 internally-consistent zones (Headboard Fluted Oak, Bouclé Headboard, Ivory Linen Bedding, Oak Flooring, Wool Rug, Warm White Paint, Walnut Nightstand, Brass Sconce, Sheer Linen Curtains). Every row carries a `pin` (x, y) so the reference image renders numbered pin badges linking to each material card.
+- ✅ **Frontend: MaterialsFirstSection v2** — each card shows a pin # badge, classification tag, detected appearance, top catalogue matches with swatch thumbnail + brand + catalogue + code (or fallback) + page (or fallback) + match % pill + expandable Similarity breakdown, alternative material systems section, Indian sourcing note, and per-match "Shortlist" button that captures brand + catalogue + code + match %.
+- ✅ **Frontend: RegionSelector** upgraded to render numbered pin badges overlaid on the reference image (linked to the material card indexes; hover-syncs both directions).
+- ✅ **Demo page rewired** — the public read-only `/demo` now uses `MaterialsFirstSection` so visitors get catalogue-first UX before signing up.
+- ✅ Tests: `tests/test_sprint2_revision_catalogue_first.py` — 10/10 PASS (9 pass + 1 skipped when live-AI quota exceeded). Full backend regression clean (all pre-Sprint-2-Revision failures were pre-existing).
 
 ## Prioritized Backlog
 

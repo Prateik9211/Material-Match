@@ -99,6 +99,7 @@ export default function Analysis() {
   const [loading, setLoading] = useState(true);
   const [imgError, setImgError] = useState(false);
   const [regionResult, setRegionResult] = useState(null); // { rows, summary, crop_data_url }
+  const [focusedIndex, setFocusedIndex] = useState(null); // syncs image pins ↔ material cards
 
   const fetchProject = useCallback(async () => {
     try {
@@ -176,6 +177,22 @@ export default function Analysis() {
     notes: p.description || "",
   });
 
+  // Sprint 2 Revision — a "closest catalogue match" is a first-class shortlist
+  // item that carries the brand, catalogue and code straight to the vendor.
+  const addCatalogueMatchToShortlist = (row, match) => addToShortlist({
+    name: `${match.brand} · ${match.material_name}`,
+    source_type: "spec",
+    source: match.brand,
+    category: match.material_family || match.category || "material",
+    zone: row?.zone,
+    notes: [
+      match.material_code ? `Code: ${match.material_code}` : "Code unavailable in current database",
+      match.catalogue ? `Catalogue: ${match.catalogue}` : null,
+      match.page_number ? `Page: ${match.page_number}` : null,
+      match.match_percent ? `Match: ${match.match_percent}%` : null,
+    ].filter(Boolean).join(" · "),
+  });
+
   const goToMatchZone = (row) => navigate(`/projects/${id}/match?zone=${encodeURIComponent(row.zone)}`);
 
   const projectRows = project?.mock_analysis?.rows || [];
@@ -193,6 +210,26 @@ export default function Analysis() {
   const shortlistedProductNames = new Set(
     shortlist.filter((x) => x.source_type === "product").map((x) => x.name)
   );
+  // Catalogue-match shortlist items are named "Brand · Material Name" —
+  // the CatalogueMatchRow looks these up by id so we build a stable id set.
+  const shortlistedCatalogueIds = new Set(
+    shortlist
+      .filter((x) => x.source_type === "spec")
+      .map((x) => x.name)
+  );
+
+  // Numbered pins overlaid on the reference image. Rows carrying a `pin`
+  // dict use their coordinates; the rest get evenly distributed placeholders
+  // so every card still has a visible image ↔ card link.
+  const imagePins = activeRows.map((r, i) => {
+    if (r?.pin && typeof r.pin.x === "number" && typeof r.pin.y === "number") {
+      return { x: r.pin.x, y: r.pin.y, label: r.zone };
+    }
+    const cols = 3;
+    const col = i % cols;
+    const rowIdx = Math.floor(i / cols);
+    return { x: 20 + col * 30, y: 20 + rowIdx * 22, label: r.zone };
+  });
 
   return (
     <div className="min-h-screen bg-paper" data-testid="analysis-page">
@@ -268,6 +305,9 @@ export default function Analysis() {
                       projectId={id}
                       imgSrc={refImg}
                       onAnalyzed={(result) => setRegionResult(result)}
+                      pins={activeEphemeral ? [] : imagePins}
+                      focusedPinIndex={focusedIndex}
+                      onHoverPin={setFocusedIndex}
                     />
                   ) : (
                     <div className="aspect-video rounded-2xl bg-stone-panel border border-stone-border-soft grid place-items-center text-overline">
@@ -333,6 +373,10 @@ export default function Analysis() {
                 subtitle={activeEphemeral
                   ? "AI-detected materials just for the area you selected. Add any to your shortlist."
                   : undefined}
+                onAddCatalogueToShortlist={addCatalogueMatchToShortlist}
+                shortlistedCatalogueIds={shortlistedCatalogueIds}
+                focusedIndex={focusedIndex}
+                onHoverCard={setFocusedIndex}
               />
             ) : (
               <div className="bg-white border border-dashed border-stone-border rounded-2xl p-12 text-center" data-testid="analysis-empty">

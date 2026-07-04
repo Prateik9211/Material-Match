@@ -25,6 +25,11 @@ from starlette.middleware.cors import CORSMiddleware
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
 
+# Sprint 2 Revision (Catalogue-First): seeded global catalogue used by the
+# region-analysis pipeline to return "closest catalogue matches" instead of
+# just AI descriptions.
+from catalogue_seed import SEEDED_CATALOGUE, CATEGORY_SETS, ALTERNATIVE_SYSTEMS
+
 # ============================================================================
 # Setup
 # ============================================================================
@@ -743,6 +748,7 @@ async def mock_analyze(project_id: str, user: dict = Depends(get_current_user)):
         "version": "mock-v3",
         "region": region,
     }
+    _enrich_rows_with_catalogue(mock_analysis["rows"])
 
     await db.projects.update_one(
         {"_id": ObjectId(project_id)},
@@ -1113,6 +1119,7 @@ async def real_analyze(project_id: str, user: dict = Depends(get_current_user)):
             project_id, user["id"], ref_b64,
             region=user.get("preferred_region", DEFAULT_REGION),
         )
+        _enrich_rows_with_catalogue(analysis.get("rows") or [])
     except HTTPException:
         day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         await db.usage_counters.update_one(
@@ -1169,6 +1176,269 @@ class RegionAnalyzePayload(BaseModel):
     note: Optional[str] = ""
 
 
+# ---------------------------------------------------------------------------
+# Sprint 2 Revision — Catalogue matcher, classifier and enrichment helpers.
+# ---------------------------------------------------------------------------
+_MATERIAL_FAMILIES_SET = {"Wood", "Stone", "Tile", "Fabric", "Paint", "Laminate",
+                          "Veneer", "Metal", "Textile", "Ceramic"}
+_PRODUCT_FAMILIES_SET = {"Lighting", "Furniture"}
+_FIXTURE_KEYWORDS = {"faucet", "sink", "shower", "basin", "tap", "toilet",
+                     "hinge", "handle", "profile", "trim", "downlight"}
+_DECOR_KEYWORDS = {"vase", "ornament", "sculpture", "planter", "art",
+                   "cushion", "throw", "candle"}
+
+
+def _tokenize(v) -> set:
+    """Tokenise a string or list into a lowercase word set for Jaccard."""
+    if v is None:
+        return set()
+    if isinstance(v, (list, tuple)):
+        raw = " ".join(str(x) for x in v)
+    else:
+        raw = str(v)
+    return {w for w in re.split(r"[^a-z0-9]+", raw.lower()) if len(w) > 2}
+
+
+def _hex_to_rgb(h: str) -> tuple:
+    h = (h or "").lstrip("#")
+    if len(h) != 6:
+        return (128, 128, 128)
+    try:
+        return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    except ValueError:
+        return (128, 128, 128)
+
+
+# Named-colour cheat-sheet used only when the detected row exposes a colour name
+# but no hex.  Keeps the matcher deterministic in mock mode.
+_COLOR_NAME_TO_HEX = {
+    "white": "#F5F1EA", "warm white": "#F3EED9", "ivory": "#EEE1CB",
+    "warm ivory": "#EFE4CB", "cream": "#F1E4C6", "warm cream": "#EDE0BF",
+    "beige": "#D6C4A2", "warm beige": "#D6C4A2", "sand": "#D9C29C",
+    "warm sand": "#D9C29C", "peach": "#F2D6BB", "peach cream": "#F2D9BE",
+    "warm oak": "#B58453", "oak": "#BC8B54", "honey": "#B98A5A",
+    "walnut": "#6E4A2E", "warm walnut": "#664021", "dark walnut": "#4B2E1A",
+    "teak": "#A0703A", "brass": "#B18C4D", "warm brass": "#B58C4D",
+    "gold": "#C79C5F", "rose gold": "#C6896D", "charcoal": "#3B3B3B",
+    "warm grey": "#B7ADA0", "warm gray": "#B7ADA0", "sage": "#BFC9B3",
+    "olive": "#8F8B65", "terracotta": "#B37050", "dusty rose": "#D4A99B",
+    "black": "#111111", "rust": "#A9552F",
+}
+
+
+def _resolve_hex(row) -> str:
+    """Pick the best hex for the row's colour, falling back to name lookup."""
+    if isinstance(row, dict):
+        h = row.get("color_hex")
+        if h:
+            return h
+        name = str(row.get("color") or row.get("color_name") or "").lower().strip()
+        if name in _COLOR_NAME_TO_HEX:
+            return _COLOR_NAME_TO_HEX[name]
+        # Try longest keyword match.
+        for k in sorted(_COLOR_NAME_TO_HEX, key=len, reverse=True):
+            if k in name:
+                return _COLOR_NAME_TO_HEX[k]
+    return "#B7ADA0"
+
+
+def _color_similarity(hex1: str, hex2: str) -> int:
+    """0-100 similarity based on RGB Euclidean distance."""
+    r1, g1, b1 = _hex_to_rgb(hex1)
+    r2, g2, b2 = _hex_to_rgb(hex2)
+    d = ((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2) ** 0.5
+    # Max Euclidean distance in RGB space ≈ 441.67
+    sim = max(0.0, 1.0 - (d / 441.67))
+    return int(round(sim * 100))
+
+
+# Family-alias table so a row tagged "wood" still boosts the "Veneer" and
+# "Laminate" catalogues that visually mimic wood.
+_FAMILY_ALIAS = {
+    "wood": {"Wood", "Laminate"},
+    "veneer": {"Wood", "Laminate"},
+    "laminate": {"Laminate", "Wood"},
+    "paint": {"Paint"},
+    "stone": {"Stone", "Tile"},
+    "marble": {"Stone", "Tile"},
+    "tile": {"Tile", "Stone"},
+    "fabric": {"Fabric"},
+    "textile": {"Fabric"},
+    "upholstery": {"Fabric"},
+    "metal": {"Metal"},
+    "lighting": {"Lighting"},
+    "furniture": {"Furniture"},
+}
+
+
+def _score_catalogue_item(row: dict, item: dict) -> dict:
+    """Return breakdown {overall, visual, color, finish, texture, family}.
+
+    Similarity is intentionally *fuzzy* — MaterialMatch's contract is that we
+    show the closest available catalogue matches, never exact certainty.
+    """
+    fam_row = str(row.get("material_family") or "").lower()
+    fam_item = str(item.get("material_family") or "")
+    family_match = fam_item in _FAMILY_ALIAS.get(fam_row, {fam_item})
+    # 1. Family match (baseline of ~30 points).
+    family_score = 30 if family_match else 5
+
+    # 2. Keyword Jaccard on (material_type + color + texture + finish + keywords).
+    row_tokens = (_tokenize(row.get("material_type")) | _tokenize(row.get("color"))
+                  | _tokenize(row.get("texture")) | _tokenize(row.get("finish"))
+                  | _tokenize(row.get("keywords")))
+    item_tokens = (_tokenize(item.get("material_name")) | _tokenize(item.get("color_name"))
+                   | _tokenize(item.get("texture")) | _tokenize(item.get("finish"))
+                   | _tokenize(item.get("keywords")))
+    if row_tokens and item_tokens:
+        j = len(row_tokens & item_tokens) / max(1, len(row_tokens | item_tokens))
+    else:
+        j = 0.0
+    visual = int(round(j * 100))
+
+    # 3. Colour similarity.
+    row_hex = _resolve_hex(row)
+    item_hex = item.get("color_hex") or "#B7ADA0"
+    color = _color_similarity(row_hex, item_hex)
+
+    # 4. Finish similarity — token overlap on the 'finish' field.
+    row_finish = _tokenize(row.get("finish"))
+    item_finish = _tokenize(item.get("finish"))
+    if row_finish and item_finish:
+        finish = int(round(100 * len(row_finish & item_finish) / max(1, len(row_finish | item_finish))))
+    else:
+        finish = 40  # neutral if either is missing
+
+    # 5. Texture / grain similarity.
+    row_texture = _tokenize(row.get("texture"))
+    item_texture = _tokenize(item.get("texture"))
+    if row_texture and item_texture:
+        texture = int(round(100 * len(row_texture & item_texture) / max(1, len(row_texture | item_texture))))
+    else:
+        texture = 40
+
+    # Overall weighted composite. Cap at 97 — we NEVER claim exact certainty.
+    overall = (
+        family_score * 0.6            # up to 18 pts if family matches
+        + visual * 0.30               # keyword-driven visual match
+        + color * 0.30                # RGB colour proximity
+        + finish * 0.15               # finish token overlap
+        + texture * 0.15              # texture token overlap
+    )
+    overall = min(97, int(round(overall)))
+    return {
+        "overall": overall,
+        "visual": visual,
+        "color": color,
+        "finish": finish,
+        "texture": texture,
+        "family_match": family_match,
+    }
+
+
+def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 40) -> list:
+    """Return top_k catalogue matches (5–10) with similarity breakdown."""
+    scored = []
+    for item in SEEDED_CATALOGUE:
+        s = _score_catalogue_item(row, item)
+        if s["overall"] < min_overall and not s["family_match"]:
+            continue
+        scored.append((s, item))
+    scored.sort(key=lambda t: t[0]["overall"], reverse=True)
+    top = scored[:top_k]
+    out = []
+    for s, item in top:
+        code = item.get("material_code")
+        page = item.get("page_number")
+        out.append({
+            "id": item["id"],
+            "brand": item["brand"],
+            "catalogue": item["catalogue"],
+            "material_name": item["material_name"],
+            "material_code": code,
+            "material_code_display": code if code else "Code unavailable in current database",
+            "page_number": page,
+            "page_display": f"p.{page}" if page else "Page unavailable",
+            "material_family": item["material_family"],
+            "category": item["category"],
+            "finish": item["finish"],
+            "color_name": item.get("color_name"),
+            "color_hex": item.get("color_hex"),
+            "texture": item.get("texture"),
+            "source": item["source"],
+            "match_percent": s["overall"],
+            "similarity": {
+                "visual": s["visual"],
+                "color": s["color"],
+                "finish": s["finish"],
+                "texture": s["texture"],
+            },
+        })
+    return out
+
+
+def _classify_row(row: dict) -> str:
+    """Classify a detected zone as Material Surface / Product / Fixture / Decor
+    / Mixed / Unclear based on material_family + keyword hints."""
+    fam = str(row.get("material_family") or "").strip().title()
+    zone = str(row.get("zone") or "").lower()
+    mtype = str(row.get("material_type") or "").lower()
+    text_bag = f"{zone} {mtype}"
+    if fam in _PRODUCT_FAMILIES_SET:
+        return "Product"
+    if fam in _MATERIAL_FAMILIES_SET or fam.lower() in _FAMILY_ALIAS:
+        # Fixtures are usually still tagged Metal — check keywords.
+        if any(k in text_bag for k in _FIXTURE_KEYWORDS):
+            return "Fixture"
+        return "Material Surface"
+    if any(k in text_bag for k in _FIXTURE_KEYWORDS):
+        return "Fixture"
+    if any(k in text_bag for k in _DECOR_KEYWORDS):
+        return "Decor"
+    if fam:
+        return "Material Surface"
+    return "Unclear"
+
+
+def _alternative_systems_for(row: dict) -> list:
+    """Return category-level alternative material systems for a family.
+    Matches case-insensitively and uses aliases so a family like `flooring`
+    or `wood` still resolves to the Wood systems list."""
+    fam_raw = str(row.get("material_family") or "").strip()
+    if not fam_raw:
+        return []
+    fam_l = fam_raw.lower()
+    # Direct hit (either case).
+    for key in ALTERNATIVE_SYSTEMS:
+        if key.lower() == fam_l:
+            return ALTERNATIVE_SYSTEMS[key][:6]
+    # Alias resolution via _FAMILY_ALIAS (which points to canonical family).
+    for alias in _FAMILY_ALIAS.get(fam_l, set()):
+        if alias in ALTERNATIVE_SYSTEMS:
+            return ALTERNATIVE_SYSTEMS[alias][:6]
+    # Special-case: "flooring" or "wall" (AI's MATERIAL_FAMILIES) → best guess by keywords.
+    text = f"{row.get('material_type', '')} {' '.join(row.get('keywords', []) or [])}".lower()
+    for canonical in ("Wood", "Stone", "Tile", "Fabric", "Paint", "Metal"):
+        if canonical.lower() in text:
+            return ALTERNATIVE_SYSTEMS[canonical][:6]
+    return []
+
+
+def _enrich_rows_with_catalogue(rows: list, top_k: int = 8) -> None:
+    """Mutates each row in-place to add classification, catalogue_matches and
+    alternative_systems. Safe to call multiple times (idempotent)."""
+    if not rows:
+        return
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        row.setdefault("classification", _classify_row(row))
+        if "catalogue_matches" not in row:
+            row["catalogue_matches"] = _find_catalogue_matches(row, top_k=top_k)
+        if "alternative_systems" not in row:
+            row["alternative_systems"] = _alternative_systems_for(row)
+
+
 @api_router.post("/projects/{project_id}/analyze-region")
 async def analyze_region(project_id: str, payload: RegionAnalyzePayload,
                          user: dict = Depends(get_current_user)):
@@ -1188,26 +1458,28 @@ async def analyze_region(project_id: str, payload: RegionAnalyzePayload,
     if not (ENABLE_REAL_ANALYSIS and EMERGENT_LLM_KEY):
         # Deterministic fallback: return a small demo-style set so the flow
         # is demoable without live AI.
+        fallback_rows = [{
+            "zone": "Selected Area",
+            "material_family": "Wood",
+            "material_type": "Warm oak veneer (sample)",
+            "color": "Warm honey",
+            "texture": "Straight grain",
+            "finish": "Matte oiled",
+            "confidence": 78,
+            "brands_to_check": ["Century Ply", "Greenlam"],
+            "vendor_type": "Panel supplier",
+            "sourcing_keywords": ["warm oak veneer india"],
+            "indian_alternative": "Century Ply Sainik warm-oak veneer",
+            "alternatives": [
+                {"name": "HPL Laminate — warm oak", "why": "Cheaper, high durability", "cost_tier": "budget",
+                 "durability": "Very High", "maintenance": "Low", "brands_to_check": ["Merino"]},
+                {"name": "Fluted MDF slat panel", "why": "Ready-to-fit slatted look", "cost_tier": "mid",
+                 "durability": "Medium", "maintenance": "Dust", "brands_to_check": ["Action Tesa"]},
+            ],
+        }]
+        _enrich_rows_with_catalogue(fallback_rows)
         return {
-            "rows": [{
-                "zone": "Selected Area",
-                "material_family": "Wood",
-                "material_type": "Warm oak veneer (sample)",
-                "color": "Warm honey",
-                "texture": "Straight grain",
-                "finish": "Matte oiled",
-                "confidence": 78,
-                "brands_to_check": ["Century Ply", "Greenlam"],
-                "vendor_type": "Panel supplier",
-                "sourcing_keywords": ["warm oak veneer india"],
-                "indian_alternative": "Century Ply Sainik warm-oak veneer",
-                "alternatives": [
-                    {"name": "HPL Laminate — warm oak", "why": "Cheaper, high durability", "cost_tier": "budget",
-                     "durability": "Very High", "maintenance": "Low", "brands_to_check": ["Merino"]},
-                    {"name": "Fluted MDF slat panel", "why": "Ready-to-fit slatted look", "cost_tier": "mid",
-                     "durability": "Medium", "maintenance": "Dust", "brands_to_check": ["Action Tesa"]},
-                ],
-            }],
+            "rows": fallback_rows,
             "summary": {"overall_style": "Selected area — sample analysis", "palette": ["Warm oak"]},
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "version": "region-mock-v1",
@@ -1217,6 +1489,7 @@ async def analyze_region(project_id: str, payload: RegionAnalyzePayload,
         await _check_and_increment_quota(user["id"])
         result = await run_real_analysis(project_id, user["id"], crop,
                                          region=user.get("preferred_region", DEFAULT_REGION))
+        _enrich_rows_with_catalogue(result.get("rows") or [])
         result["ephemeral"] = True
         result["region_note"] = (payload.note or "").strip()[:200]
         return result
@@ -2850,11 +3123,17 @@ async def _seed_demo_project() -> None:
     """Create/refresh the global read-only demo project + one demo room. This
     is stored under a synthetic admin user with role='system-demo' so it never
     surfaces in a real user's dashboard. Uses a fixed slug/id so
-    GET /api/demo/project can find it without an id in the URL."""
+    GET /api/demo/project can find it without an id in the URL.
+
+    Sprint 2 Revision — the demo is a premium warm-modern BEDROOM. Every
+    detected material / product / catalogue match corresponds to something
+    that is actually visible in the reference image."""
     marker = {"is_demo": True, "demo_slug": "materialmatch-demo-warm-living"}
     existing = await db.projects.find_one(marker)
     now = datetime.now(timezone.utc).isoformat()
-    demo_ref_url = ("https://images.unsplash.com/photo-1616486338812-3dadae4b4ace"
+    # Warm-modern bedroom — bouclé headboard, oak flooring, sheer curtains,
+    # bedside sconce, wool rug, ceramic + brass accents.
+    demo_ref_url = ("https://images.unsplash.com/photo-1595526114035-0d45ed16cfbf"
                     "?w=1600&q=80&auto=format&fit=crop")
     demo_ref_b64 = ""
     try:
@@ -2869,128 +3148,127 @@ async def _seed_demo_project() -> None:
         return {"name": name, "why": why, "cost_tier": cost, "durability": durability,
                 "maintenance": maintenance, "brands_to_check": brands, "use_case": use_case}
     analysis_rows = [
-        {"zone": "Headboard Wall Panel", "material_family": "Wood", "material_type": "Warm Oak Veneer with Vertical Slats",
-         "color": "Warm walnut", "texture": "Vertical grain slat", "finish": "Matte oiled",
-         "design_style": "Warm modern", "keywords": ["oak slats", "vertical panelling", "warm wood"],
+        {"zone": "Headboard Wall — Fluted Oak Slat Panel", "material_family": "Wood",
+         "material_type": "Warm oak fluted slat panelling",
+         "color": "Warm oak", "texture": "Vertical fluted slat", "finish": "Matte oiled",
+         "design_style": "Warm modern bedroom", "keywords": ["oak slat", "fluted", "vertical panel", "warm wood"],
          "confidence": 92, "procurement_difficulty": "Easy in India",
-         "indian_alternative": "Century Ply Sainik Oak or Merino warm-oak laminate over slat MDF",
-         "brands_to_check": ["Century Ply", "Greenlam", "Merino"], "vendor_type": "Panel supplier",
-         "sourcing_keywords": ["oak slat wall india", "wooden slat panel"],
-         "alternatives": [
-             _alt("Natural Oak Veneer", "Same warm grain, real wood feel", "premium", "High", "Occasional oiling", ["Century Ply", "Greenlam"], "Bedroom feature walls"),
-             _alt("Warm Oak HPL Laminate", "Cheaper wood-look with better durability", "mid", "Very High", "Low — wipe clean", ["Merino", "Greenlam", "Century Laminates"], "High-traffic accent walls"),
-             _alt("Fluted MDF Panels", "Same slatted look, ready-to-fit", "mid", "Medium", "Dust regularly", ["Duroply", "Action Tesa"], "Bedrooms, hallways"),
-             _alt("Wood-Look Porcelain Tile", "Water-resistant if area is near bath", "premium", "Very High", "Very low", ["Kajaria", "Somany"], "Bath adjoining walls"),
-         ]},
-        {"zone": "Bedding & Upholstery", "material_family": "Textile", "material_type": "Warm Ivory Linen Bedcover",
-         "color": "Ivory cream", "texture": "Woven linen", "finish": "Soft matte",
-         "design_style": "Calm modern", "keywords": ["linen bedding", "ivory", "cozy"],
+         "pin": {"x": 50, "y": 32},
+         "indian_alternative": "Greenlam Fluted Oak Panel or Action Tesa fluted MDF with warm oak skin",
+         "brands_to_check": ["Greenlam", "Merino", "Action Tesa"], "vendor_type": "Panel supplier",
+         "sourcing_keywords": ["fluted oak slat panel india"]},
+        {"zone": "Bed Frame — Upholstered Bouclé Headboard", "material_family": "Fabric",
+         "material_type": "Cream bouclé upholstered headboard",
+         "color": "Cream bouclé", "texture": "Loop pile bouclé", "finish": "Textured soft",
+         "design_style": "Warm modern bedroom", "keywords": ["boucle", "cream", "upholstered", "headboard"],
+         "confidence": 90, "procurement_difficulty": "Easy",
+         "pin": {"x": 50, "y": 55},
+         "indian_alternative": "D'Decor cream bouclé over MDF headboard fabricator",
+         "brands_to_check": ["D'Decor", "Urban Ladder", "Home Centre"], "vendor_type": "Upholstery",
+         "sourcing_keywords": ["boucle headboard cream india"]},
+        {"zone": "Bedding — Ivory Linen Bedcover", "material_family": "Fabric",
+         "material_type": "Warm ivory linen bed set",
+         "color": "Warm ivory", "texture": "Woven linen", "finish": "Soft matte",
+         "design_style": "Calm modern", "keywords": ["linen bedding", "ivory", "warm", "cozy"],
          "confidence": 88, "procurement_difficulty": "Easy",
-         "indian_alternative": "Fabindia linen or Sarita Handa organic cotton set",
-         "brands_to_check": ["Fabindia", "Sarita Handa", "D'Decor"], "vendor_type": "Home textile",
-         "sourcing_keywords": ["ivory linen bedding india"],
-         "alternatives": [
-             _alt("Washed Cotton", "More budget-friendly, similar drape", "budget", "High", "Machine washable", ["Fabindia", "Chumbak"]),
-             _alt("Linen-Cotton Blend", "Warmer look with less wrinkling", "mid", "High", "Easy", ["D'Decor", "House of MG"]),
-             _alt("Mulmul", "Breathable Indian classic", "budget", "Medium", "Gentle wash", ["Fabindia"]),
-         ]},
-        {"zone": "Flooring", "material_family": "Wood", "material_type": "Engineered Warm Oak Plank",
-         "color": "Honey brown", "texture": "Long plank grain", "finish": "Satin oiled",
-         "design_style": "Contemporary warm", "keywords": ["engineered oak", "warm plank floor"],
+         "pin": {"x": 55, "y": 75},
+         "indian_alternative": "Fabindia ivory linen set or Sarita Handa linen bedcover",
+         "brands_to_check": ["Fabindia", "Sarita Handa", "House of MG"], "vendor_type": "Home textile",
+         "sourcing_keywords": ["ivory linen bedding india"]},
+        {"zone": "Flooring — Engineered Warm Oak Plank", "material_family": "Wood",
+         "material_type": "Engineered warm oak plank flooring",
+         "color": "Honey oak", "texture": "Long plank grain", "finish": "Satin oiled",
+         "design_style": "Contemporary warm", "keywords": ["engineered oak", "warm plank floor", "honey"],
          "confidence": 90, "procurement_difficulty": "Moderate",
-         "indian_alternative": "Pergo XP engineered oak or Action Tesa oak laminate",
-         "brands_to_check": ["Pergo", "Action Tesa", "Square Foot"], "vendor_type": "Flooring showroom",
-         "sourcing_keywords": ["engineered oak flooring india"],
-         "alternatives": [
-             _alt("Solid Teak Plank", "Traditional Indian hardwood option", "premium", "Very High", "Periodic polish", ["Teak Craft"], "Long-term investment"),
-             _alt("Warm Oak Laminate (AC5)", "Practical high-traffic option", "budget", "High", "Very low", ["Pergo", "Action Tesa"]),
-             _alt("Wood-look Vinyl SPC", "Water-safe, click-lock install", "mid", "High", "Very low", ["Welspun", "Responsive Industries"]),
-         ]},
-        {"zone": "Rug", "material_family": "Textile", "material_type": "Hand-Tufted Sand Wool Rug",
+         "pin": {"x": 30, "y": 92},
+         "indian_alternative": "Pergo XP engineered oak or Kajaria Wood Oak Warm 200x1200 wood-look tile",
+         "brands_to_check": ["Pergo", "Action Tesa", "Kajaria"], "vendor_type": "Flooring showroom",
+         "sourcing_keywords": ["engineered oak flooring india"]},
+        {"zone": "Rug — Hand-Tufted Sand Wool Rug", "material_family": "Fabric",
+         "material_type": "Hand-tufted sand wool area rug",
          "color": "Sand beige", "texture": "Low-loop pile", "finish": "Hand-tufted matte",
-         "design_style": "Japandi neutral", "keywords": ["wool rug", "sand", "neutral"],
+         "design_style": "Japandi neutral", "keywords": ["wool rug", "sand", "neutral", "hand tufted"],
          "confidence": 84, "procurement_difficulty": "Easy",
-         "indian_alternative": "Jaipur Rugs Manchaha or Obeetee hand-tufted line",
+         "pin": {"x": 50, "y": 90},
+         "indian_alternative": "Jaipur Rugs Manchaha or Obeetee hand-tufted wool",
          "brands_to_check": ["Jaipur Rugs", "Obeetee", "Cocoon"], "vendor_type": "Rug atelier",
-         "sourcing_keywords": ["hand tufted wool rug india"],
-         "alternatives": [
-             _alt("Jute Rug", "Warmer texture, lower cost", "budget", "Medium", "Vacuum only", ["Fabindia"]),
-             _alt("Wool-Silk Blend", "Adds subtle sheen", "premium", "High", "Professional clean", ["Jaipur Rugs"]),
-             _alt("Machine-Made Polypropylene", "Stain resistant, budget", "budget", "Medium", "Easy", ["Amazon India"]),
-         ]},
-        {"zone": "Wall Paint", "material_family": "Paint", "material_type": "Warm White Matte Emulsion",
-         "color": "Warm white with pink undertone", "texture": "Smooth", "finish": "Matte",
-         "design_style": "Calm modern", "keywords": ["warm white", "matte paint"],
+         "sourcing_keywords": ["hand tufted wool rug india"]},
+        {"zone": "Wall Paint — Warm White Matte Emulsion", "material_family": "Paint",
+         "material_type": "Warm white matte emulsion",
+         "color": "Warm white", "texture": "Smooth", "finish": "Matte",
+         "design_style": "Calm modern", "keywords": ["warm white", "matte paint", "royale"],
          "confidence": 95, "procurement_difficulty": "Very easy",
-         "indian_alternative": "Asian Paints Royale Aspira 'Cotton White' or Berger Silk Breathe",
-         "brands_to_check": ["Asian Paints", "Berger", "Nerolac"], "vendor_type": "Paint retailer",
-         "sourcing_keywords": ["asian paints cotton white"],
-         "alternatives": [
-             _alt("Limewash Finish", "Chalky organic texture, artisan look", "premium", "High", "Delicate touch-up", ["Sabya Lime"]),
-             _alt("Textured Plaster", "Depth via subtle troweling", "mid", "High", "Periodic sealer", ["Oikos India"]),
-         ]},
-        {"zone": "Ceiling Cove", "material_family": "Metal", "material_type": "Brushed Brass Cove Trim",
-         "color": "Antique brass", "texture": "Fine brushed lines", "finish": "Brushed satin",
-         "design_style": "Warm modern", "keywords": ["brass cove", "warm accent"],
-         "confidence": 80, "procurement_difficulty": "Moderate",
-         "indian_alternative": "Häfele brass profile trim or local fabricator brass strips",
-         "brands_to_check": ["Häfele India", "Jaquar Artize"], "vendor_type": "Hardware fabricator",
-         "sourcing_keywords": ["brass ceiling trim india"],
-         "alternatives": [
-             _alt("Brushed Gold Aluminium", "Same look, lower cost, lighter", "budget", "High", "Wipe clean", ["Häfele"]),
-             _alt("Warm Rose Gold Steel", "Modern warm metallic", "mid", "Very High", "Very low", ["Jindal Stainless"]),
-         ]},
-        {"zone": "Side Table Top", "material_family": "Stone", "material_type": "Warm Beige Marble",
-         "color": "Cream with subtle veining", "texture": "Fine veining", "finish": "Honed",
-         "design_style": "Refined modern", "keywords": ["beige marble", "honed"],
-         "confidence": 78, "procurement_difficulty": "Moderate",
-         "indian_alternative": "Rajasthan Katni beige or Makrana cream marble",
-         "brands_to_check": ["RK Marble", "Bhandari Marble"], "vendor_type": "Stone yard",
-         "sourcing_keywords": ["katni beige marble slab"],
-         "alternatives": [
-             _alt("Beige Quartzite", "Harder, less staining", "premium", "Very High", "Low", ["Levantina India"]),
-             _alt("Beige Quartz Engineered", "Consistent pattern, budget", "mid", "Very High", "Very low", ["Kalinga Stone", "Caesarstone"]),
-         ]},
-        {"zone": "Curtains", "material_family": "Textile", "material_type": "Sheer Ivory Linen Panels",
-         "color": "Ivory", "texture": "Loose weave sheer", "finish": "Soft drape",
-         "design_style": "Calm modern", "keywords": ["sheer linen", "ivory curtain"],
+         "pin": {"x": 15, "y": 20},
+         "indian_alternative": "Asian Paints Royale 'Cotton White' or Berger Silk Breathe Warm White",
+         "brands_to_check": ["Asian Paints", "Berger", "Nerolac", "Dulux"], "vendor_type": "Paint retailer",
+         "sourcing_keywords": ["asian paints cotton white"]},
+        {"zone": "Nightstand — Warm Walnut Bedside", "material_family": "Furniture",
+         "material_type": "Warm walnut veneered bedside table",
+         "color": "Warm walnut", "texture": "Wood grain", "finish": "Matte oiled",
+         "design_style": "Warm modern", "keywords": ["walnut", "nightstand", "warm"],
          "confidence": 82, "procurement_difficulty": "Easy",
-         "indian_alternative": "The White Window or Deco Window sheer linen",
-         "brands_to_check": ["Deco Window", "The White Window"], "vendor_type": "Window furnishing",
-         "sourcing_keywords": ["sheer linen curtain india"],
-         "alternatives": [
-             _alt("Cotton Voile", "More budget-friendly", "budget", "Medium", "Gentle wash", ["Fabindia"]),
-             _alt("Poly-Linen Blend", "Wrinkle-resistant", "mid", "High", "Easy", ["Deco Window"]),
-         ]},
+         "pin": {"x": 82, "y": 75},
+         "indian_alternative": "Pepperfry Studio walnut nightstand or Gulmohar Lane brass-legged bedside",
+         "brands_to_check": ["Pepperfry", "Gulmohar Lane", "West Elm India"], "vendor_type": "Furniture retailer",
+         "sourcing_keywords": ["walnut nightstand india"]},
+        {"zone": "Bedside Lamp — Brushed Brass Reading Sconce", "material_family": "Lighting",
+         "material_type": "Brushed brass reading sconce",
+         "color": "Warm brass", "texture": "Brushed metal", "finish": "Brushed satin brass",
+         "design_style": "Warm modern", "keywords": ["brass", "sconce", "bedside", "reading"],
+         "confidence": 80, "procurement_difficulty": "Moderate",
+         "pin": {"x": 82, "y": 45},
+         "indian_alternative": "Whitteny warm-brass reading sconce or Havells brass pendant",
+         "brands_to_check": ["Whitteny", "Havells", "The White Teak Co."], "vendor_type": "Lighting studio",
+         "sourcing_keywords": ["brass reading sconce india"]},
+        {"zone": "Curtains — Sheer Ivory Linen Panel", "material_family": "Fabric",
+         "material_type": "Sheer ivory linen curtain panel",
+         "color": "Ivory", "texture": "Loose sheer weave", "finish": "Soft drape",
+         "design_style": "Calm modern", "keywords": ["sheer linen", "ivory curtain", "drape"],
+         "confidence": 82, "procurement_difficulty": "Easy",
+         "pin": {"x": 12, "y": 45},
+         "indian_alternative": "The White Window sheer linen or Deco Window ivory linen panel",
+         "brands_to_check": ["Deco Window", "The White Window", "D'Decor"], "vendor_type": "Window furnishing",
+         "sourcing_keywords": ["sheer linen curtain india"]},
     ]
+    # Sprint 2 Revision: attach classification, top catalogue matches
+    # (5–8 per row across the seeded global catalogue) and alternative
+    # material systems.  This is what makes the demo internally consistent.
+    _enrich_rows_with_catalogue(analysis_rows, top_k=8)
     products_list = [
-        {"id": "product_1", "product_name": "Brushed Brass Pendant Light",
+        {"id": "product_1", "product_name": "Brushed Brass Bedside Reading Sconce",
          "category": "lighting",
-         "description": "Warm brass pendant with fluted glass shade for layered ambient light.",
+         "description": "Slim brushed brass wall sconce with directional head — perfect over a bed.",
          "style_keywords": ["modern", "minimalist", "warm"], "color_keywords": ["brass", "gold"],
-         "material_keywords": ["brass", "glass"], "finish_keywords": ["brushed"],
-         "estimated_price_inr": "₹5,499", "search_keywords": ["brass pendant light india"],
+         "material_keywords": ["brass", "steel"], "finish_keywords": ["brushed"],
+         "estimated_price_inr": "₹6,499", "search_keywords": ["brass reading sconce bedside india"],
          "confidence": 88},
-        {"id": "product_2", "product_name": "Bouclé Curved Accent Chair",
+        {"id": "product_2", "product_name": "Bouclé Upholstered Accent Chair",
          "category": "furniture",
-         "description": "Sculptural lounge chair in cream bouclé, on a stained walnut base.",
+         "description": "Sculptural bouclé lounge chair on stained walnut base — reading corner ready.",
          "style_keywords": ["contemporary", "curved", "cozy"], "color_keywords": ["cream"],
          "material_keywords": ["boucle", "wood"], "finish_keywords": ["soft"],
-         "estimated_price_inr": "₹27,999", "search_keywords": ["boucle lounge chair india"],
+         "estimated_price_inr": "₹27,999", "search_keywords": ["boucle lounge chair bedroom india"],
          "confidence": 85},
         {"id": "product_3", "product_name": "Sand-tone Hand-Tufted Wool Rug",
          "category": "textile-decor",
-         "description": "Neutral wool rug with loop-pile texture — anchors the seating area.",
+         "description": "Neutral wool rug with loop-pile texture — anchors the bed area.",
          "style_keywords": ["japandi", "neutral"], "color_keywords": ["sand", "ivory"],
          "material_keywords": ["wool"], "finish_keywords": ["hand-tufted"],
-         "estimated_price_inr": "₹18,900", "search_keywords": ["wool area rug india"],
+         "estimated_price_inr": "₹18,900", "search_keywords": ["wool bedroom rug india"],
          "confidence": 82},
-        {"id": "product_4", "product_name": "Terracotta Ceramic Vase Set",
+        {"id": "product_4", "product_name": "Warm Walnut Bedside Nightstand",
+         "category": "furniture",
+         "description": "Compact walnut-veneered nightstand with a single drawer and brass pull.",
+         "style_keywords": ["warm modern", "minimalist"], "color_keywords": ["walnut", "brass"],
+         "material_keywords": ["walnut", "brass"], "finish_keywords": ["matte"],
+         "estimated_price_inr": "₹14,999", "search_keywords": ["walnut nightstand india"],
+         "confidence": 84},
+        {"id": "product_5", "product_name": "Ceramic Table Vase Warm Beige",
          "category": "decor",
-         "description": "Set of matte ceramic vases in warm earth tones — organic modern accent.",
+         "description": "Matte ceramic vase in warm beige — organic modern accent piece.",
          "style_keywords": ["organic", "minimalist"], "color_keywords": ["beige", "terracotta"],
          "material_keywords": ["ceramic"], "finish_keywords": ["matte"],
-         "estimated_price_inr": "₹2,199", "search_keywords": ["ceramic vase set india"],
+         "estimated_price_inr": "₹2,199", "search_keywords": ["ceramic vase warm beige india"],
          "confidence": 78},
     ]
     # Enrich products with affiliate matches + fallback search URLs.
@@ -3003,21 +3281,21 @@ async def _seed_demo_project() -> None:
         enriched_products.append(pp)
     match_results = {
         "top_matches": [
-            {"filename": "warm-living-catalogue.pdf", "page_number": 3,
-             "match_percent": 94, "material_name": "White Oak Veneer Slats",
-             "explanation": "Same warm honey-oak tone, near-identical vertical slat rhythm and matte-oiled finish."},
-            {"filename": "warm-living-catalogue.pdf", "page_number": 7,
-             "match_percent": 88, "material_name": "Kota Beige Honed Limestone",
-             "explanation": "Matching sand-beige body with subtle veining and a low-sheen honed surface."},
-            {"filename": "warm-living-catalogue.pdf", "page_number": 12,
-             "match_percent": 84, "material_name": "Bouclé Cream Upholstery",
-             "explanation": "Same looped weave texture and warm ivory colour palette."},
+            {"filename": "warm-bedroom-catalogue.pdf", "page_number": 16,
+             "match_percent": 94, "material_name": "Greenlam Fluted Oak Panel",
+             "explanation": "Same vertical fluted rhythm and warm honey-oak tone on the headboard wall."},
+            {"filename": "warm-bedroom-catalogue.pdf", "page_number": 12,
+             "match_percent": 89, "material_name": "D'Decor Bouclé Cream Upholstery",
+             "explanation": "Matching loop-pile bouclé texture and cream palette on the headboard."},
+            {"filename": "warm-bedroom-catalogue.pdf", "page_number": 21,
+             "match_percent": 87, "material_name": "Kajaria Wood Oak Warm 200x1200",
+             "explanation": "Warm honey oak plank grain — near-identical tone to the flooring."},
         ],
         "generated_at": now,
     }
     demo_doc = {
         **marker,
-        "name": "Warm Modern Living — Demo",
+        "name": "Warm Modern Bedroom — Demo",
         "client_name": "Bengaluru Residence · Sample",
         "user_id": "system-demo",
         "reference_image_b64": demo_ref_b64,
@@ -3025,14 +3303,18 @@ async def _seed_demo_project() -> None:
         "preferred_region": "IN",
         "mock_analysis": {
             "summary": {
-                "overall_style": "Warm modern with layered natural materials",
-                "palette": ["Honey oak", "Sand beige", "Ivory", "Warm white"],
-                "dominant_materials": ["Warm oak slat panelling", "Honed limestone", "Bouclé upholstery"],
-                "confidence": 89,
+                "overall_style": "Warm modern bedroom — layered oak, bouclé and linen",
+                "design_style": "Warm modern bedroom",
+                "material_palette": "Honey oak, cream bouclé, warm ivory linen, sand wool, warm white paint",
+                "key_finishes": "Fluted oak slat, matte oiled wood, hand-tufted wool, sheer linen, brushed brass",
+                "sourcing_note": "Every material is sourceable in India — Greenlam / Merino for oak, Fabindia / Sarita Handa for linen, Jaipur Rugs for wool, Asian Paints Cotton White on walls, Whitteny / Havells for brass lighting.",
+                "palette": ["Honey oak", "Cream bouclé", "Warm ivory", "Sand", "Warm brass"],
+                "dominant_materials": ["Fluted oak slat wall", "Bouclé headboard", "Linen bedding", "Warm oak flooring"],
+                "confidence": 90,
             },
             "rows": analysis_rows,
             "generated_at": now,
-            "version": "demo-v1",
+            "version": "demo-v2",
         },
         "products_detected": {
             "products": enriched_products,
@@ -3058,27 +3340,32 @@ async def _seed_demo_project() -> None:
     room_doc = {
         **room_marker,
         "user_id": "system-demo",
-        "name": "Living Room",
-        "room_type": "living",
+        "name": "Primary Bedroom",
+        "room_type": "bedroom",
         "order": 0,
         "current_site_photos": [],
         "moodboards": [],
         "reference_images": [],
         "final_render_images": [],
         "concept_overview": (
-            "This living room is designed to feel calm, warm and considered. A restrained "
-            "palette of honey oak, sand-beige stone and ivory bouclé creates a quiet contrast "
-            "of textures. Layered lighting and a hand-tufted wool rug soften the composition, "
-            "while curated brass accents introduce a subtle premium note. Every specification "
-            "supports a client-ready look that is timeless, inviting and unmistakably Indian in "
-            "its sourcing story."
+            "This bedroom is designed to feel calm, warm and considered. A restrained "
+            "palette of honey oak, cream bouclé and ivory linen creates a quiet contrast "
+            "of textures. Layered warm-white lighting and a hand-tufted wool rug soften the "
+            "composition, while curated brushed-brass accents introduce a subtle premium note. "
+            "Every specification supports a client-ready look that is timeless, inviting and "
+            "unmistakably Indian in its sourcing story."
         ),
         "concept_overview_ai_draft": "",
         "designer_notes": (
             "Delivery in phases: shell + panelling first (4 weeks), then upholstery + rug "
             "(2 weeks), then lighting + decor (1 week). Final styling on-site over a weekend."
         ),
-        "pinned_material_row_ids": ["Wall Feature", "Flooring", "Sofa Upholstery", "Ceiling"],
+        "pinned_material_row_ids": [
+            "Headboard Wall — Fluted Oak Slat Panel",
+            "Bed Frame — Upholstered Bouclé Headboard",
+            "Flooring — Engineered Warm Oak Plank",
+            "Wall Paint — Warm White Matte Emulsion",
+        ],
         "pinned_product_ids": ["product_1", "product_2", "product_3", "product_4"],
         "share_slug": "materialmatch-demo",
         "share_enabled": True,
@@ -3854,9 +4141,39 @@ GLOBAL_LIBRARY_SEED = [
 
 @api_router.get("/library/global")
 async def library_global(user: dict = Depends(get_current_user)):
-    """Global (platform-managed) catalogue library. Currently seeded metadata
-    only — the actual PDF match against these is beta / coming soon."""
-    return {"items": GLOBAL_LIBRARY_SEED, "status": "beta"}
+    """Global (platform-managed) catalogue library.
+
+    Sprint 2 Revision — now backed by the hand-curated seeded catalogue
+    (~177 records across Paints, Laminates, Veneers, Stone, Tiles, Fabric,
+    Lighting, Hardware, Furniture). Grouped by category for the sidebar.
+    """
+    grouped = {}
+    for cat, items in CATEGORY_SETS.items():
+        grouped[cat] = []
+        for i, it in enumerate(items):
+            grouped[cat].append({
+                "id": f"{cat.lower()}-{i:03d}-{it['brand'].lower().replace(' ', '-')}",
+                "brand": it["brand"],
+                "catalogue": it["catalogue"],
+                "material_name": it["material_name"],
+                "material_code": it.get("material_code"),
+                "material_code_display": it.get("material_code") or "Code unavailable in current database",
+                "material_family": it["material_family"],
+                "finish": it["finish"],
+                "color_name": it.get("color_name"),
+                "color_hex": it.get("color_hex"),
+                "texture": it.get("texture"),
+                "page_number": it.get("page_number"),
+                "keywords": it.get("keywords", []),
+                "source": "Global Library",
+            })
+    return {
+        "items": GLOBAL_LIBRARY_SEED,  # legacy catalogue-file metadata
+        "categories": grouped,
+        "category_names": list(CATEGORY_SETS.keys()),
+        "total": sum(len(v) for v in grouped.values()),
+        "status": "seeded",
+    }
 
 
 @api_router.get("/library/my")
