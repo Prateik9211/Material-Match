@@ -1689,6 +1689,56 @@ async def _seed_demo_studio_catalogues() -> None:
 
 
 
+# ---------------------------------------------------------------------------
+# Stability sprint — purge internal development / testing uploads from the
+# Studio so the competition admin looks clean. Keeps: the real Reference
+# seed (demo_seed=True) and any admin-uploaded supplier catalogue. Removes:
+# anything whose filename matches a developer artefact pattern.
+# ---------------------------------------------------------------------------
+_DEV_TEST_FILENAME_PATTERNS = [
+    r"^pub\.pdf$", r"^rej\.pdf$",
+    r"^studio_test.*\.pdf$",
+    r"^demo_catalogue.*\.pdf$",
+    r"^lighting_catalogue.*\.pdf$",
+    r"^rc\.pdf$", r"^x\.pdf$", r"^test\.pdf$",
+    r"^testbrand.*\.pdf$",
+    r"^rc[\s_-]?test.*\.pdf$",
+    # Stability sprint test artifacts (small synthetic PDFs used to verify
+    # the OCR fallback and 150 MB limit — never real supplier data).
+    r"^merino_text\.pdf$", r"^kalinga_scanned\.pdf$",
+    r"^big_text\.pdf$", r"^med_scanned\.pdf$", r"^very_big_scanned\.pdf$",
+]
+
+
+async def _purge_dev_test_uploads() -> None:
+    """Remove uploads whose filename (case-insensitive) matches a known
+    developer / test artefact. Also purges their child ke_records. Never
+    touches Reference seeded records (demo_seed=True) or genuine supplier
+    catalogues."""
+    if db is None:  # pragma: no cover
+        return
+    import re
+    patterns = [re.compile(p, re.IGNORECASE) for p in _DEV_TEST_FILENAME_PATTERNS]
+    uploads = await db.ke_uploads.find(
+        {"demo_seed": {"$ne": True}}
+    ).to_list(500)
+    ids_to_drop: list[str] = []
+    for u in uploads:
+        name = (u.get("filename") or "").strip()
+        if not name:
+            continue
+        if any(p.match(name) for p in patterns):
+            ids_to_drop.append(u["id"])
+    if not ids_to_drop:
+        return
+    rec_res = await db.ke_records.delete_many({"upload_id": {"$in": ids_to_drop}})
+    up_res = await db.ke_uploads.delete_many({"id": {"$in": ids_to_drop}})
+    logger.info("Purged %d dev-test uploads (%d records)",
+                up_res.deleted_count, rec_res.deleted_count)
+
+
+
+
 
 # ---------------------------------------------------------------------------
 # Sprint 4 — MaterialMatch Brain v1.
@@ -3874,6 +3924,10 @@ async def startup_event():
     except Exception:
         logger.exception("Studio demo seed failed")
     try:
+        await _purge_dev_test_uploads()
+    except Exception:
+        logger.exception("Studio dev-test purge failed")
+    try:
         await _refresh_studio_index()
     except Exception:
         logger.exception("Studio index warm-up failed")
@@ -5312,13 +5366,45 @@ def _swatch_from_page(page) -> tuple[str, str | None]:
         return "#B7ADA0", None
 
 
-def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> list[dict]:
+def _pdf_page_ocr_text(page) -> str:
+    """Render a PDF page to an image and run tesseract OCR. Returns the raw
+    OCR text (may be empty). Stability sprint — used as fallback when the
+    PDF has no embedded machine-readable text on this page."""
+    try:
+        import pytesseract  # type: ignore
+        from PIL import Image
+        import io as _io
+        # 200 DPI is a good tradeoff between OCR accuracy and speed.
+        pix = page.get_pixmap(matrix=fitz.Matrix(200 / 72, 200 / 72), alpha=False)
+        img = Image.open(_io.BytesIO(pix.tobytes("png")))
+        return pytesseract.image_to_string(img) or ""
+    except Exception:
+        logger.exception("OCR failed for page")
+        return ""
+
+
+def _tesseract_available() -> bool:
+    try:
+        import pytesseract  # type: ignore
+        _ = pytesseract.get_tesseract_version()
+        return True
+    except Exception:
+        return False
+
+
+def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[dict], dict]:
     """Parse PDF via PyMuPDF and heuristically extract per-page material records.
 
-    Approach: for each page, take the first heading-like line as the material
-    name, extract a code-like token (e.g. `GV-8734`, `8834`, `M-1054`), and
-    sample the page's dominant colour for a swatch preview. Live AI upgrade
-    can replace this later — the record shape is already the same."""
+    Returns `(records, meta)` where meta = {
+        total_pages, pages_with_text, pages_ocr'd, extraction_mode,
+        failure_reason (optional)
+    }.
+
+    Approach: for each page take the first heading-like line as material name,
+    extract a code-like token, sample the dominant colour. If a page has no
+    embedded text we fall back to OCR (tesseract) before giving up. Meta is
+    surfaced on the upload doc so the admin sees a meaningful diagnostic
+    instead of a silent '0 records extracted'."""
     import re
     records: list[dict] = []
     now = datetime.now(timezone.utc).isoformat()
@@ -5327,12 +5413,29 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> list[dict]:
     except Exception as e:
         logger.exception("PDF open failed")
         raise HTTPException(status_code=400, detail=f"Could not parse PDF: {e}")
+    total_pages = pdf.page_count
+    pages_with_text = 0
+    pages_ocrd = 0
+    pages_ocr_attempted = 0
+    ocr_available = _tesseract_available()
     code_re = re.compile(r"\b([A-Z]{1,4}[-]?\d{2,5}(?:[-]?[A-Z0-9]{1,3})?)\b")
     for pi, page in enumerate(pdf, start=1):
         text = page.get_text("text") or ""
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        used_ocr = False
+        # If the page has essentially no embedded text (image-based / scanned
+        # supplier catalogue) fall back to OCR before skipping the page.
+        if not lines and ocr_available:
+            pages_ocr_attempted += 1
+            ocr_text = _pdf_page_ocr_text(page)
+            if ocr_text.strip():
+                text = ocr_text
+                lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+                pages_ocrd += 1
+                used_ocr = True
         if not lines:
             continue
+        pages_with_text += 1
         # Heuristics: first meaningful line = material name; scan for code + brand hints.
         material_name = next((ln for ln in lines if 3 < len(ln) < 80), lines[0])[:120]
         code_match = code_re.search(text)
@@ -5384,9 +5487,52 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> list[dict]:
             "keywords": [w.lower() for w in re.findall(r"[a-zA-Z]{4,}", material_name)][:8],
             "created_at": now,
             "published_at": None,
+            "extraction_mode": "ocr" if used_ocr else "text",
         })
     pdf.close()
-    return records
+
+    # Assemble diagnostic metadata.
+    if records:
+        if pages_ocrd == 0:
+            mode = "text"
+        elif pages_with_text == pages_ocrd:
+            mode = "ocr"
+        else:
+            mode = "text+ocr"
+        meta = {
+            "total_pages": total_pages,
+            "pages_with_text": pages_with_text,
+            "pages_ocrd": pages_ocrd,
+            "extraction_mode": mode,
+            "failure_reason": None,
+        }
+    else:
+        # Explain WHY nothing was extracted so the admin isn't left guessing.
+        if total_pages == 0:
+            reason = "PDF has no pages."
+        elif not ocr_available and pages_with_text == 0:
+            reason = ("This catalogue appears to be image-based (no machine-readable text) "
+                      "and OCR is not available on this server.")
+        elif pages_ocr_attempted > 0 and pages_ocrd == 0:
+            reason = ("OCR completed but no material entries were recognised in this "
+                      "catalogue layout. Try a higher-resolution scan.")
+        elif pages_ocr_attempted == 0:
+            reason = ("No machine-readable text detected in this PDF and no image pages "
+                      "were sent for OCR.")
+        else:
+            reason = "Catalogue layout not yet supported — no material records recognised."
+        meta = {
+            "total_pages": total_pages,
+            "pages_with_text": 0,
+            "pages_ocrd": pages_ocrd,
+            "pages_ocr_attempted": pages_ocr_attempted,
+            "extraction_mode": "failed",
+            "failure_reason": reason,
+        }
+    return records, meta
+
+
+STUDIO_MAX_UPLOAD_BYTES = 150 * 1024 * 1024  # 150 MB — supplier catalogues.
 
 
 @api_router.post("/admin/studio/upload")
@@ -5395,43 +5541,69 @@ async def studio_upload(
     user: dict = Depends(require_admin),
 ):
     """MaterialMatch Studio — upload a supplier PDF, extract per-page records
-    into `draft` state. Records only become searchable after admin approval."""
+    into `draft` state. Records only become searchable after admin approval.
+    Scanned / image-based PDFs are handled via a tesseract OCR fallback."""
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
     data = await file.read()
-    if len(data) > 40 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="PDF too large (max 40 MB)")
+    if len(data) > STUDIO_MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"PDF too large (max {STUDIO_MAX_UPLOAD_BYTES // (1024 * 1024)} MB)",
+        )
     upload_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
     upload_doc = {
         "id": upload_id,
         "filename": file.filename,
+        "size_bytes": len(data),
         "uploaded_by": user.get("id"),
         "status": "processing",
         "page_count": 0,
         "records_extracted": 0,
+        "extraction_mode": None,
+        "failure_reason": None,
         "created_at": now,
     }
     await db.ke_uploads.insert_one(upload_doc)
     try:
-        records = _extract_records_from_pdf(data, upload_id)
+        records, meta = _extract_records_from_pdf(data, upload_id)
         if records:
             await db.ke_records.insert_many(records)
-        upload_doc["page_count"] = len(records)
-        upload_doc["records_extracted"] = len(records)
-        upload_doc["status"] = "review"
-        await db.ke_uploads.update_one({"id": upload_id},
-                                        {"$set": {"status": "review",
-                                                  "page_count": len(records),
-                                                  "records_extracted": len(records)}})
+        status = "review" if records else "failed"
+        update_fields = {
+            "status": status,
+            "page_count": meta["total_pages"],
+            "records_extracted": len(records),
+            "extraction_mode": meta["extraction_mode"],
+            "failure_reason": meta["failure_reason"],
+            "pages_ocrd": meta.get("pages_ocrd", 0),
+            "pages_with_text": meta.get("pages_with_text", 0),
+        }
+        upload_doc.update(update_fields)
+        await db.ke_uploads.update_one({"id": upload_id}, {"$set": update_fields})
     except HTTPException:
-        await db.ke_uploads.update_one({"id": upload_id}, {"$set": {"status": "failed"}})
+        await db.ke_uploads.update_one(
+            {"id": upload_id},
+            {"$set": {"status": "failed",
+                      "failure_reason": "PDF could not be parsed."}},
+        )
         raise
     except Exception as e:
         logger.exception("studio ingest failed")
-        await db.ke_uploads.update_one({"id": upload_id}, {"$set": {"status": "failed"}})
+        await db.ke_uploads.update_one(
+            {"id": upload_id},
+            {"$set": {"status": "failed",
+                      "failure_reason": f"Unexpected ingestion error: {e}"}},
+        )
         raise HTTPException(status_code=500, detail=str(e))
-    return {"upload_id": upload_id, **{k: upload_doc[k] for k in ("filename", "status", "records_extracted", "page_count")}}
+    return {
+        "upload_id": upload_id,
+        **{k: upload_doc[k] for k in (
+            "filename", "status", "records_extracted", "page_count",
+            "extraction_mode", "failure_reason",
+        )},
+    }
 
 
 def _clean_upload(u: dict) -> dict:

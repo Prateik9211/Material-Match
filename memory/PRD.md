@@ -231,6 +231,17 @@ Focus: v1.0 competition demo. **Architecture is now frozen.**
 
 MaterialMatch v1.0 is FROZEN.
 
+## Sprint 8.4 — Ingestion Stability (2026-02-27)
+Focus: PDF upload reliability. No new features, no redesign.
+- ✅ **Upload limit 40 MB → 150 MB** (backend `STUDIO_MAX_UPLOAD_BYTES`, frontend `MaterialMatchStudio.jsx` validation + "PDF only · max 150 MB · scanned PDFs auto-OCR" helper).
+- ✅ **OCR fallback** — added `pytesseract` (0.3.13) + `tesseract-ocr` (5.3.0). Runs per-page only when the PDF has no embedded machine-readable text. `extraction_mode` = "text" / "ocr" / "text+ocr" / "failed" persisted on `ke_uploads`.
+- ✅ **Better failure messages** — `failure_reason` persisted on `ke_uploads` and surfaced in the Processing Queue and Review Queue. Distinct copy for: image-based PDFs without OCR, OCR-ran-but-nothing-recognised, and unsupported layouts.
+- ✅ **Review Queue guard** — when `records_extracted == 0`, Approve / Reject / Publish stay disabled (they're already disabled via `selected.size === 0` + `draftCount === 0`) and the empty state now explains why with the failure reason.
+- ✅ **Dev-test purge** — startup migration `_purge_dev_test_uploads` removes any upload whose filename matches known internal test patterns (pub.pdf, rej.pdf, studio_test.*, demo_catalogue.*, TESTBrand.*, RC-test.*, and this-sprint's synthetic PDFs) plus their child records. Never touches Reference-seeded records or real supplier uploads.
+- ✅ Regression: 13/13 `test_studio_pipeline.py` pass. Studio Upload → Review → Publish workflow unchanged.
+
+**Deployment note**: 150 MB is safe backend-side (verified via localhost + external ingress for a 53 MB text-based PDF — 2.6 s round-trip). Scanned PDFs above ~30 MB may exceed the ~60 s Cloudflare request-duration cap during OCR; that's a platform constraint of `preview.emergentagent.com`, not something the codebase can override.
+
 ## Prioritized Backlog
 
 ### P1

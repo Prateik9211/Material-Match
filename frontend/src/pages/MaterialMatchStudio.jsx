@@ -59,8 +59,8 @@ function UploadTab({ onUploaded }) {
       toast.error("Only PDF catalogues are accepted");
       return;
     }
-    if (file.size > 40 * 1024 * 1024) {
-      toast.error("PDF is larger than 40 MB");
+    if (file.size > 150 * 1024 * 1024) {
+      toast.error("PDF is larger than 150 MB");
       return;
     }
     setUploading(true);
@@ -133,25 +133,44 @@ function UploadTab({ onUploaded }) {
             </>
           )}
         </button>
-        <div className="text-[11px] text-warm-grey/80 mt-3">PDF only · max 40 MB</div>
+        <div className="text-[11px] text-warm-grey/80 mt-3">PDF only · max 150 MB · scanned PDFs auto-OCR</div>
       </div>
 
       {lastResult && (
         <div
-          className="rounded-2xl border border-emerald-200 bg-emerald-50/70 p-5"
+          className={`rounded-2xl border p-5 ${
+            lastResult.status === "failed"
+              ? "border-amber-300 bg-amber-50/70"
+              : "border-emerald-200 bg-emerald-50/70"
+          }`}
           data-testid="studio-upload-success"
         >
           <div className="flex items-start justify-between gap-4">
             <div>
-              <div className="text-[10px] uppercase tracking-widest text-emerald-700 mb-1">
-                Extraction complete
+              <div
+                className={`text-[10px] uppercase tracking-widest mb-1 ${
+                  lastResult.status === "failed" ? "text-amber-700" : "text-emerald-700"
+                }`}
+              >
+                {lastResult.status === "failed" ? "Ingestion did not extract records" : "Extraction complete"}
               </div>
               <div className="font-display text-lg font-semibold text-charcoal">
                 {lastResult.filename}
               </div>
               <p className="text-sm text-warm-grey mt-1">
-                {lastResult.records_extracted} record(s) extracted across {lastResult.page_count} page(s).
-                Head to the Review Queue to approve or publish them.
+                {lastResult.records_extracted > 0 ? (
+                  <>
+                    {lastResult.records_extracted} record(s) extracted across {lastResult.page_count} page(s)
+                    {lastResult.extraction_mode === "ocr" && " via OCR"}
+                    {lastResult.extraction_mode === "text+ocr" && " (text + OCR fallback)"}
+                    . Head to the Review Queue to approve or publish them.
+                  </>
+                ) : (
+                  <>
+                    {lastResult.failure_reason || "No records were extracted from this PDF."}
+                    {" "}Approve and Publish are disabled until records can be extracted.
+                  </>
+                )}
               </p>
             </div>
             <StatusBadge status={lastResult.status} />
@@ -164,6 +183,7 @@ function UploadTab({ onUploaded }) {
         <ol className="text-sm text-warm-grey space-y-1.5 list-decimal pl-5">
           <li>PDF is parsed page-by-page (PyMuPDF).</li>
           <li>Material name, product code and category are inferred from text heuristics.</li>
+          <li>Scanned / image-based pages automatically fall back to on-server OCR (tesseract).</li>
           <li>Dominant swatch colour is sampled from the page render.</li>
           <li>All records land as <span className="text-charcoal font-semibold">draft</span> in the Review Queue.</li>
           <li>Approve or publish to make them searchable in the live MaterialMatch Library.</li>
@@ -227,10 +247,24 @@ function ProcessingTab({ uploads, loading, onRefresh, onOpenReview }) {
                     Records ·{" "}
                     <span className="font-mono text-charcoal">{u.records_extracted ?? 0}</span>
                   </span>
+                  {u.extraction_mode === "ocr" && (
+                    <span className="text-charcoal font-medium">OCR</span>
+                  )}
+                  {u.extraction_mode === "text+ocr" && (
+                    <span className="text-charcoal font-medium">Text + OCR</span>
+                  )}
                   <span className="truncate">
                     Uploaded · {new Date(u.created_at).toLocaleString()}
                   </span>
                 </div>
+                {u.failure_reason && (
+                  <div
+                    className="mt-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1"
+                    data-testid={`studio-upload-failure-${i}`}
+                  >
+                    {u.failure_reason}
+                  </div>
+                )}
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <StatusBadge status={u.status} />
@@ -406,10 +440,18 @@ function ReviewTab({ uploads, selectedUploadId, setSelectedUploadId }) {
             <div className="text-center text-sm text-warm-grey py-12">Loading records…</div>
           ) : records.length === 0 ? (
             <div
-              className="text-center text-sm text-warm-grey py-16 border border-dashed border-stone-border rounded-2xl"
+              className="text-center text-sm py-14 border border-dashed border-amber-300 bg-amber-50/50 rounded-2xl px-6"
               data-testid="studio-review-empty"
             >
-              No records extracted from this upload.
+              <div className="font-display text-base font-semibold text-charcoal mb-1">
+                No records could be extracted from this upload.
+              </div>
+              <p className="text-warm-grey text-sm">
+                {activeUpload?.failure_reason || "The catalogue layout was not recognised."}
+              </p>
+              <p className="text-warm-grey text-xs mt-2">
+                Approve and Publish are disabled until records can be extracted. Try re-uploading a text-based PDF or a higher-resolution scan.
+              </p>
             </div>
           ) : (
             <div className="grid md:grid-cols-2 gap-3" data-testid="studio-review-list">
