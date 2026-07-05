@@ -43,6 +43,14 @@ function RecordRow({ r, index }) {
                 Uploaded
               </span>
             )}
+            {r.source === "Demo catalogue" && (
+              <span
+                className="text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full border font-semibold bg-amber-50 text-amber-700 border-amber-200"
+                data-testid={`ke-record-source-demo-${index}`}
+              >
+                Demo
+              </span>
+            )}
             <span className="text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full border font-semibold bg-sage-soft text-sage border-sage/30">
               {r.status || "published"}
             </span>

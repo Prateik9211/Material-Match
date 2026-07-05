@@ -590,7 +590,17 @@ function LibraryTab() {
                       {r.material_name}
                     </div>
                   </div>
-                  <StatusBadge status={r.status} />
+                  <div className="flex items-center gap-1 shrink-0">
+                    {r.demo_seed && (
+                      <span
+                        className="text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full border font-semibold bg-amber-50 text-amber-700 border-amber-200"
+                        data-testid={`studio-library-demo-${i}`}
+                      >
+                        Demo
+                      </span>
+                    )}
+                    <StatusBadge status={r.status} />
+                  </div>
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-warm-grey">
                   <span>

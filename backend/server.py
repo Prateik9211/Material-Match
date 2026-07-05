@@ -1519,7 +1519,7 @@ def _studio_record_to_search_item(rec: dict) -> dict:
         "texture": rec.get("texture") or "",
         "page_number": rec.get("page_number"),
         "keywords": rec.get("keywords", []),
-        "source": "Uploaded PDF",
+        "source": rec.get("source") or "Uploaded PDF",
     }
 
 
@@ -1527,10 +1527,134 @@ async def _refresh_studio_index() -> None:
     global _STUDIO_INDEXED_RECORDS
     try:
         docs = await db.ke_records.find({"status": "published"}).to_list(2000)
+        # User-uploaded catalogues rank ahead of demo-seeded ones so a real
+        # PDF upload always outranks the seeded demo library.
+        docs.sort(key=lambda d: 1 if d.get("demo_seed") else 0)
         _STUDIO_INDEXED_RECORDS = [_studio_record_to_search_item(d) for d in docs]
         logger.info("Studio index refreshed: %d records", len(_STUDIO_INDEXED_RECORDS))
     except Exception:
         logger.exception("studio index refresh failed")
+
+
+# ---------------------------------------------------------------------------
+# Sprint 8 — Demo-safe Studio catalogue seed.
+#
+# When the Studio library is empty on first boot, we drop in a handful of
+# clearly demo-safe supplier records (Asian Paints, Greenlam, Kajaria) so the
+# competition judges see a populated Published Library right after logging in.
+#
+# Ground rules:
+#   • Every record carries `demo_seed=True` and belongs to a synthetic
+#     `ke_uploads` doc with filename "MaterialMatch Demo — <brand>.pdf".
+#   • User-uploaded catalogues still outrank these (see _refresh_studio_index
+#     and /admin/knowledge-engine — non-demo rows sort first).
+#   • Product codes are prefixed `MM-DEMO-` so they're never mistaken for
+#     official supplier SKUs.
+# ---------------------------------------------------------------------------
+_DEMO_STUDIO_CATALOGUES = [
+    {
+        "filename": "MaterialMatch Demo — Asian Paints Sample Shades.pdf",
+        "brand": "Asian Paints",
+        "collection": "Royale Play Sample Shades",
+        "category": "Paints",
+        "material_family": "Paint",
+        "records": [
+            {"name": "Warm Ivory Cream Emulsion", "code": "MM-DEMO-AP-01",
+             "hex": "#F1E7D6", "color": "Warm Ivory Cream", "finish": "Matt emulsion"},
+            {"name": "Almond Shell Wall Paint",   "code": "MM-DEMO-AP-02",
+             "hex": "#E7D8C2", "color": "Almond Shell",     "finish": "Matt emulsion"},
+            {"name": "Sage Whisper Interior",      "code": "MM-DEMO-AP-03",
+             "hex": "#B8C4A9", "color": "Sage Whisper",     "finish": "Soft sheen"},
+            {"name": "Muted Terracotta Accent",    "code": "MM-DEMO-AP-04",
+             "hex": "#B37A5E", "color": "Muted Terracotta", "finish": "Matt emulsion"},
+        ],
+    },
+    {
+        "filename": "MaterialMatch Demo — Greenlam Signature Laminates.pdf",
+        "brand": "Greenlam",
+        "collection": "Signature Wood Laminates",
+        "category": "Laminates",
+        "material_family": "Laminate",
+        "records": [
+            {"name": "Warm Oak Straight Grain Laminate", "code": "MM-DEMO-GL-01",
+             "hex": "#B79170", "color": "Warm Oak",     "finish": "Matt suede"},
+            {"name": "Smoked Walnut Crown Cut Laminate", "code": "MM-DEMO-GL-02",
+             "hex": "#5B3E2B", "color": "Smoked Walnut", "finish": "Matt"},
+            {"name": "Ivory Solid Textured Laminate",     "code": "MM-DEMO-GL-03",
+             "hex": "#EEE4D3", "color": "Ivory Solid",   "finish": "Textured matt"},
+        ],
+    },
+    {
+        "filename": "MaterialMatch Demo — Kajaria Porcelain Range.pdf",
+        "brand": "Kajaria",
+        "collection": "Eternity Porcelain Range",
+        "category": "Tiles",
+        "material_family": "Porcelain tile",
+        "records": [
+            {"name": "Statuario Marble 800x1600 Porcelain", "code": "MM-DEMO-KJ-01",
+             "hex": "#F1EEE7", "color": "Statuario Marble", "finish": "Glossy"},
+            {"name": "Warm Wood Oak 200x1200 Porcelain",    "code": "MM-DEMO-KJ-02",
+             "hex": "#B29372", "color": "Warm Wood Oak",     "finish": "Matt"},
+            {"name": "Sand Beige Concrete 600x1200",         "code": "MM-DEMO-KJ-03",
+             "hex": "#D6C7B2", "color": "Sand Beige",        "finish": "Matt"},
+        ],
+    },
+]
+
+
+async def _seed_demo_studio_catalogues() -> None:
+    """Idempotent: seed demo Studio catalogues + published records so the
+    Published Library is populated on first boot. Skipped once any demo-seed
+    record is already present."""
+    if db is None:  # pragma: no cover — safety when Mongo isn't wired
+        return
+    existing = await db.ke_records.find_one({"demo_seed": True})
+    if existing:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    for cat in _DEMO_STUDIO_CATALOGUES:
+        upload_id = str(uuid.uuid4())
+        await db.ke_uploads.insert_one({
+            "id": upload_id,
+            "filename": cat["filename"],
+            "uploaded_by": "system-demo",
+            "status": "published",
+            "page_count": len(cat["records"]),
+            "records_extracted": len(cat["records"]),
+            "created_at": now,
+            "demo_seed": True,
+        })
+        rec_docs = []
+        for pi, rec in enumerate(cat["records"], start=1):
+            rec_docs.append({
+                "id": str(uuid.uuid4()),
+                "upload_id": upload_id,
+                "brand": cat["brand"],
+                "collection": cat["collection"],
+                "material_name": rec["name"],
+                "material_code": rec["code"],
+                "category": cat["category"],
+                "material_family": cat["material_family"],
+                "finish": rec.get("finish"),
+                "color_name": rec.get("color"),
+                "color_hex": rec["hex"],
+                "texture": None,
+                "pattern": None,
+                "application": None,
+                "page_number": pi,
+                "page_preview_b64": None,
+                "status": "published",
+                "keywords": [w.lower() for w in rec["name"].split()][:8],
+                "created_at": now,
+                "published_at": now,
+                "demo_seed": True,
+                "source": "Demo catalogue",
+            })
+        if rec_docs:
+            await db.ke_records.insert_many(rec_docs)
+    logger.info("Seeded %d demo Studio catalogues", len(_DEMO_STUDIO_CATALOGUES))
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -3680,6 +3804,10 @@ async def startup_event():
     except Exception:
         logger.exception("Demo project seed failed")
     try:
+        await _seed_demo_studio_catalogues()
+    except Exception:
+        logger.exception("Studio demo seed failed")
+    try:
         await _refresh_studio_index()
     except Exception:
         logger.exception("Studio index warm-up failed")
@@ -4808,6 +4936,8 @@ async def admin_knowledge_engine(
     # Studio-uploaded catalogues rank first so admins can verify their
     # ingested PDFs are searchable in the live Knowledge Engine.
     studio_docs = await db.ke_records.find({"status": "published"}).to_list(2000)
+    # User uploads (no demo_seed flag) surface ahead of the demo-seeded set.
+    studio_docs.sort(key=lambda d: 1 if d.get("demo_seed") else 0)
     for rec in studio_docs:
         item = {
             "id": rec.get("id"),
@@ -4823,7 +4953,7 @@ async def admin_knowledge_engine(
             "texture": rec.get("texture") or "",
             "page_number": rec.get("page_number"),
             "keywords": rec.get("keywords", []),
-            "source": "Uploaded PDF",
+            "source": rec.get("source") or "Uploaded PDF",
         }
         all_brands.add(item["brand"])
         all_categories.add(item["category"])

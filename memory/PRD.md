@@ -199,6 +199,12 @@ Refocused product around **Material Library + Catalogue Intelligence + Product D
 - ✅ **Header nav** — new admin-only `Studio` link (Rocket icon); Knowledge Engine page adds `Open MaterialMatch Studio` CTA and `UPLOADED` badge on studio-sourced rows.
 - ✅ Tests: `tests/test_studio_pipeline.py` — **13/13 PASS** (admin-guard, non-PDF 400, upload→approve→library, KE prioritization, publish-all, reject). E2E frontend flow verified via testing agent (iteration 11).
 
+## Sprint 8.1 — Demo Studio Seed (2026-02-27)
+- ✅ **Idempotent boot seed** — on startup, if `ke_records` has no `demo_seed=True` docs, insert 3 synthetic uploads: Asian Paints (4 shades), Greenlam (3 laminates), Kajaria (3 porcelain tiles) — all with `MM-DEMO-*` codes, `demo_seed=True`, `source="Demo catalogue"`.
+- ✅ **Ranking preserved** — `_refresh_studio_index()` and `/admin/knowledge-engine` both sort `demo_seed=True` docs after user uploads: order becomes **Uploaded PDF → Demo catalogue → Global Library** (verified via KE search for "Asian Paints": 2 uploaded → 4 demo → 6 seed).
+- ✅ **UI badges** — Studio Published Library shows `DEMO` (amber) chip; Knowledge Engine shows `UPLOADED` (black) or `DEMO` (amber) chip next to `PUBLISHED`.
+- ✅ **Match verification** — real project analyze-region on a paints context surfaces user-uploaded records at pct:75 alongside seeded ones.
+
 ## Prioritized Backlog
 
 ### P1
