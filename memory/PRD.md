@@ -185,6 +185,20 @@ Refocused product around **Material Library + Catalogue Intelligence + Product D
 - ✅ **Demo page rewired** — the public read-only `/demo` now uses `MaterialsFirstSection` so visitors get catalogue-first UX before signing up.
 - ✅ Tests: `tests/test_sprint2_revision_catalogue_first.py` — 10/10 PASS (9 pass + 1 skipped when live-AI quota exceeded). Full backend regression clean (all pre-Sprint-2-Revision failures were pre-existing).
 
+## Sprint 8 — MaterialMatch Studio (PDF Ingestion) (2026-02-27)
+- ✅ **Backend endpoints (server.py 5010-5122)**:
+  - `POST /api/admin/studio/upload` — multipart PDF upload; PyMuPDF parses each page and creates draft `ke_records` with dominant swatch, material name/code/category heuristics.
+  - `GET /api/admin/studio/uploads` — list ingested catalogues.
+  - `GET /api/admin/studio/uploads/{id}/records` — per-upload records.
+  - `POST /api/admin/studio/records/approve|reject` — batch review actions.
+  - `POST /api/admin/studio/uploads/{id}/publish` — publish remaining drafts.
+  - `GET /api/admin/studio/library` — live published records (category filter).
+- ✅ **Matcher prioritization** — `_STUDIO_INDEXED_RECORDS` (published Studio records) is prepended to the seed catalogue in every match call, so uploaded PDFs surface first.
+- ✅ **Knowledge Engine merge** — `/api/admin/knowledge-engine` now merges published Studio records ahead of `SEEDED_CATALOGUE` and returns `source: "Uploaded PDF"` so the admin UI can render an `UPLOADED` badge.
+- ✅ **Frontend: `/admin/studio` page** — 4-tab admin workspace (Upload Catalogue / Processing Queue / Review Queue / Published Library) with stats header (Catalogues ingested / Awaiting review / Fully published), drag-and-drop or click-to-upload PDF, per-record swatch preview, bulk-select+approve+reject+publish, category-filtered library.
+- ✅ **Header nav** — new admin-only `Studio` link (Rocket icon); Knowledge Engine page adds `Open MaterialMatch Studio` CTA and `UPLOADED` badge on studio-sourced rows.
+- ✅ Tests: `tests/test_studio_pipeline.py` — **13/13 PASS** (admin-guard, non-PDF 400, upload→approve→library, KE prioritization, publish-all, reject). E2E frontend flow verified via testing agent (iteration 11).
+
 ## Prioritized Backlog
 
 ### P1
