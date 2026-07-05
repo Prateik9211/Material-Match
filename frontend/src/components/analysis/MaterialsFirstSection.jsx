@@ -287,6 +287,21 @@ function MaterialCard({ row, index, onAddToShortlist, shortlisted, onAddCatalogu
           )}
         </div>
 
+        {/* Searched Libraries — trust signal explaining which library was searched */}
+        {(row.searched_libraries && row.searched_libraries.length > 0) && (
+          <div className="rounded-xl bg-stone-panel/70 border border-stone-border-soft px-3 py-2" data-testid={`searched-libraries-${index}`}>
+            <div className="text-[9px] uppercase tracking-widest text-warm-grey/70 font-semibold mb-0.5">Searching</div>
+            <div className="text-xs text-charcoal leading-snug">
+              <span className="font-semibold">MaterialMatch Library</span> → {row.searched_libraries.join(" + ")}
+            </div>
+          </div>
+        )}
+        {(row.searched_libraries && row.searched_libraries.length === 0) && (
+          <div className="rounded-xl bg-stone-panel/70 border border-stone-border-soft px-3 py-2 text-[11px] text-warm-grey italic" data-testid={`searched-libraries-${index}`}>
+            No library confidently matches this region — try uploading a supplier PDF.
+          </div>
+        )}
+
         {/* Likely / Possible systems */}
         {likelySystems.length > 0 && (
           <div className="space-y-2" data-testid={`alt-systems-${index}`}>

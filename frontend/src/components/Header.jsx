@@ -64,15 +64,26 @@ export default function Header({ variant = "app" }) {
               </button>
 
               {user.role === "admin" && (
-                <button
-                  onClick={() => navigate("/admin/affiliates")}
-                  className="hidden sm:inline-flex items-center gap-2 text-sm text-neutral-700 hover:text-black px-3 py-2"
-                  data-testid="nav-admin-affiliates"
-                  title="Manage curated affiliate products"
-                >
-                  <Shield className="w-4 h-4" strokeWidth={1.5} />
-                  Affiliates
-                </button>
+                <>
+                  <button
+                    onClick={() => navigate("/admin/affiliates")}
+                    className="hidden sm:inline-flex items-center gap-2 text-sm text-neutral-700 hover:text-black px-3 py-2"
+                    data-testid="nav-admin-affiliates"
+                    title="Manage curated affiliate products"
+                  >
+                    <Shield className="w-4 h-4" strokeWidth={1.5} />
+                    Affiliates
+                  </button>
+                  <button
+                    onClick={() => navigate("/admin/knowledge-engine")}
+                    className="hidden sm:inline-flex items-center gap-2 text-sm text-neutral-700 hover:text-black px-3 py-2"
+                    data-testid="nav-admin-knowledge-engine"
+                    title="Browse the MaterialMatch Library"
+                  >
+                    <Shield className="w-4 h-4" strokeWidth={1.5} />
+                    Knowledge Engine
+                  </button>
+                </>
               )}
 
               {/* Region preference toggle — drives AI prompt context (India sourcing brands, terminology). Server-only signal, never surfaced as vendor data. */}

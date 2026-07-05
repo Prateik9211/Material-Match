@@ -1336,10 +1336,17 @@ def _score_catalogue_item(row: dict, item: dict) -> dict:
     }
 
 
-def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 40) -> list:
-    """Return top_k catalogue matches (5–10) with similarity breakdown."""
+def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 40,
+                              allowed_categories: list | None = None) -> list:
+    """Return top_k catalogue matches with similarity breakdown.
+
+    Sprint 3 — `allowed_categories` restricts search to specific Knowledge-
+    Engine libraries. When `None`, searches the whole catalogue (legacy)."""
     scored = []
+    allow = set(allowed_categories) if allowed_categories is not None else None
     for item in SEEDED_CATALOGUE:
+        if allow is not None and item.get("category") not in allow:
+            continue
         s = _score_catalogue_item(row, item)
         if s["overall"] < min_overall and not s["family_match"]:
             continue
@@ -1365,7 +1372,7 @@ def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 40) ->
             "color_name": item.get("color_name"),
             "color_hex": item.get("color_hex"),
             "texture": item.get("texture"),
-            "source": item["source"],
+            "source": "MaterialMatch Library",
             "match_percent": s["overall"],
             "similarity": {
                 "visual": s["visual"],
@@ -1449,31 +1456,124 @@ def _alternative_systems_for(row: dict) -> list:
 
 def _enrich_rows_with_catalogue(rows: list, top_k: int = 8) -> None:
     """Mutates each row in-place to add classification, catalogue_matches and
-    alternative_systems. Safe to call multiple times (idempotent)."""
+    alternative_systems. Safe to call multiple times (idempotent).
+
+    Sprint 3 — matches are now sourced from a *category-restricted* view of
+    the Knowledge Engine (Paint → Paint Library only; Wood-look → Laminate +
+    Veneer; etc.), and each row exposes `searched_libraries` so the UI can
+    explain which library was searched."""
     if not rows:
         return
     for row in rows:
         if not isinstance(row, dict):
             continue
         row.setdefault("classification", _classify_row(row))
-        # Sprint 2 Refinement — softened visual language.
         if "visual_reference" not in row:
             row["visual_reference"] = _visual_reference_label(row)
         if "likely_family" not in row:
             row["likely_family"] = _likely_family_label(row)
+        if "searched_categories" not in row:
+            row["searched_categories"] = _categories_for_row(row)
+        if "searched_libraries" not in row:
+            row["searched_libraries"] = _libraries_display(row["searched_categories"])
         if "catalogue_matches" not in row:
-            row["catalogue_matches"] = _find_catalogue_matches(row, top_k=top_k)
+            row["catalogue_matches"] = _find_catalogue_matches(
+                row, top_k=top_k,
+                allowed_categories=row["searched_categories"] or None,
+            )
         if "alternative_systems" not in row:
             row["alternative_systems"] = _alternative_systems_for(row)
-        # Bucket matches into strength tiers so the UI can show 3–4 strong
-        # results by default and hide the weaker ones behind a toggle.
         if "match_buckets" not in row:
             row["match_buckets"] = _bucket_matches(row.get("catalogue_matches") or [])
 
 
-# ---------------------------------------------------------------------------
-# Sprint 2 Refinement — softened material language + application priors.
-# ---------------------------------------------------------------------------
+# Sprint 3 — Category-aware search. Each classification maps to a whitelist
+# of Knowledge-Engine libraries. The matcher NEVER searches outside this
+# whitelist, so a paint region can never return a wood veneer.
+_CATEGORY_LIBRARIES: dict[str, list[str]] = {
+    # Paint / wall-emulsion — search *only* the paint shade catalogue.
+    "Paint": ["Paints"],
+    # Fabric / upholstery / bedding — fabric only.
+    "Fabric": ["Fabric"],
+    "Textile": ["Fabric"],
+    "Curtain": ["Fabric"],
+    "Rug": ["Fabric"],
+    # Wood-look decorative surfaces span 3 libraries (as an architect would search).
+    "Wood": ["Laminates", "Veneers"],
+    "Veneer": ["Veneers", "Laminates"],
+    "Laminate": ["Laminates", "Veneers"],
+    # Marble/stone-look wall/floor spans stone + tile + laminate (for marble-look laminate/acrylic).
+    "Stone": ["Stone", "Tiles", "Laminates"],
+    "Marble": ["Stone", "Tiles", "Laminates"],
+    "Tile": ["Tiles", "Stone"],
+    # Metal / fixtures search hardware.
+    "Metal": ["Hardware"],
+    # Products.
+    "Lighting": ["Lighting"],
+    "Furniture": ["Furniture", "Fabric"],  # furniture may have visible fabric
+}
+
+# Human-readable "Library" labels for each category.
+_LIBRARY_LABELS = {
+    "Paints": "Paint Library",
+    "Laminates": "Laminate Library",
+    "Veneers": "Veneer Library",
+    "Stone": "Stone Library",
+    "Tiles": "Tile Library",
+    "Fabric": "Fabric Library",
+    "Lighting": "Lighting Library",
+    "Hardware": "Hardware Library",
+    "Furniture": "Furniture Library",
+}
+
+
+def _categories_for_row(row: dict) -> list[str]:
+    """Return the whitelist of Knowledge-Engine categories to search for this
+    row. Classification wins over material_family; zone keywords add flavour."""
+    classification = str(row.get("classification") or "").strip()
+    fam = str(row.get("material_family") or "").strip()
+    zone_l = str(row.get("zone") or "").lower()
+    mtype_l = str(row.get("material_type") or "").lower()
+
+    # 1. Zone-driven overrides (paint / curtain / rug / bedding wins early).
+    if "paint" in zone_l or fam.lower() == "paint" or "emulsion" in mtype_l:
+        return ["Paints"]
+    if "curtain" in zone_l or "drape" in zone_l:
+        return ["Fabric"]
+    if "rug" in zone_l or "carpet" in zone_l:
+        return ["Fabric"]
+    if "bedding" in zone_l or "bedcover" in zone_l or "linen" in mtype_l:
+        return ["Fabric"]
+    if "headboard" in zone_l and "upholster" in mtype_l:
+        return ["Fabric"]
+
+    # 2. Marble/stone-look wall — never assume natural marble by default.
+    if any(k in mtype_l for k in ("marble-look", "marble look", "stone-look", "stone look")):
+        return ["Stone", "Tiles", "Laminates"]
+
+    # 3. Wood-look — laminate + veneer (matches designer priors).
+    if any(k in mtype_l for k in ("wood-look", "wood look", "veneer", "laminate", "fluted", "slat")):
+        return ["Laminates", "Veneers"]
+
+    # 4. Family → library map.
+    fam_key = fam.title() if fam else classification
+    if fam_key in _CATEGORY_LIBRARIES:
+        return _CATEGORY_LIBRARIES[fam_key]
+
+    # 5. Classification fallback.
+    if classification in _CATEGORY_LIBRARIES:
+        return _CATEGORY_LIBRARIES[classification]
+
+    # 6. Unclear → search *nothing* rather than everything. UI shows
+    #    "No library confidently matches this region — try uploading a supplier PDF".
+    return []
+
+
+def _libraries_display(categories: list[str]) -> list[str]:
+    return [_LIBRARY_LABELS.get(c, c) for c in categories]
+
+
+
 # Zone-keyword → likely material systems (application priors). Used both to
 # reword the detected material and to boost catalogue matches that make sense
 # for the location. Keys are lowercase substrings found in row["zone"].
@@ -4301,23 +4401,25 @@ GLOBAL_LIBRARY_SEED = [
 
 @api_router.get("/library/global")
 async def library_global(user: dict = Depends(get_current_user)):
-    """Global (platform-managed) catalogue library.
+    """MaterialMatch Library — the platform-managed Knowledge Engine.
 
-    Sprint 2 Revision — now backed by the hand-curated seeded catalogue
-    (~177 records across Paints, Laminates, Veneers, Stone, Tiles, Fabric,
-    Lighting, Hardware, Furniture). Grouped by category for the sidebar.
-    """
+    Sprint 3 — response is designed so the UI can render category tiles
+    with counts, sample brands and status. Legacy `items` field preserved."""
     grouped = {}
+    all_brands: set[str] = set()
     for cat, items in CATEGORY_SETS.items():
-        grouped[cat] = []
+        brands = []
+        rows = []
         for i, it in enumerate(items):
-            grouped[cat].append({
+            all_brands.add(it["brand"])
+            if it["brand"] not in brands:
+                brands.append(it["brand"])
+            rows.append({
                 "id": f"{cat.lower()}-{i:03d}-{it['brand'].lower().replace(' ', '-')}",
                 "brand": it["brand"],
                 "catalogue": it["catalogue"],
                 "material_name": it["material_name"],
                 "material_code": it.get("material_code"),
-                "material_code_display": it.get("material_code") or "Code unavailable in current database",
                 "material_family": it["material_family"],
                 "finish": it["finish"],
                 "color_name": it.get("color_name"),
@@ -4325,14 +4427,91 @@ async def library_global(user: dict = Depends(get_current_user)):
                 "texture": it.get("texture"),
                 "page_number": it.get("page_number"),
                 "keywords": it.get("keywords", []),
-                "source": "Global Library",
+                "source": "MaterialMatch Library",
+                "status": "published",
             })
+        grouped[cat] = rows
+    # Compact category tile summary (counts + sample brands + status).
+    tiles = []
+    for cat, rows in grouped.items():
+        sample_brands: list[str] = []
+        for r in rows:
+            if r["brand"] not in sample_brands:
+                sample_brands.append(r["brand"])
+            if len(sample_brands) >= 5:
+                break
+        tiles.append({
+            "category": cat,
+            "library_label": _LIBRARY_LABELS.get(cat, cat),
+            "count": len(rows),
+            "sample_brands": sample_brands,
+            "status": "Growing library" if len(rows) < 40 else "Beta",
+        })
     return {
-        "items": GLOBAL_LIBRARY_SEED,  # legacy catalogue-file metadata
-        "categories": grouped,
-        "category_names": list(CATEGORY_SETS.keys()),
+        "library_name": "MaterialMatch Library",
+        "coverage_status": "Beta — Growing library",
         "total": sum(len(v) for v in grouped.values()),
+        "brands_total": len(all_brands),
+        "category_names": list(CATEGORY_SETS.keys()),
+        "tiles": tiles,
+        "categories": grouped,
+        # Legacy fields (kept for backwards compatibility with older UIs).
+        "items": GLOBAL_LIBRARY_SEED,
         "status": "seeded",
+    }
+
+
+# Sprint 3 — admin-only read-only Knowledge Engine browse.  Manual CRUD /
+# CSV/JSON import / PDF ingestion are staged for the next sprint but the data
+# shape below (`records` + `filter_meta`) is already designed to accept them.
+@api_router.get("/admin/knowledge-engine")
+async def admin_knowledge_engine(
+    user: dict = Depends(get_current_user),
+    category: str | None = None,
+    brand: str | None = None,
+    q: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    q_l = (q or "").strip().lower()
+    filtered: list[dict] = []
+    all_brands: set[str] = set()
+    all_categories: set[str] = set()
+    for item in SEEDED_CATALOGUE:
+        all_brands.add(item["brand"])
+        all_categories.add(item["category"])
+        if category and item["category"] != category:
+            continue
+        if brand and item["brand"] != brand:
+            continue
+        if q_l:
+            hay = f"{item['brand']} {item['catalogue']} {item['material_name']} {item.get('color_name','')} {' '.join(item.get('keywords', []))}".lower()
+            if q_l not in hay:
+                continue
+        filtered.append({
+            **{k: v for k, v in item.items() if k != "keywords"},
+            "keywords": item.get("keywords", []),
+            "status": "published",
+        })
+    total = len(filtered)
+    page = filtered[offset:offset + max(1, min(500, limit))]
+    return {
+        "library_name": "MaterialMatch Library",
+        "total": total,
+        "returned": len(page),
+        "records": page,
+        "filter_meta": {
+            "categories": sorted(all_categories),
+            "brands": sorted(all_brands),
+            "supported_filters": ["category", "brand", "q", "limit", "offset"],
+            "coming_soon": {
+                "manual_crud": "Sprint 3.5",
+                "csv_json_import": "Sprint 3.5",
+                "pdf_ingestion": "Sprint 4",
+            },
+        },
     }
 
 
