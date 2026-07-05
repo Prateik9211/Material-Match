@@ -260,6 +260,24 @@ Focus: fix the upload → publish flow and let admins prune the queue. No new mo
   - Every destructive action asks for `window.confirm` first with copy that names the catalogue and the consequence.
 - ✅ **End-to-end verified**: upload real supplier PDF → 4 records extracted → all approved → surfaced first in Knowledge Engine search → archive → matches drop from 13 → 3 → restore → matches back to 13. 13/13 studio pytest still pass.
 
+## Sprint 8.6 — Smart Catalogue Ingestion Engine (2026-02-27, RC1 close-out)
+Focus: real multi-swatch catalogue ingestion with human-in-the-loop review. Final competition-submission sprint.
+- ✅ **Multi-swatch extractor** — `_detect_swatches_on_page()` + `_extract_records_from_pdf()` produce one `ke_records` row per detected swatch on a page (verified: `advance_multiswatch.pdf` → 10 records across 2 pages, 4 swatches on each of pages 2 and 3). Text-only pages skipped, OCR strip runs only when embedded PDF text is thin. `extraction_mode` per-record ("text" / "ocr" / "text+ocr" / "failed").
+- ✅ **Individual material Review Queue cards** — `ReviewTab` in `MaterialMatchStudio.jsx` renders every extracted swatch as its own card (brand · page · swatch index · category · code · hex · confidence · status badge · swatch thumbnail).
+- ✅ **Bulk actions** — Select all / Deselect all toggle, Delete selected, Archive selected, Reject selected, Publish selected (`POST /api/admin/studio/records/approve`), plus the existing Publish all drafts convenience.
+- ✅ **Per-card actions** — Edit / Delete / Archive (Archive shown only on published rows).
+- ✅ **Edit Material modal** — `EditRecordModal` allows manual edit of Brand, Product Name, Product Code, Category, Material Family, Finish, Region, Notes. Backend `StudioRecordEditPayload` accepts optional `region` string.
+- ✅ **Backend endpoints wired end-to-end**:
+  - `PATCH /api/admin/studio/records/{id}` — manual edit (verified: region round-trip)
+  - `POST /api/admin/studio/records/bulk` — action ∈ {publish | archive | reject | delete}
+  - `POST /api/admin/studio/records/approve` — bulk publish via `record_ids` array
+  - `DELETE /api/admin/studio/records/{id}` — single-record delete
+- ✅ **Testing** — 11 new backend tests (`tests/test_studio_bulk_edit.py`) + 13 existing Studio pipeline tests all pass (21/21). Frontend E2E via testing_agent iteration 13: all bulk actions and Edit modal fields verified (100%). Region persistence across reload confirmed.
+- ✅ **Test fixture fix** — `_make_pdf` in `tests/test_studio_pipeline.py` now embeds a raster PNG swatch so the multi-swatch extractor can detect it (the old text-only fixture didn't produce swatch rects).
+
+**MaterialMatch RC1 → v1.0 FROZEN.** No further feature work.
+
+
 ## Prioritized Backlog
 
 ### P1

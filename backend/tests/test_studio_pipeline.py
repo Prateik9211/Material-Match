@@ -22,6 +22,16 @@ def _make_pdf(brand: str, mat: str, code: str) -> bytes:
     import fitz
     d = fitz.open()
     p = d.new_page()
+    # Embed a raster PNG swatch (the extractor scans embedded images, not
+    # vector paths). PNG is a 200x200 solid-colour square.
+    try:
+        from PIL import Image
+        _swatch = Image.new("RGB", (200, 200), (140, 90, 52))
+        _buf = io.BytesIO()
+        _swatch.save(_buf, format="PNG")
+        p.insert_image(fitz.Rect(72, 240, 260, 380), stream=_buf.getvalue())
+    except Exception:
+        pass
     p.insert_text((72, 90), brand)
     p.insert_text((72, 130), f"{mat} — Product")
     p.insert_text((72, 170), f"Code: {code}")
