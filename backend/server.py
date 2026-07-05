@@ -1403,25 +1403,48 @@ def _classify_row(row: dict) -> str:
 def _alternative_systems_for(row: dict) -> list:
     """Return category-level alternative material systems for a family.
     Matches case-insensitively and uses aliases so a family like `flooring`
-    or `wood` still resolves to the Wood systems list."""
+    or `wood` still resolves to the Wood systems list.
+
+    Sprint 2 Refinement — if the zone name implies an *application*
+    (headboard wall, floor, countertop, curtain…) we prepend the priors so
+    the UI's "Likely systems" list reads as an architect would think about
+    the surface, not just its raw family."""
     fam_raw = str(row.get("material_family") or "").strip()
-    if not fam_raw:
-        return []
     fam_l = fam_raw.lower()
-    # Direct hit (either case).
-    for key in ALTERNATIVE_SYSTEMS:
-        if key.lower() == fam_l:
-            return ALTERNATIVE_SYSTEMS[key][:6]
-    # Alias resolution via _FAMILY_ALIAS (which points to canonical family).
-    for alias in _FAMILY_ALIAS.get(fam_l, set()):
-        if alias in ALTERNATIVE_SYSTEMS:
-            return ALTERNATIVE_SYSTEMS[alias][:6]
-    # Special-case: "flooring" or "wall" (AI's MATERIAL_FAMILIES) → best guess by keywords.
-    text = f"{row.get('material_type', '')} {' '.join(row.get('keywords', []) or [])}".lower()
-    for canonical in ("Wood", "Stone", "Tile", "Fabric", "Paint", "Metal"):
-        if canonical.lower() in text:
-            return ALTERNATIVE_SYSTEMS[canonical][:6]
-    return []
+    zone = str(row.get("zone") or "")
+    prior_names = _application_priors_for_zone(zone)
+    prior_entries = [{"name": n, "why": "Likely system for this application"} for n in prior_names]
+
+    family_entries: list = []
+    if fam_raw:
+        # Direct hit (either case).
+        for key in ALTERNATIVE_SYSTEMS:
+            if key.lower() == fam_l:
+                family_entries = ALTERNATIVE_SYSTEMS[key][:6]
+                break
+        if not family_entries:
+            for alias in _FAMILY_ALIAS.get(fam_l, set()):
+                if alias in ALTERNATIVE_SYSTEMS:
+                    family_entries = ALTERNATIVE_SYSTEMS[alias][:6]
+                    break
+
+    if not family_entries:
+        # Fallback: infer canonical from keywords in material_type + keywords.
+        text = f"{row.get('material_type', '')} {' '.join(row.get('keywords', []) or [])}".lower()
+        for canonical in ("Wood", "Stone", "Tile", "Fabric", "Paint", "Metal"):
+            if canonical.lower() in text and canonical in ALTERNATIVE_SYSTEMS:
+                family_entries = ALTERNATIVE_SYSTEMS[canonical][:6]
+                break
+
+    # De-duplicate on name; priors win order so architects see application-
+    # specific systems first, then family-level swaps.
+    seen = set()
+    merged = []
+    for e in prior_entries + family_entries:
+        if e["name"] not in seen:
+            seen.add(e["name"])
+            merged.append(e)
+    return merged[:8]
 
 
 def _enrich_rows_with_catalogue(rows: list, top_k: int = 8) -> None:
@@ -1433,10 +1456,136 @@ def _enrich_rows_with_catalogue(rows: list, top_k: int = 8) -> None:
         if not isinstance(row, dict):
             continue
         row.setdefault("classification", _classify_row(row))
+        # Sprint 2 Refinement — softened visual language.
+        if "visual_reference" not in row:
+            row["visual_reference"] = _visual_reference_label(row)
+        if "likely_family" not in row:
+            row["likely_family"] = _likely_family_label(row)
         if "catalogue_matches" not in row:
             row["catalogue_matches"] = _find_catalogue_matches(row, top_k=top_k)
         if "alternative_systems" not in row:
             row["alternative_systems"] = _alternative_systems_for(row)
+        # Bucket matches into strength tiers so the UI can show 3–4 strong
+        # results by default and hide the weaker ones behind a toggle.
+        if "match_buckets" not in row:
+            row["match_buckets"] = _bucket_matches(row.get("catalogue_matches") or [])
+
+
+# ---------------------------------------------------------------------------
+# Sprint 2 Refinement — softened material language + application priors.
+# ---------------------------------------------------------------------------
+# Zone-keyword → likely material systems (application priors). Used both to
+# reword the detected material and to boost catalogue matches that make sense
+# for the location. Keys are lowercase substrings found in row["zone"].
+_APPLICATION_PRIORS: list[tuple[tuple[str, ...], list[str]]] = [
+    (("headboard wall", "feature wall", "accent wall", "tv wall", "media wall"),
+     ["Decorative Laminate Panel", "Fluted MDF Panel", "Natural Veneer",
+      "PVC Decorative Panel", "Acrylic Sheet", "Wood-look Porcelain Tile"]),
+    (("wall behind sofa", "sofa wall", "living wall"),
+     ["Decorative Laminate Panel", "Acrylic Sheet", "PVC Decorative Panel",
+      "Natural Veneer", "Porcelain Slab", "Engineered Stone Panel"]),
+    (("wall paint", "paint",),
+     ["Matte Emulsion", "Silk / Satin Emulsion", "Limewash", "Textured Plaster",
+      "Wallpaper"]),
+    (("flooring", "floor",),
+     ["Vitrified Tile", "Engineered Wood", "Laminate Flooring",
+      "SPC / Vinyl", "Marble", "Wood-look Porcelain Tile"]),
+    (("countertop", "kitchen top", "vanity top"),
+     ["Engineered Quartz", "Granite", "Porcelain Slab", "Solid Surface",
+      "Marble (premium option)"]),
+    (("bathroom", "wet wall", "shower wall"),
+     ["Ceramic Tile", "Porcelain Slab", "Stone Slab", "Waterproof Panel"]),
+    (("curtain", "drape",),
+     ["Cotton Voile", "Sheer Linen", "Poly-Linen Blend", "Blackout Fabric"]),
+    (("bedding", "bedcover", "duvet"),
+     ["Washed Cotton", "Linen", "Linen-Cotton Blend", "Sateen"]),
+    (("rug", "carpet",),
+     ["Hand-tufted Wool", "Hand-knotted Wool", "Jute", "Poly Blend"]),
+    (("nightstand", "side table", "console", "cabinet"),
+     ["Wood + Metal Combo", "Warm Veneer", "Laminate", "Solid Wood"]),
+    (("sconce", "lamp", "pendant", "chandelier"),
+     ["Brass Fixture", "Rattan Dome", "Fluted Glass Sconce",
+      "Recessed LED Downlight"]),
+]
+
+# Map raw AI family → softened public label. When the row has strong evidence
+# of a natural material this stays canonical; otherwise we prefer *-look.
+_SOFT_FAMILY_MAP = {
+    "Wood": ("Wood-look decorative finish", "Decorative wood panel / veneer-look"),
+    "Stone": ("Stone-look wall panel", "Stone-look slab or panel"),
+    "Marble": ("Marble-look glossy panel", "Marble-look slab / laminate / acrylic"),
+    "Tile": ("Tile-look finish", "Vitrified / porcelain tile"),
+    "Paint": ("Wall paint finish", "Emulsion / silk / textured paint"),
+    "Fabric": ("Fabric / textile finish", "Woven / knit / bouclé textile"),
+    "Textile": ("Fabric / textile finish", "Woven / knit / bouclé textile"),
+    "Laminate": ("Decorative laminate finish", "HPL laminate"),
+    "Veneer": ("Veneer wall finish", "Natural or reconstituted veneer"),
+    "Metal": ("Metal accent finish", "Brushed / PVD steel / brass"),
+    "Lighting": ("Lighting fixture", "Pendant / sconce / floor lamp"),
+    "Furniture": ("Furniture piece", "Wood / upholstered / metal furniture"),
+}
+
+
+def _visual_reference_label(row: dict) -> str:
+    """Return a professional 'Visual Reference Analysis' one-liner that
+    intentionally softens overconfident labels (marble → marble-look glossy
+    wall finish, wood → wood-look decorative finish) unless the row itself
+    already reads as a natural-material spec."""
+    mtype = str(row.get("material_type") or "").strip()
+    fam = str(row.get("material_family") or "").strip()
+    if not mtype and not fam:
+        return ""
+    text_l = f"{mtype} {row.get('color', '')} {row.get('texture', '')}".lower()
+    # If the AI already used soft language, keep it.
+    if any(w in text_l for w in ("look ", "-look", "decorative", "veneer", "laminate",
+                                  "engineered", "reconstituted", "porcelain",
+                                  "acrylic", "spc", "vinyl")):
+        return mtype or _SOFT_FAMILY_MAP.get(fam, (fam or "Detected material",))[0]
+    # Otherwise apply softening.
+    if fam in {"Stone"} and "marble" in text_l:
+        # e.g. "Warm Beige Marble" → "Marble-look glossy wall finish (warm beige)"
+        return f"Marble-look glossy finish — {row.get('color') or 'beige'}"
+    if fam in {"Wood"} and any(k in text_l for k in ("oak", "walnut", "teak", "wenge", "maple")):
+        return f"Wood-look decorative finish — {row.get('color') or fam.lower()}"
+    if fam in {"Tile", "Stone"}:
+        return f"{fam}-look surface — {row.get('color') or ''}".rstrip(" —")
+    return mtype or _SOFT_FAMILY_MAP.get(fam, ("Detected material",))[0]
+
+
+def _likely_family_label(row: dict) -> str:
+    """Return the 'Likely material family' hint under Visual Reference."""
+    fam = str(row.get("material_family") or "").strip()
+    if fam in _SOFT_FAMILY_MAP:
+        return _SOFT_FAMILY_MAP[fam][1]
+    return fam or "Uncertain — designer to verify"
+
+
+def _application_priors_for_zone(zone: str) -> list:
+    zl = (zone or "").lower()
+    for keys, systems in _APPLICATION_PRIORS:
+        if any(k in zl for k in keys):
+            return systems
+    return []
+
+
+def _bucket_matches(matches: list) -> dict:
+    """Group catalogue matches by confidence tier. UI shows Best by default
+    and reveals Possible / Low on demand."""
+    best, possible, low = [], [], []
+    for m in matches:
+        p = m.get("match_percent", 0)
+        if p >= 80:
+            best.append(m)
+        elif p >= 65:
+            possible.append(m)
+        else:
+            low.append(m)
+    return {
+        "best": best[:4],
+        "possible": possible,
+        "low": low,
+        "counts": {"best": len(best), "possible": len(possible), "low": len(low)},
+    }
 
 
 @api_router.post("/projects/{project_id}/analyze-region")
@@ -3229,6 +3378,17 @@ async def _seed_demo_project() -> None:
          "indian_alternative": "The White Window sheer linen or Deco Window ivory linen panel",
          "brands_to_check": ["Deco Window", "The White Window", "D'Decor"], "vendor_type": "Window furnishing",
          "sourcing_keywords": ["sheer linen curtain india"]},
+        # Sprint 2 Refinement — softly-labelled marble-look feature wall so
+        # the demo showcases "*-look" architectural language explicitly.
+        {"zone": "Behind-Bed Feature Wall — Marble-look Panel", "material_family": "Stone",
+         "material_type": "Marble-look glossy wall panel (warm beige)",
+         "color": "Warm beige with subtle veining", "texture": "Fine vein", "finish": "Polished glazed",
+         "design_style": "Warm modern", "keywords": ["marble look", "beige", "veined", "gloss"],
+         "confidence": 76, "procurement_difficulty": "Easy in India",
+         "pin": {"x": 65, "y": 25},
+         "indian_alternative": "Kalinga Cream Delight Quartz or Kajaria Statuario 800x1600 porcelain slab",
+         "brands_to_check": ["Kalinga Stone", "Kajaria", "Somany"], "vendor_type": "Slab / panel supplier",
+         "sourcing_keywords": ["marble look wall panel india", "porcelain slab statuario"]},
     ]
     # Sprint 2 Revision: attach classification, top catalogue matches
     # (5–8 per row across the seeded global catalogue) and alternative
