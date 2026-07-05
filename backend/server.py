@@ -1271,19 +1271,19 @@ _FAMILY_ALIAS = {
 }
 
 
-def _score_catalogue_item(row: dict, item: dict) -> dict:
+def _score_catalogue_item(row: dict, item: dict, weights: dict | None = None) -> dict:
     """Return breakdown {overall, visual, color, finish, texture, family}.
 
-    Similarity is intentionally *fuzzy* — MaterialMatch's contract is that we
-    show the closest available catalogue matches, never exact certainty.
-    """
+    Sprint 4 — `weights` selects the Brain's category-specific ranking
+    profile (paint = colour-heavy, tile/stone = pattern-heavy, fabric =
+    texture-heavy). Falls back to a balanced default."""
+    w = weights or _RANKING_WEIGHTS["_default"]
     fam_row = str(row.get("material_family") or "").lower()
     fam_item = str(item.get("material_family") or "")
     family_match = fam_item in _FAMILY_ALIAS.get(fam_row, {fam_item})
-    # 1. Family match (baseline of ~30 points).
-    family_score = 30 if family_match else 5
+    family_score = 100 if family_match else 20
 
-    # 2. Keyword Jaccard on (material_type + color + texture + finish + keywords).
+    # Keyword Jaccard visual similarity.
     row_tokens = (_tokenize(row.get("material_type")) | _tokenize(row.get("color"))
                   | _tokenize(row.get("texture")) | _tokenize(row.get("finish"))
                   | _tokenize(row.get("keywords")))
@@ -1296,20 +1296,20 @@ def _score_catalogue_item(row: dict, item: dict) -> dict:
         j = 0.0
     visual = int(round(j * 100))
 
-    # 3. Colour similarity.
+    # Colour similarity.
     row_hex = _resolve_hex(row)
     item_hex = item.get("color_hex") or "#B7ADA0"
     color = _color_similarity(row_hex, item_hex)
 
-    # 4. Finish similarity — token overlap on the 'finish' field.
+    # Finish similarity — token overlap.
     row_finish = _tokenize(row.get("finish"))
     item_finish = _tokenize(item.get("finish"))
     if row_finish and item_finish:
         finish = int(round(100 * len(row_finish & item_finish) / max(1, len(row_finish | item_finish))))
     else:
-        finish = 40  # neutral if either is missing
+        finish = 40
 
-    # 5. Texture / grain similarity.
+    # Texture / grain similarity.
     row_texture = _tokenize(row.get("texture"))
     item_texture = _tokenize(item.get("texture"))
     if row_texture and item_texture:
@@ -1317,13 +1317,13 @@ def _score_catalogue_item(row: dict, item: dict) -> dict:
     else:
         texture = 40
 
-    # Overall weighted composite. Cap at 97 — we NEVER claim exact certainty.
+    # Weighted composite from Brain profile. Cap at 97 — we never claim exact certainty.
     overall = (
-        family_score * 0.6            # up to 18 pts if family matches
-        + visual * 0.30               # keyword-driven visual match
-        + color * 0.30                # RGB colour proximity
-        + finish * 0.15               # finish token overlap
-        + texture * 0.15              # texture token overlap
+        family_score * w.get("family", 0.20)
+        + visual * w.get("visual", 0.25)
+        + color * w.get("color", 0.25)
+        + finish * w.get("finish", 0.15)
+        + texture * w.get("texture", 0.15)
     )
     overall = min(97, int(round(overall)))
     return {
@@ -1337,17 +1337,21 @@ def _score_catalogue_item(row: dict, item: dict) -> dict:
 
 
 def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 40,
-                              allowed_categories: list | None = None) -> list:
+                              allowed_categories: list | None = None,
+                              weights: dict | None = None) -> list:
     """Return top_k catalogue matches with similarity breakdown.
 
-    Sprint 3 — `allowed_categories` restricts search to specific Knowledge-
-    Engine libraries. When `None`, searches the whole catalogue (legacy)."""
+    Sprint 4 — Brain weights shape the scoring per category. When
+    `allowed_categories` is `[]` (Brain confidently could not classify), we
+    return no matches so the UI can prompt for a supplier PDF upload."""
     scored = []
     allow = set(allowed_categories) if allowed_categories is not None else None
+    if allow is not None and not allow:
+        return []
     for item in SEEDED_CATALOGUE:
         if allow is not None and item.get("category") not in allow:
             continue
-        s = _score_catalogue_item(row, item)
+        s = _score_catalogue_item(row, item, weights=weights)
         if s["overall"] < min_overall and not s["family_match"]:
             continue
         scored.append((s, item))
@@ -1455,13 +1459,9 @@ def _alternative_systems_for(row: dict) -> list:
 
 
 def _enrich_rows_with_catalogue(rows: list, top_k: int = 8) -> None:
-    """Mutates each row in-place to add classification, catalogue_matches and
-    alternative_systems. Safe to call multiple times (idempotent).
-
-    Sprint 3 — matches are now sourced from a *category-restricted* view of
-    the Knowledge Engine (Paint → Paint Library only; Wood-look → Laminate +
-    Veneer; etc.), and each row exposes `searched_libraries` so the UI can
-    explain which library was searched."""
+    """Mutates each row in-place. Sprint 4 — every row is now routed through
+    the MaterialMatch Brain, whose decision packet drives category-restricted
+    search and per-category ranking."""
     if not rows:
         return
     for row in rows:
@@ -1472,14 +1472,20 @@ def _enrich_rows_with_catalogue(rows: list, top_k: int = 8) -> None:
             row["visual_reference"] = _visual_reference_label(row)
         if "likely_family" not in row:
             row["likely_family"] = _likely_family_label(row)
-        if "searched_categories" not in row:
-            row["searched_categories"] = _categories_for_row(row)
-        if "searched_libraries" not in row:
-            row["searched_libraries"] = _libraries_display(row["searched_categories"])
+        # Brain decision packet drives everything below.
+        if "brain" not in row:
+            row["brain"] = materialmatch_brain(row)
+        brain = row["brain"]
+        # Legacy / UI-shape aliases so older frontend fields keep working.
+        row["classification"] = brain["classification"]
+        row["searched_categories"] = brain["allowed_categories"]
+        row["searched_libraries"] = brain["allowed_libraries"]
+        row["excluded_libraries"] = brain["excluded_libraries"]
         if "catalogue_matches" not in row:
             row["catalogue_matches"] = _find_catalogue_matches(
                 row, top_k=top_k,
-                allowed_categories=row["searched_categories"] or None,
+                allowed_categories=brain["allowed_categories"] or [],
+                weights=brain["ranking_weights"],
             )
         if "alternative_systems" not in row:
             row["alternative_systems"] = _alternative_systems_for(row)
@@ -1487,7 +1493,274 @@ def _enrich_rows_with_catalogue(rows: list, top_k: int = 8) -> None:
             row["match_buckets"] = _bucket_matches(row.get("catalogue_matches") or [])
 
 
-# Sprint 3 — Category-aware search. Each classification maps to a whitelist
+# ---------------------------------------------------------------------------
+# Sprint 4 — MaterialMatch Brain v1.
+#
+# The Brain sits between raw AI classification and the catalogue matcher.
+# For every zone it decides *what a designer would realistically specify*
+# (not just "what does this look like"), and hands the matcher:
+#   • allowed_libraries    — hard whitelist
+#   • excluded_libraries   — hard blacklist (kept for UI transparency)
+#   • ranking_weights      — category-specific weight profile
+#   • possible_construction_systems
+#   • application_context, detected_finish, likely_material_family
+#   • reasoning_notes      — surfaced under "Why MaterialMatch searched this"
+# ---------------------------------------------------------------------------
+
+# Application-context detection — inferred from zone name + material_type.
+_APPLICATION_CONTEXTS: list[tuple[tuple[str, ...], str]] = [
+    (("wall paint", "painted wall", "emulsion"), "wall paint"),
+    (("headboard wall", "headboard panel", "behind-bed"), "headboard wall"),
+    (("tv wall", "media wall", "feature wall", "accent wall"), "feature wall"),
+    (("wall behind sofa", "sofa wall", "living wall"), "feature wall"),
+    (("ceiling",), "ceiling"),
+    (("floor", "flooring"), "flooring"),
+    (("countertop", "kitchen top", "vanity top", "worktop"), "countertop"),
+    (("backsplash",), "backsplash"),
+    (("bathroom", "shower wall", "wet wall"), "bathroom wet wall"),
+    (("kitchen wall",), "kitchen wall"),
+    (("curtain", "drape"), "curtain"),
+    (("rug", "carpet"), "rug"),
+    (("bedding", "bedcover", "duvet", "linen"), "bedding"),
+    (("bed frame", "headboard —", "upholstered headboard"), "furniture upholstery"),
+    (("sconce", "pendant", "chandelier", "lamp", "downlight"), "lighting fixture"),
+    (("nightstand", "side table", "console", "cabinet", "dresser", "bed"), "furniture body"),
+    (("handle", "hinge", "profile", "hardware", "faucet", "trim"), "hardware"),
+    (("vase", "ornament", "sculpture", "art"), "decor object"),
+]
+
+
+# Ranking weight profiles per Knowledge-Engine category. Weights sum to ~1.0;
+# they scale the family/keyword/color/finish/texture components in
+# `_score_catalogue_item` so paint is colour-heavy, tile/stone is pattern-heavy,
+# fabric is texture-heavy, etc.
+_RANKING_WEIGHTS = {
+    # (family, visual, color, finish, texture)
+    "Paints":    {"family": 0.10, "visual": 0.10, "color": 0.55, "finish": 0.15, "texture": 0.10},
+    "Laminates": {"family": 0.10, "visual": 0.30, "color": 0.25, "finish": 0.20, "texture": 0.15},
+    "Veneers":   {"family": 0.10, "visual": 0.30, "color": 0.25, "finish": 0.20, "texture": 0.15},
+    "Stone":     {"family": 0.10, "visual": 0.30, "color": 0.25, "finish": 0.20, "texture": 0.15},
+    "Tiles":     {"family": 0.10, "visual": 0.30, "color": 0.25, "finish": 0.20, "texture": 0.15},
+    "Fabric":    {"family": 0.10, "visual": 0.15, "color": 0.25, "finish": 0.15, "texture": 0.35},
+    "Lighting":  {"family": 0.35, "visual": 0.20, "color": 0.15, "finish": 0.20, "texture": 0.10},
+    "Hardware":  {"family": 0.30, "visual": 0.15, "color": 0.20, "finish": 0.25, "texture": 0.10},
+    "Furniture": {"family": 0.35, "visual": 0.20, "color": 0.15, "finish": 0.20, "texture": 0.10},
+    # Fallback — balanced, no category dominance.
+    "_default":  {"family": 0.20, "visual": 0.25, "color": 0.25, "finish": 0.15, "texture": 0.15},
+}
+
+
+def _application_context(row: dict) -> str:
+    zone_l = str(row.get("zone") or "").lower()
+    mtype_l = str(row.get("material_type") or "").lower()
+    text = f"{zone_l} {mtype_l}"
+    for keys, ctx in _APPLICATION_CONTEXTS:
+        if any(k in text for k in keys):
+            return ctx
+    return "unclear"
+
+
+def _brain_construction_systems(app_ctx: str, mtype_l: str) -> list[dict]:
+    """Return architect-priored construction systems for the application.
+
+    Reads like a designer's mental checklist — porcelain slab / laminate /
+    acrylic / PVC panel / engineered stone / natural marble is NOT the default
+    assumption for a glossy veined wall."""
+    marble_look = any(k in mtype_l for k in ("marble", "veined", "gloss"))
+    wood_look = any(k in mtype_l for k in ("oak", "walnut", "teak", "veneer",
+                                             "wood", "grain", "slat", "fluted"))
+    if app_ctx == "wall paint":
+        return [
+            {"name": "Acrylic emulsion", "note": "Standard washable wall paint"},
+            {"name": "Luxury silk emulsion", "note": "Soft-sheen premium finish"},
+            {"name": "Textured plaster", "note": "Adds tactile depth"},
+            {"name": "Limewash / mineral paint", "note": "Muted artisanal texture"},
+        ]
+    if app_ctx == "feature wall" and marble_look:
+        return [
+            {"name": "Porcelain slab / large-format tile", "note": "Water-safe, near-zero maintenance"},
+            {"name": "Marble-look laminate", "note": "Budget alternative, wipe-clean"},
+            {"name": "Acrylic decorative sheet", "note": "High gloss, easy to fabricate"},
+            {"name": "PVC marble panel", "note": "Budget option, humidity-safe"},
+            {"name": "Engineered stone panel", "note": "Consistent pattern, non-porous"},
+            {"name": "Natural marble (premium)", "note": "Lower priority — high cost + sealing"},
+        ]
+    if app_ctx in {"feature wall", "headboard wall"} and wood_look:
+        return [
+            {"name": "HPL laminate (wood-look)", "note": "Cheaper, durable"},
+            {"name": "Natural veneer", "note": "Real grain feel"},
+            {"name": "Fluted MDF panel", "note": "Vertical slat rhythm, ready-to-fit"},
+            {"name": "Decorative PVC panel", "note": "Budget, water-safe"},
+            {"name": "Engineered wood panel", "note": "Warm, stable"},
+            {"name": "Wood-look porcelain tile", "note": "Water-resistant option"},
+        ]
+    if app_ctx == "flooring":
+        if marble_look:
+            return [{"name": "Porcelain slab"}, {"name": "Natural marble"}, {"name": "Engineered quartz"}]
+        if wood_look:
+            return [{"name": "Engineered wood"}, {"name": "Laminate flooring (AC5)"},
+                    {"name": "SPC / Vinyl"}, {"name": "Wood-look porcelain tile"}]
+        return [{"name": "Vitrified tile"}, {"name": "Marble"}, {"name": "Engineered wood"}]
+    if app_ctx == "countertop":
+        return [
+            {"name": "Engineered quartz"}, {"name": "Granite"},
+            {"name": "Solid surface (Corian)"}, {"name": "Porcelain slab"},
+            {"name": "Natural marble (premium — sealing required)"},
+        ]
+    if app_ctx == "bathroom wet wall":
+        return [{"name": "Ceramic tile"}, {"name": "Porcelain slab"},
+                {"name": "Stone slab"}, {"name": "Waterproof decorative panel"}]
+    if app_ctx == "curtain":
+        return [{"name": "Sheer linen"}, {"name": "Cotton voile"},
+                {"name": "Poly-linen blend"}, {"name": "Blackout drape"}]
+    if app_ctx == "rug":
+        return [{"name": "Hand-tufted wool"}, {"name": "Hand-knotted wool"},
+                {"name": "Jute"}, {"name": "Machine-made polyblend"}]
+    if app_ctx == "bedding":
+        return [{"name": "Linen"}, {"name": "Cotton sateen"},
+                {"name": "Linen-cotton blend"}, {"name": "Washed cotton"}]
+    if app_ctx == "furniture upholstery":
+        return [{"name": "Woven upholstery fabric"}, {"name": "Bouclé"},
+                {"name": "Linen-cotton blend"}, {"name": "Velvet"}, {"name": "Leatherette"}]
+    if app_ctx == "furniture body":
+        return [{"name": "Wood + veneer"}, {"name": "Laminate over MDF"},
+                {"name": "Solid wood (premium)"}, {"name": "Metal + wood combo"}]
+    if app_ctx == "lighting fixture":
+        return [{"name": "Brass fixture"}, {"name": "Rattan / cane fixture"},
+                {"name": "Fluted glass fixture"}, {"name": "Recessed LED"}]
+    if app_ctx == "hardware":
+        return [{"name": "Brushed brass profile"}, {"name": "Rose-gold PVD steel"},
+                {"name": "Aluminium anodised"}]
+    return []
+
+
+# Hard category exclusion rules per classification (Sprint 4 trust guarantee).
+_HARD_EXCLUSIONS: dict[str, set[str]] = {
+    # A painted wall must never return wood, veneer, laminate, fabric, etc.
+    "Paint":     {"Wood", "Veneer", "Laminates", "Fabric", "Furniture",
+                  "Stone", "Tiles", "Lighting", "Hardware"},
+    "Curtain":   {"Paints", "Laminates", "Veneers", "Stone", "Tiles",
+                  "Lighting", "Hardware", "Furniture"},
+    "Rug":       {"Paints", "Laminates", "Veneers", "Stone", "Tiles",
+                  "Lighting", "Hardware", "Furniture"},
+    "Fabric":    {"Paints", "Laminates", "Veneers", "Stone", "Tiles",
+                  "Lighting", "Hardware"},
+    "Lighting":  {"Paints", "Laminates", "Veneers", "Stone", "Tiles", "Fabric"},
+    "Furniture": {"Paints", "Stone", "Tiles"},  # furniture can carry fabric+veneer
+    "Hardware":  {"Paints", "Fabric", "Furniture", "Lighting"},
+}
+
+
+def materialmatch_brain(row: dict) -> dict:
+    """The MaterialMatch Brain. Returns the decision packet that drives
+    catalogue matching. Idempotent and pure — no side effects."""
+    classification = row.get("classification") or _classify_row(row)
+    mtype_l = str(row.get("material_type") or "").lower()
+    fam = str(row.get("material_family") or "").strip()
+
+    # 1. Application context (drives everything else).
+    app_ctx = _application_context(row)
+
+    # 2. Detected-finish label (soft language).
+    detected_finish = _visual_reference_label(row) or (row.get("material_type") or "Detected material")
+
+    # 3. Likely material family (softened).
+    likely_family = _likely_family_label(row)
+
+    # 4. Allowed libraries — start from category-aware search then filter by hard exclusions.
+    allowed = list(_categories_for_row(row))
+
+    # 5. Wall-paint hard rule (paint applications ALWAYS search Paint only).
+    if app_ctx == "wall paint" or classification.lower() == "paint" or fam.lower() == "paint":
+        allowed = ["Paints"]
+    elif app_ctx == "curtain":
+        allowed = ["Fabric"]
+    elif app_ctx == "rug":
+        allowed = ["Fabric"]
+    elif app_ctx == "bedding":
+        allowed = ["Fabric"]
+    elif app_ctx == "furniture upholstery":
+        allowed = ["Fabric"]
+    elif app_ctx == "furniture body":
+        allowed = ["Furniture", "Laminates", "Veneers"]
+    elif app_ctx == "lighting fixture":
+        allowed = ["Lighting"]
+    elif app_ctx == "hardware":
+        allowed = ["Hardware"]
+    elif app_ctx == "countertop":
+        allowed = ["Stone", "Tiles", "Laminates"]
+    elif app_ctx == "bathroom wet wall":
+        allowed = ["Tiles", "Stone"]
+
+    # 6. Hard blacklist by classification.
+    blacklist = _HARD_EXCLUSIONS.get(classification, set())
+    # Fabric family → treat as Fabric classification exclusion for zone semantics.
+    if fam == "Paint":
+        blacklist = _HARD_EXCLUSIONS["Paint"]
+    if fam in {"Fabric", "Textile"} and app_ctx in {"curtain", "rug", "bedding", "furniture upholstery"}:
+        blacklist = _HARD_EXCLUSIONS.get("Curtain" if app_ctx == "curtain"
+                                          else "Rug" if app_ctx == "rug" else "Fabric", set())
+    allowed = [c for c in allowed if c not in blacklist]
+
+    # Excluded libraries surfaced for the UI trust card.
+    all_categories = set(CATEGORY_SETS.keys())
+    excluded = sorted(all_categories - set(allowed))
+
+    # 7. Ranking weights (pick the first allowed category's profile).
+    weight_key = allowed[0] if allowed else "_default"
+    weights = _RANKING_WEIGHTS.get(weight_key, _RANKING_WEIGHTS["_default"])
+
+    # 8. Reasoning notes — human-readable explanation for the collapsible.
+    if app_ctx == "wall paint":
+        reasoning = ("Selected region reads as a continuous painted wall surface with no visible "
+                     "joints, grain, tile edges or product form. Restricting search to the Paint Library.")
+    elif app_ctx == "feature wall" and any(k in mtype_l for k in ("marble", "veined", "gloss")):
+        reasoning = ("Glossy veined wall finishes in residential interiors are often specified as "
+                     "porcelain slab, marble-look laminate, acrylic / PVC panel or engineered stone — "
+                     "not exclusively natural marble. Searching Stone + Tiles + Laminates.")
+    elif app_ctx in {"feature wall", "headboard wall"}:
+        reasoning = ("Wood-look decorative wall panels are typically specified as HPL laminate, "
+                     "natural veneer, fluted MDF or PVC panel. Searching Laminates + Veneers.")
+    elif app_ctx == "curtain":
+        reasoning = "Curtain zones are matched against the Fabric Library only — paint / laminate excluded."
+    elif app_ctx == "rug":
+        reasoning = "Rug zones are matched against the Fabric Library only — paint / stone / laminate excluded."
+    elif app_ctx == "flooring":
+        reasoning = ("Flooring context — searching Laminates / Veneers for wood-look or "
+                     "Tiles / Stone for slab / marble-look installations.")
+    elif app_ctx == "countertop":
+        reasoning = ("Countertop context — engineered quartz, granite or porcelain slab are the "
+                     "primary specifications; natural marble is a premium fallback.")
+    elif app_ctx == "bathroom wet wall":
+        reasoning = "Wet-wall context — restricted to Tiles / Stone (waterproof categories) only."
+    elif app_ctx == "lighting fixture":
+        reasoning = "Detected as a lighting fixture — searching the Lighting Library only."
+    elif app_ctx == "furniture body":
+        reasoning = "Furniture body context — Furniture Library first, then visible wood-look finish libraries."
+    elif app_ctx == "furniture upholstery":
+        reasoning = "Upholstered furniture surface — Fabric Library only."
+    elif not allowed:
+        reasoning = ("Not enough evidence to confidently classify this region. No library was searched. "
+                     "Try uploading a supplier catalogue PDF to enrich matches.")
+    else:
+        reasoning = "Category-aware search based on the detected material family."
+
+    return {
+        "classification": classification,
+        "application_context": app_ctx,
+        "detected_finish": detected_finish,
+        "likely_material_family": likely_family,
+        "possible_construction_systems": _brain_construction_systems(app_ctx, mtype_l),
+        "allowed_libraries": [_LIBRARY_LABELS.get(c, c) for c in allowed],
+        "allowed_categories": allowed,
+        "excluded_libraries": [_LIBRARY_LABELS.get(c, c) for c in excluded],
+        "ranking_weights": weights,
+        "reasoning_notes": reasoning,
+        "version": "brain-v1",
+    }
+
+
+
 # of Knowledge-Engine libraries. The matcher NEVER searches outside this
 # whitelist, so a paint region can never return a wood veneer.
 _CATEGORY_LIBRARIES: dict[str, list[str]] = {

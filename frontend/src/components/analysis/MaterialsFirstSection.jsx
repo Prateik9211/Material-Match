@@ -222,6 +222,85 @@ function LikelySystemChip({ alt, index }) {
   );
 }
 
+function BrainReasoning({ brain, index }) {
+  const [open, setOpen] = useState(false);
+  const excluded = brain.excluded_libraries || [];
+  const systems = brain.possible_construction_systems || [];
+  return (
+    <div className="rounded-xl border border-stone-border-soft bg-white" data-testid={`brain-reasoning-${index}`}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-3 py-2 text-left"
+        data-testid={`brain-reasoning-toggle-${index}`}
+      >
+        <div className="flex items-center gap-1.5">
+          <Info className="w-3 h-3 text-warm-grey" strokeWidth={1.75} />
+          <span className="text-[10px] uppercase tracking-widest text-warm-grey/80 font-semibold">
+            Why MaterialMatch searched this library
+          </span>
+        </div>
+        {open ? <ChevronDown className="w-3 h-3 text-warm-grey" strokeWidth={2} /> : <ChevronRight className="w-3 h-3 text-warm-grey" strokeWidth={2} />}
+      </button>
+      {open && (
+        <div className="px-3 pb-3 space-y-2.5 text-xs text-charcoal border-t border-stone-border-soft" data-testid={`brain-reasoning-body-${index}`}>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 pt-2.5">
+            <div>
+              <div className="text-[9px] uppercase tracking-widest text-warm-grey/70">Classification</div>
+              <div className="font-medium" data-testid={`brain-classification-${index}`}>{brain.classification}</div>
+            </div>
+            <div>
+              <div className="text-[9px] uppercase tracking-widest text-warm-grey/70">Application</div>
+              <div className="font-medium capitalize" data-testid={`brain-application-${index}`}>{brain.application_context}</div>
+            </div>
+            <div>
+              <div className="text-[9px] uppercase tracking-widest text-warm-grey/70">Detected finish</div>
+              <div className="font-medium" data-testid={`brain-finish-${index}`}>{brain.detected_finish}</div>
+            </div>
+            <div>
+              <div className="text-[9px] uppercase tracking-widest text-warm-grey/70">Likely family</div>
+              <div className="font-medium" data-testid={`brain-family-${index}`}>{brain.likely_material_family}</div>
+            </div>
+          </div>
+          {systems.length > 0 && (
+            <div>
+              <div className="text-[9px] uppercase tracking-widest text-warm-grey/70 mb-1">Possible construction systems</div>
+              <ol className="list-decimal list-inside space-y-0.5 text-[11px] leading-snug" data-testid={`brain-systems-${index}`}>
+                {systems.map((s, i) => (
+                  <li key={i}>
+                    <span className="font-medium">{s.name}</span>
+                    {s.note && <span className="text-warm-grey"> · {s.note}</span>}
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+          {excluded.length > 0 && (
+            <div>
+              <div className="text-[9px] uppercase tracking-widest text-warm-grey/70 mb-1">Excluded libraries</div>
+              <div className="flex flex-wrap gap-1" data-testid={`brain-excluded-${index}`}>
+                {excluded.map((e) => (
+                  <span key={e} className="text-[10px] px-1.5 py-0.5 rounded-full bg-stone-panel border border-stone-border-soft text-warm-grey">
+                    {e}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          {brain.reasoning_notes && (
+            <div>
+              <div className="text-[9px] uppercase tracking-widest text-warm-grey/70 mb-1">Reasoning</div>
+              <p className="text-[11px] leading-relaxed text-charcoal/80" data-testid={`brain-reasoning-notes-${index}`}>
+                {brain.reasoning_notes}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MaterialCard({ row, index, onAddToShortlist, shortlisted, onAddCatalogueToShortlist, shortlistedCatalogueIds, focused, onHoverCard }) {
   const [showMore, setShowMore] = useState(false);
   const [showAlts, setShowAlts] = useState(false);
@@ -301,6 +380,9 @@ function MaterialCard({ row, index, onAddToShortlist, shortlisted, onAddCatalogu
             No library confidently matches this region — try uploading a supplier PDF.
           </div>
         )}
+
+        {/* Sprint 4 — MaterialMatch Brain Reasoning collapsible */}
+        {row.brain && <BrainReasoning brain={row.brain} index={index} />}
 
         {/* Likely / Possible systems */}
         {likelySystems.length > 0 && (
