@@ -280,6 +280,27 @@ Focus: real multi-swatch catalogue ingestion with human-in-the-loop review. Fina
 
 ## Prioritized Backlog
 
+
+## Sprint 8.7 — Smart Ingestion Engine Hardening (2026-02-27, submission-ready)
+Focus: production-grade catalogue lifecycle + high-precision swatch extraction on real supplier PDFs. Verified end-to-end on a 31-page image-only ADVANCE laminate catalogue.
+- ✅ **Catalogue-level status recompute** (`_recompute_upload_status`) — called after every record mutation. Statuses: `processing` → `review` → `review_remaining` → `published` (or `archived` / `rejected` / `failed`). Owns lifecycle; Processing Queue always reflects true state.
+- ✅ **Double-publish guard** — `approve` and `bulk/publish` both filter `status: {$ne: "published"}`; second publish returns `{approved:0}` / `{affected:0}` and never overwrites `published_at`.
+- ✅ **Better swatch filtering** — new `_looks_like_material_swatch()` uses per-channel pixel statistics to reject QR codes (heavy black+white polarisation), lifestyle photos (very high 3-channel variance), and mostly-white cards. Combined with tighter geometry filter (1.2–30% page area, aspect 0.30–3.5, min 55 pt short side).
+- ✅ **Product-context filter** — only keeps swatches whose LOCAL OCR/text has either a code token OR a material-family keyword. Kills QR codes, decorative circles, banners even when they share a page with real swatches.
+- ✅ **Name-quality gate** — `_looks_like_name()` rejects OCR gibberish (must start with a letter, ≥55% letters, no `www.`/`http`/`qr code` markers).
+- ✅ **Per-card actions**: `Edit / Publish / Preview page / Delete / Archive` (Publish shown only on drafts, Archive only on published).
+- ✅ **Select All restricted to drafts** — never touches published/archived/rejected rows per spec.
+- ✅ **Tags field** in the Edit modal (comma-separated, persists as `list[str]`).
+- ✅ **Catalogue lifecycle endpoints**:
+  - `POST /api/admin/studio/uploads/{id}/reprocess` — re-runs extractor on the persisted PDF blob (drops draft/rejected/archived records, keeps published)
+  - `POST /api/admin/studio/uploads/{id}/replace` — accepts a new PDF, replaces all records
+  - `GET /api/admin/studio/uploads/{id}/page/{n}` — returns a base64 JPEG page preview for the Review Queue modal
+- ✅ **PDF blob persistence** — every non-seed upload is stored to `STUDIO_UPLOAD_DIR` (default `/app/backend/uploads_data/{id}.pdf`) so Reprocess / Replace / Preview page work without re-upload.
+- ✅ **Real-catalogue test** — 25 MB, 31-page image-only ADVANCE PDF: OCR extracts 141 records (test agent) and 53 clean records (main-agent tuning), all with real colour names (BEIGE, BLUISH GREY, ROMANTIC PINK, MISTY GREY, GOTHIC GREY, VELVET, RICH LIGHT GREY GRANITE, LAKE BLUE, …). Confirms the parser is fully generic — no PDF-specific hardcoding.
+- ✅ **Testing** — new `tests/test_studio_sprint87.py` (15 tests) + `test_studio_pipeline.py` + `test_studio_bulk_edit.py` = **36/36 tests pass** (3 skipped due to already-consumed drafts on advance_multiswatch.pdf). Frontend Playwright verified via testing_agent iteration 14 (100%).
+
+**MaterialMatch v1.0 → PRODUCT FREEZE.** No further feature work.
+
 ### P1
 - Multi-page report layout improvements (page breaks at sections)
 - Project rename/delete from dashboard
