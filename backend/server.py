@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import secrets
+import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional, Annotated
@@ -1348,7 +1349,10 @@ def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 40,
     allow = set(allowed_categories) if allowed_categories is not None else None
     if allow is not None and not allow:
         return []
-    for item in SEEDED_CATALOGUE:
+    # Studio (uploaded PDF) records are searched first — they represent
+    # user-owned real catalogue data and take priority over the seeded fallback.
+    all_items = list(_STUDIO_INDEXED_RECORDS) + list(SEEDED_CATALOGUE)
+    for item in all_items:
         if allow is not None and item.get("category") not in allow:
             continue
         s = _score_catalogue_item(row, item, weights=weights)
@@ -1376,7 +1380,7 @@ def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 40,
             "color_name": item.get("color_name"),
             "color_hex": item.get("color_hex"),
             "texture": item.get("texture"),
-            "source": "MaterialMatch Library",
+            "source": item.get("source") or "MaterialMatch Library",
             "match_percent": s["overall"],
             "similarity": {
                 "visual": s["visual"],
@@ -1491,6 +1495,42 @@ def _enrich_rows_with_catalogue(rows: list, top_k: int = 8) -> None:
             row["alternative_systems"] = _alternative_systems_for(row)
         if "match_buckets" not in row:
             row["match_buckets"] = _bucket_matches(row.get("catalogue_matches") or [])
+
+
+# ---------------------------------------------------------------------------
+# Sprint 5 — In-memory index of published Studio records so uploaded catalogue
+# entries become searchable alongside the seeded MaterialMatch Library.
+_STUDIO_INDEXED_RECORDS: list[dict] = []
+
+
+def _studio_record_to_search_item(rec: dict) -> dict:
+    """Normalise a Studio record to the shape `_score_catalogue_item` expects."""
+    return {
+        "id": rec["id"],
+        "brand": rec.get("brand") or "Uploaded catalogue",
+        "catalogue": rec.get("collection") or "Uploaded PDF",
+        "material_name": rec.get("material_name") or "Extracted material",
+        "material_code": rec.get("material_code"),
+        "material_family": rec.get("material_family") or rec.get("category") or "",
+        "category": rec.get("category") or "Laminates",
+        "finish": rec.get("finish") or "",
+        "color_name": rec.get("color_name") or "",
+        "color_hex": rec.get("color_hex") or "#B7ADA0",
+        "texture": rec.get("texture") or "",
+        "page_number": rec.get("page_number"),
+        "keywords": rec.get("keywords", []),
+        "source": "Uploaded PDF",
+    }
+
+
+async def _refresh_studio_index() -> None:
+    global _STUDIO_INDEXED_RECORDS
+    try:
+        docs = await db.ke_records.find({"status": "published"}).to_list(2000)
+        _STUDIO_INDEXED_RECORDS = [_studio_record_to_search_item(d) for d in docs]
+        logger.info("Studio index refreshed: %d records", len(_STUDIO_INDEXED_RECORDS))
+    except Exception:
+        logger.exception("studio index refresh failed")
 
 
 # ---------------------------------------------------------------------------
@@ -3639,6 +3679,10 @@ async def startup_event():
         await _seed_demo_project()
     except Exception:
         logger.exception("Demo project seed failed")
+    try:
+        await _refresh_studio_index()
+    except Exception:
+        logger.exception("Studio index warm-up failed")
 
 
 async def _seed_demo_project() -> None:
@@ -4537,6 +4581,15 @@ async def get_demo_project():
     doc = await db.projects.find_one({"is_demo": True, "demo_slug": "materialmatch-demo-warm-living"})
     if not doc:
         raise HTTPException(status_code=404, detail="Demo project not seeded")
+    # Sprint 5 — re-enrich rows on every read so newly-published Studio
+    # records show up as searchable matches without requiring a re-seed.
+    rows = (doc.get("mock_analysis") or {}).get("rows") or []
+    for r in rows:
+        for k in ("catalogue_matches", "match_buckets", "brain",
+                  "searched_categories", "searched_libraries", "excluded_libraries"):
+            r.pop(k, None)
+    if rows:
+        _enrich_rows_with_catalogue(rows)
     return _sanitize_demo_project(doc)
 
 
@@ -4831,6 +4884,245 @@ async def library_my(user: dict = Depends(get_current_user)):
     return {"items": items, "reuse_status": "coming_soon"}
 
 
+# ============================================================================
+# Sprint 5 — MaterialMatch Studio (PDF ingestion pipeline)
+# ============================================================================
+#
+# Pipeline:  Upload PDF → AI Processing → Extract Records (draft)
+#            → Review Queue → Approve → Publish → live in Knowledge Engine.
+#
+# Collections (Mongo):
+#   ke_uploads  { id, filename, uploaded_by, status, page_count,
+#                 records_extracted, created_at }
+#   ke_records  { id, upload_id, brand, collection, material_name,
+#                 material_code, category, material_family, finish, color_name,
+#                 color_hex, texture, pattern, application, page_number,
+#                 page_preview_b64, status: draft|published|rejected,
+#                 keywords, created_at, published_at }
+# ============================================================================
+
+
+class StudioApprovePayload(BaseModel):
+    record_ids: list[str] = Field(default_factory=list)
+
+
+def _swatch_from_page(page) -> tuple[str, str | None]:
+    """Return (dominant_hex, thumbnail_b64) for a PyMuPDF page. Cheap avg colour."""
+    try:
+        pix = page.get_pixmap(matrix=fitz.Matrix(0.5, 0.5))
+        # Sample every 32nd pixel to keep it fast.
+        samples = pix.samples
+        n = pix.n  # channels
+        step = max(1, len(samples) // (n * 800))
+        r_sum = g_sum = b_sum = c = 0
+        for i in range(0, len(samples) - n, n * step):
+            r_sum += samples[i]
+            g_sum += samples[i + 1]
+            b_sum += samples[i + 2]
+            c += 1
+        if c == 0:
+            return "#B7ADA0", None
+        r, g, b = r_sum // c, g_sum // c, b_sum // c
+        hexc = f"#{r:02X}{g:02X}{b:02X}"
+        thumb = base64.b64encode(pix.tobytes("jpeg")).decode()
+        return hexc, thumb
+    except Exception:
+        return "#B7ADA0", None
+
+
+def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> list[dict]:
+    """Parse PDF via PyMuPDF and heuristically extract per-page material records.
+
+    Approach: for each page, take the first heading-like line as the material
+    name, extract a code-like token (e.g. `GV-8734`, `8834`, `M-1054`), and
+    sample the page's dominant colour for a swatch preview. Live AI upgrade
+    can replace this later — the record shape is already the same."""
+    import re
+    records: list[dict] = []
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception as e:
+        logger.exception("PDF open failed")
+        raise HTTPException(status_code=400, detail=f"Could not parse PDF: {e}")
+    code_re = re.compile(r"\b([A-Z]{1,4}[-]?\d{2,5}(?:[-]?[A-Z0-9]{1,3})?)\b")
+    for pi, page in enumerate(pdf, start=1):
+        text = page.get_text("text") or ""
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        if not lines:
+            continue
+        # Heuristics: first meaningful line = material name; scan for code + brand hints.
+        material_name = next((ln for ln in lines if 3 < len(ln) < 80), lines[0])[:120]
+        code_match = code_re.search(text)
+        material_code = code_match.group(1) if code_match else None
+        # Guess brand from filename or first line if it matches a seeded brand.
+        brand_hint = None
+        text_l = text.lower()
+        for cat_items in CATEGORY_SETS.values():
+            for it in cat_items:
+                if it["brand"].lower() in text_l:
+                    brand_hint = it["brand"]
+                    break
+            if brand_hint:
+                break
+        # Guess category from keywords.
+        cat_guess = "Laminates"
+        if any(k in text_l for k in ("paint", "emulsion", "shade")):
+            cat_guess = "Paints"
+        elif any(k in text_l for k in ("veneer",)):
+            cat_guess = "Veneers"
+        elif any(k in text_l for k in ("marble", "quartz", "granite")):
+            cat_guess = "Stone"
+        elif any(k in text_l for k in ("tile", "porcelain", "vitrified")):
+            cat_guess = "Tiles"
+        elif any(k in text_l for k in ("linen", "boucle", "cotton", "fabric", "sateen")):
+            cat_guess = "Fabric"
+        elif any(k in text_l for k in ("pendant", "sconce", "lamp")):
+            cat_guess = "Lighting"
+        color_hex, thumb_b64 = _swatch_from_page(page)
+        rec_id = str(uuid.uuid4())
+        records.append({
+            "id": rec_id,
+            "upload_id": upload_id,
+            "brand": brand_hint,
+            "collection": None,
+            "material_name": material_name,
+            "material_code": material_code,
+            "category": cat_guess,
+            "material_family": cat_guess.rstrip("s") if cat_guess in {"Paints", "Laminates", "Veneers", "Tiles"} else cat_guess,
+            "finish": None,
+            "color_name": None,
+            "color_hex": color_hex,
+            "texture": None,
+            "pattern": None,
+            "application": None,
+            "page_number": pi,
+            "page_preview_b64": thumb_b64,
+            "status": "draft",
+            "keywords": [w.lower() for w in re.findall(r"[a-zA-Z]{4,}", material_name)][:8],
+            "created_at": now,
+            "published_at": None,
+        })
+    pdf.close()
+    return records
+
+
+@api_router.post("/admin/studio/upload")
+async def studio_upload(
+    file: UploadFile = File(...),
+    user: dict = Depends(require_admin),
+):
+    """MaterialMatch Studio — upload a supplier PDF, extract per-page records
+    into `draft` state. Records only become searchable after admin approval."""
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted")
+    data = await file.read()
+    if len(data) > 40 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="PDF too large (max 40 MB)")
+    upload_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    upload_doc = {
+        "id": upload_id,
+        "filename": file.filename,
+        "uploaded_by": user.get("id"),
+        "status": "processing",
+        "page_count": 0,
+        "records_extracted": 0,
+        "created_at": now,
+    }
+    await db.ke_uploads.insert_one(upload_doc)
+    try:
+        records = _extract_records_from_pdf(data, upload_id)
+        if records:
+            await db.ke_records.insert_many(records)
+        upload_doc["page_count"] = len(records)
+        upload_doc["records_extracted"] = len(records)
+        upload_doc["status"] = "review"
+        await db.ke_uploads.update_one({"id": upload_id},
+                                        {"$set": {"status": "review",
+                                                  "page_count": len(records),
+                                                  "records_extracted": len(records)}})
+    except HTTPException:
+        await db.ke_uploads.update_one({"id": upload_id}, {"$set": {"status": "failed"}})
+        raise
+    except Exception as e:
+        logger.exception("studio ingest failed")
+        await db.ke_uploads.update_one({"id": upload_id}, {"$set": {"status": "failed"}})
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"upload_id": upload_id, **{k: upload_doc[k] for k in ("filename", "status", "records_extracted", "page_count")}}
+
+
+def _clean_upload(u: dict) -> dict:
+    return {k: v for k, v in u.items() if k != "_id"}
+
+
+def _clean_record(r: dict) -> dict:
+    return {k: v for k, v in r.items() if k != "_id"}
+
+
+@api_router.get("/admin/studio/uploads")
+async def studio_list_uploads(user: dict = Depends(require_admin)):
+    docs = await db.ke_uploads.find().sort("created_at", -1).to_list(200)
+    return {"uploads": [_clean_upload(d) for d in docs]}
+
+
+@api_router.get("/admin/studio/uploads/{upload_id}/records")
+async def studio_upload_records(upload_id: str, user: dict = Depends(require_admin)):
+    docs = await db.ke_records.find({"upload_id": upload_id}).sort("page_number", 1).to_list(500)
+    return {"upload_id": upload_id, "records": [_clean_record(d) for d in docs]}
+
+
+@api_router.post("/admin/studio/records/approve")
+async def studio_approve(payload: StudioApprovePayload, user: dict = Depends(require_admin)):
+    if not payload.record_ids:
+        raise HTTPException(status_code=400, detail="record_ids required")
+    now = datetime.now(timezone.utc).isoformat()
+    result = await db.ke_records.update_many(
+        {"id": {"$in": payload.record_ids}, "status": {"$ne": "published"}},
+        {"$set": {"status": "published", "published_at": now}},
+    )
+    await _refresh_studio_index()
+    return {"approved": result.modified_count}
+
+
+@api_router.post("/admin/studio/records/reject")
+async def studio_reject(payload: StudioApprovePayload, user: dict = Depends(require_admin)):
+    if not payload.record_ids:
+        raise HTTPException(status_code=400, detail="record_ids required")
+    result = await db.ke_records.update_many(
+        {"id": {"$in": payload.record_ids}},
+        {"$set": {"status": "rejected"}},
+    )
+    return {"rejected": result.modified_count}
+
+
+@api_router.post("/admin/studio/uploads/{upload_id}/publish")
+async def studio_publish_all(upload_id: str, user: dict = Depends(require_admin)):
+    """Convenience: approve every remaining draft record from this upload."""
+    now = datetime.now(timezone.utc).isoformat()
+    result = await db.ke_records.update_many(
+        {"upload_id": upload_id, "status": "draft"},
+        {"$set": {"status": "published", "published_at": now}},
+    )
+    await db.ke_uploads.update_one({"id": upload_id}, {"$set": {"status": "published"}})
+    await _refresh_studio_index()
+    return {"approved": result.modified_count, "upload_id": upload_id}
+
+
+@api_router.get("/admin/studio/library")
+async def studio_published_library(
+    user: dict = Depends(require_admin),
+    category: str | None = None,
+    limit: int = 200,
+):
+    q = {"status": "published"}
+    if category:
+        q["category"] = category
+    docs = await db.ke_records.find(q).sort("published_at", -1).to_list(min(500, limit))
+    return {"records": [_clean_record(d) for d in docs], "total": len(docs)}
+
+
 app.include_router(api_router)
+
 # (CORS middleware was registered earlier — before any routes — so OPTIONS
 # preflights are answered without hitting a handler.)
