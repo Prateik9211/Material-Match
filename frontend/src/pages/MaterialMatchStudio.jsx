@@ -389,8 +389,14 @@ function ReviewTab({ uploads, selectedUploadId, setSelectedUploadId, onDelete })
       return s;
     });
   };
-  const selectAllDraft = () => {
-    setSelected(new Set(records.filter((r) => r.status === "draft").map((r) => r.id)));
+  const selectableRecords = records.filter((r) => r.status !== "rejected");
+  const allSelected = selectableRecords.length > 0 && selectableRecords.every((r) => selected.has(r.id));
+  const toggleSelectAll = () => {
+    if (allSelected) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(selectableRecords.map((r) => r.id)));
+    }
   };
 
   const runAction = async (kind) => {
@@ -472,12 +478,30 @@ function ReviewTab({ uploads, selectedUploadId, setSelectedUploadId, onDelete })
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={selectAllDraft}
-                disabled={draftCount === 0}
+                onClick={toggleSelectAll}
+                disabled={selectableRecords.length === 0}
                 className="text-xs px-3 py-1.5 rounded-full border border-stone-border-soft bg-white hover:border-charcoal/40 disabled:opacity-40"
-                data-testid="studio-review-select-all-draft"
+                data-testid="studio-review-select-all"
               >
-                Select all draft
+                {allSelected ? "Deselect all" : "Select all"}
+              </button>
+              <button
+                type="button"
+                onClick={() => recordAction("delete", Array.from(selected), `Delete ${selected.size} record(s)? This cannot be undone.`)}
+                disabled={selected.size === 0 || acting}
+                className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-rose-200 text-rose-700 bg-white hover:bg-rose-50 disabled:opacity-40"
+                data-testid="studio-review-delete-selected"
+              >
+                <Trash2 className="w-3.5 h-3.5" /> Delete ({selected.size})
+              </button>
+              <button
+                type="button"
+                onClick={() => recordAction("archive", Array.from(selected), `Archive ${selected.size} record(s)? They will stop appearing in matches.`)}
+                disabled={selected.size === 0 || acting}
+                className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-stone-border-soft text-charcoal bg-white hover:bg-stone-panel/40 disabled:opacity-40"
+                data-testid="studio-review-archive-selected"
+              >
+                <Archive className="w-3.5 h-3.5" /> Archive ({selected.size})
               </button>
               <button
                 type="button"
@@ -495,7 +519,7 @@ function ReviewTab({ uploads, selectedUploadId, setSelectedUploadId, onDelete })
                 className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full bg-charcoal text-white hover:bg-charcoal/90 disabled:opacity-40"
                 data-testid="studio-review-approve"
               >
-                <Check className="w-3.5 h-3.5" /> Approve ({selected.size})
+                <Check className="w-3.5 h-3.5" /> Publish selected ({selected.size})
               </button>
               <button
                 type="button"
@@ -660,6 +684,7 @@ function EditRecordModal({ record, onClose, onSaved }) {
     category: record.category || "",
     material_family: record.material_family || "",
     finish: record.finish || "",
+    region: record.region || "",
     notes: record.notes || "",
   });
   const [saving, setSaving] = useState(false);
@@ -690,7 +715,7 @@ function EditRecordModal({ record, onClose, onSaved }) {
           {record.material_name}
         </h3>
         <div className="grid grid-cols-2 gap-3">
-          {["brand", "material_name", "material_code", "category", "material_family", "finish"].map((k) => (
+          {["brand", "material_name", "material_code", "category", "material_family", "finish", "region"].map((k) => (
             <label key={k} className="text-xs text-warm-grey">
               <div className="mb-1 capitalize">{k.replace("_", " ")}</div>
               <input

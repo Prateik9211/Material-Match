@@ -5816,6 +5816,7 @@ class StudioRecordEditPayload(BaseModel):
     material_family: str | None = None
     finish: str | None = None
     color_name: str | None = None
+    region: str | None = None
     notes: str | None = None
     keywords: list[str] | None = None
 

@@ -1,0 +1,36 @@
+{
+  "summary": "MaterialMatch Studio smart-catalogue Review Queue verified end-to-end. Backend (11/11 pytest in /app/backend/tests/test_studio_bulk_edit.py): admin login, uploads list contains advance_multiswatch.pdf (10 records), records endpoint returns card fields (brand/material_name/category/color_hex/page_number/status), PATCH /api/admin/studio/records/{id} persists region+brand (verified by reload), POST /api/admin/studio/records/approve publishes selected drafts, POST /api/admin/studio/records/bulk supports action=archive (record disappears from /api/admin/studio/library) + action=delete (record 404 after) + action=publish restore, action=reject still works, invalid action returns 400, empty ids returns 400, unknown record 404 on PATCH, DELETE /api/admin/studio/records/{id} works + second call 404. Frontend Playwright: admin login → /admin/studio → Review tab → selected advance_multiswatch.pdf → 6 review cards rendered (multi-swatch with brand/page/swatch-index/category/code/hex/confidence all shown). Select all toggles to 'Deselect all' and checks all 6 checkboxes; deselect returns to 0. All 5 bulk-action buttons present (studio-review-delete-selected, studio-review-archive-selected, studio-review-reject, studio-review-approve 'Publish selected', studio-review-publish-all). Edit modal opens with all 8 fields (brand, material_name, material_code, category, material_family, finish, region, notes); changing Region to 'UI-Test-Region', saving via PATCH, then reopening confirms region persisted. Per-card Edit/Delete/Archive buttons rendered on all published rows (6 archive buttons on 6 published cards). No red console errors during the flow (one minor React hydration warning noted below).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Review Queue upload <select>", "issues": ["React hydration warning: '<span> cannot be a child of <option>'. The upload option label appears to contain a nested span (likely from an emoji/icon wrapper). Not user-visible, but generates a console warning on every Studio page load. Consider inlining plain text in <option>."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_studio_bulk_edit.py",
+    "/app/test_reports/pytest/studio_bulk_edit.xml"
+  ],
+  "action_items": [
+    "Optional: clean up nested <span> inside <option> in studio-review-upload-select to silence React hydration warning.",
+    "Optional: the multi-swatch upload originally had 10 records; the review list now shows 6 (4 previously archived/deleted during prior test iterations). If the demo requires exactly 10, re-run studio ingestion for advance_multiswatch.pdf before submission."
+  ],
+  "critical_code_review_comments": [
+    "MaterialMatchStudio.jsx is now 1132 lines and holds Upload, Processing, Review, EditModal, Library tabs in one file. Extract EditRecordModal + ReviewTab into separate files (src/pages/studio/*.jsx) for maintainability. Not blocking.",
+    "server.py at 6021 lines still not split; Studio routes (upload/list/approve/reject/publish/bulk/edit/delete) form a natural module — recommend backend/routes/studio.py. Not blocking.",
+    "StudioBulkPayload allows action='reject' but there is also a separate /records/reject endpoint doing the same thing via update_many. Duplicated logic; consolidate to bulk endpoint and deprecate /reject or route it internally.",
+    "Studio bulk 'archive' action correctly refreshes index and excludes archived records from /admin/studio/library (verified). Good.",
+    "Edit modal region field is text-free; consider a Select constrained to India/Global (or the app's known region set) to prevent free-text drift like 'UI-Test-Region' / 'TestRegion-Delhi' leaking into production data."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_studio_bulk_edit.py (new — 11 tests)"
+  ],
+  "success_rate": {"backend": "100% (11/11)", "frontend": "100% for Review Queue checklist"},
+  "test_credentials": "admin@materialmatch.ai / MaterialAdmin2026! (per /app/memory/test_credentials.md).",
+  "seed_data_creation": "During tests a record on advance_multiswatch.pdf was edited (region='UI-Test-Region', region='TestRegion-Delhi' on another record). Brand modifications were restored. Region values remain — cosmetic only.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Regression: cd /app/backend && PYTHONPATH=/app/backend pytest tests/test_studio_bulk_edit.py tests/test_studio_pipeline.py tests/test_rc1_demo_trust.py tests/test_sprint4_demo.py -v (41 tests total, ~5s). All Review Queue data-testids listed in review_request are wired and functional. advance_multiswatch.pdf currently has 6 records visible (4 removed by iterative testing) — re-ingest before final submission demo if 10 required.",
+  "rca of the issue": "N/A — feature works end-to-end."
+}
