@@ -1554,6 +1554,62 @@ async def _refresh_studio_index() -> None:
         logger.exception("studio index refresh failed")
 
 
+async def _recompute_upload_status(upload_id: str) -> str | None:
+    """Recompute the parent catalogue status from its child records.
+    Called after every record status change so the Processing Queue
+    always reflects the true state of the catalogue.
+
+    Lifecycle:
+      processing → review → (review_remaining | published | archived
+                             | rejected | failed)
+
+    Never overrides a catalogue that is still `processing` or `failed` at
+    ingestion time — those are set by the extractor itself.
+    """
+    upload = await db.ke_uploads.find_one({"id": upload_id})
+    if not upload:
+        return None
+    current = upload.get("status")
+    # Ingestion-owned states stay untouched.
+    if current in ("processing", "failed"):
+        return current
+    cursor = db.ke_records.find(
+        {"upload_id": upload_id},
+        {"status": 1},
+    )
+    counts = {"draft": 0, "published": 0, "archived": 0, "rejected": 0}
+    total = 0
+    async for d in cursor:
+        s = d.get("status", "draft")
+        counts[s] = counts.get(s, 0) + 1
+        total += 1
+    if total == 0:
+        new_status = "failed"
+    elif counts["published"] and counts["draft"] == 0 and counts["archived"] == 0:
+        new_status = "published"
+    elif counts["archived"] and counts["archived"] == total:
+        new_status = "archived"
+    elif counts["rejected"] and counts["rejected"] == total:
+        new_status = "rejected"
+    elif counts["published"] and counts["draft"] > 0:
+        new_status = "review_remaining"
+    elif counts["draft"] > 0:
+        new_status = "review"
+    else:
+        # Mixed published + archived (no drafts): treat as published so
+        # the library still lists the active records.
+        new_status = "published" if counts["published"] else "archived"
+    if new_status != current:
+        await db.ke_uploads.update_one(
+            {"id": upload_id},
+            {"$set": {"status": new_status,
+                       "status_updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+    return new_status
+
+
+
+
 async def _recover_stuck_studio_uploads() -> None:
     """Any upload still in `processing` state on startup is stuck from a
     previous OCR / ingress timeout — mark it as `failed` with a diagnostic so
@@ -5421,13 +5477,17 @@ def _tesseract_available() -> bool:
 def _detect_swatches_on_page(page) -> list:
     """Find candidate material-swatch bounding boxes on a page. Returns a
     list of `fitz.Rect` in page coordinates. Filters out decorative graphics,
-    QR codes, huge hero images and page-fill banners.
+    QR codes, logos, huge hero images, lifestyle photos and page-fill banners.
 
-    Heuristic:
-      - Use `page.get_image_rects(xref)` for every embedded image.
-      - Reject rects < 0.5% or > 55% of the page area.
-      - Reject extreme aspect ratios (banner / thin strip / QR strip).
-      - Dedup near-identical rects."""
+    Heuristic (generic — works across manufacturer catalogues):
+      - Uses `page.get_image_rects(xref)` for every embedded image.
+      - Rejects rects < 1.2% or > 30% of the page area (icons, QR, hero shots).
+      - Rejects extreme aspect ratios (banners, thin strips).
+      - Rejects tiny near-square rects < ~50pt on the shorter side (QR / icon).
+      - Rejects images whose pixel colour distribution is either
+        photograph-like (very high stddev in all 3 channels — lifestyle
+        renders) or QR-like (near-black+near-white binary distribution).
+      - Dedups near-identical rects."""
     try:
         images = page.get_images(full=True)
     except Exception:
@@ -5439,12 +5499,20 @@ def _detect_swatches_on_page(page) -> list:
         try:
             for r in page.get_image_rects(xref):
                 area = r.width * r.height
-                if area < page_area * 0.005:
+                pct = area / page_area
+                # Size filter — reject icons / QRs (too small) and hero /
+                # lifestyle images (too large). 1.2%..30% is the sweet spot
+                # for real material swatches across supplier catalogues.
+                if pct < 0.012 or pct > 0.30:
                     continue
-                if area > page_area * 0.55:
-                    continue
+                # Aspect-ratio filter — reject banners / thin strips.
                 ar = r.width / max(1.0, r.height)
-                if ar > 4.5 or ar < 0.22:
+                if ar > 3.5 or ar < 0.30:
+                    continue
+                # Minimum shorter-side pixels: a real swatch is usually
+                # >= 55 pt on the short edge. Anything smaller is either
+                # a UI icon, a code stamp or a QR.
+                if min(r.width, r.height) < 55:
                     continue
                 rects.append(r)
         except Exception:
@@ -5455,7 +5523,72 @@ def _detect_swatches_on_page(page) -> list:
         if not any(abs(r.x0 - u.x0) < 4 and abs(r.y0 - u.y0) < 4
                    and abs(r.x1 - u.x1) < 4 and abs(r.y1 - u.y1) < 4 for u in unique):
             unique.append(r)
-    return unique
+    # Content filter — reject photographic / QR-code content by sampling
+    # the pixel distribution of each candidate swatch.
+    filtered: list = []
+    for r in unique:
+        if _looks_like_material_swatch(page, r):
+            filtered.append(r)
+    return filtered
+
+
+def _looks_like_material_swatch(page, rect) -> bool:
+    """Return True if the clipped region looks like a material swatch
+    (finish sample, colour chip, veneer/laminate face) rather than a
+    photograph, QR code, logo or decorative graphic. Uses only pixel
+    statistics so it works for any supplier catalogue."""
+    try:
+        pix = page.get_pixmap(clip=rect, matrix=fitz.Matrix(0.35, 0.35), alpha=False)
+        w, h, n = pix.width, pix.height, pix.n
+        if n < 3 or w * h < 25:
+            return False
+        samples = pix.samples
+        # Reservoir stats: mean + variance per channel + fraction of
+        # near-black and near-white pixels.
+        total = w * h
+        sum_r = sum_g = sum_b = 0
+        sq_r = sq_g = sq_b = 0
+        black = white = 0
+        for i in range(0, len(samples), n):
+            r = samples[i]
+            g = samples[i + 1]
+            b = samples[i + 2]
+            sum_r += r
+            sum_g += g
+            sum_b += b
+            sq_r += r * r
+            sq_g += g * g
+            sq_b += b * b
+            mx = max(r, g, b)
+            mn = min(r, g, b)
+            if mx < 40:
+                black += 1
+            elif mn > 220:
+                white += 1
+        mean_r = sum_r / total
+        mean_g = sum_g / total
+        mean_b = sum_b / total
+        var_r = max(0.0, sq_r / total - mean_r * mean_r)
+        var_g = max(0.0, sq_g / total - mean_g * mean_g)
+        var_b = max(0.0, sq_b / total - mean_b * mean_b)
+        std_all = (var_r + var_g + var_b) ** 0.5
+        black_pct = black / total
+        white_pct = white / total
+        # QR / logo pattern: heavy black+white polarisation, low mid-tones.
+        if (black_pct + white_pct) > 0.55 and std_all > 55:
+            return False
+        # Fully-photographic content (very high colour variance across all
+        # 3 channels) → lifestyle render or product photo, not a swatch.
+        if var_r > 4200 and var_g > 4200 and var_b > 4200 and std_all > 130:
+            return False
+        # Nearly-empty white cards / faint icons — not a real swatch.
+        if white_pct > 0.85:
+            return False
+        return True
+    except Exception:
+        # If we can't sample it, be conservative and keep the rect —
+        # downstream text-association filter will still drop noise.
+        return True
 
 
 def _swatch_dominant_hex_and_thumb(page, rect) -> tuple[str, str | None]:
@@ -5603,25 +5736,73 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
             haystack_l = haystack.lower()
 
             # C. Material name = first strong line from local text; fall
-            # back to the first meaningful whole-page line.
+            # back to the first meaningful whole-page line. Only accepts
+            # lines that look like real product names (mostly alphabetic
+            # tokens, no obvious OCR gibberish).
+            def _looks_like_name(s: str) -> bool:
+                if not s or len(s) < 4 or len(s) > 80:
+                    return False
+                if s.isnumeric():
+                    return False
+                # First non-space character must be a letter — OCR
+                # noise like "@] ADVANCE" or "| B48" fails here.
+                first = next((c for c in s if not c.isspace()), "")
+                if not first.isalpha():
+                    return False
+                letters = sum(1 for c in s if c.isalpha())
+                if letters < 4:
+                    return False
+                if letters / max(1, len(s)) < 0.55:
+                    return False
+                low = s.lower()
+                if any(bad in low for bad in ("qr code", "www.", "http", "copyright", "index", "warranty")):
+                    return False
+                return True
+
+            # Code (SKU-like token) — searched in local text first (a code
+            # near the swatch is stronger evidence than a code anywhere on
+            # the page).
+            local_l = local.lower()
+            local_code_match = code_re.search(local)
+            code_match = local_code_match or code_re.search(page_text)
+            material_code = code_match.group(1) if code_match else None
+
+            # D. Product-context filter — a genuine material swatch is
+            # almost always paired with a nearby product name / code /
+            # keyword. We require at least one of:
+            #   (a) A material-family keyword in the LOCAL text, or
+            #   (b) A code-like token in the LOCAL text.
+            # This drops QR codes, logos, decorative circles and banners
+            # that happen to sit on the same page as real swatches.
+            has_local_code = local_code_match is not None
+            local_has_material_kw = any(k in local_l for k in (
+                "laminate", "veneer", "wood", "oak", "walnut", "teak",
+                "marble", "stone", "matte", "matt", "gloss", "finish",
+                "colour", "color", "tile", "porcelain", "ceramic", "linen",
+                "fabric", "leather", "paint", "shade", "texture", "grain",
+                "polish", "rustic", "brushed", "suede", "silk", "satin",
+                "mica", "sunmica", "acrylic", "hpl", "mdf", "ply",
+                "beige", "grey", "gray", "brown", "cream", "ivory",
+                "black", "white", "red", "blue", "green", "gold",
+            ))
+            if not (has_local_code or local_has_material_kw):
+                continue
+
+            # E. Material name selection.
             local_lines = [ln.strip() for ln in local.splitlines() if ln.strip()]
-            name = None
-            for ln in local_lines:
-                if 3 < len(ln) < 80 and not ln.isnumeric():
-                    name = ln
-                    break
+            name = next((ln for ln in local_lines if _looks_like_name(ln)), None)
             if not name:
                 page_lines = [ln.strip() for ln in page_text.splitlines() if ln.strip()]
-                name = next((ln for ln in page_lines if 3 < len(ln) < 80), None)
+                name = next((ln for ln in page_lines if _looks_like_name(ln)), None)
+            # If we ended up with neither a real name nor a local code,
+            # this is almost certainly a decorative element — skip it.
+            if not name and not local_code_match:
+                continue
             if not name:
                 name = f"Swatch {pi}.{si}"
             name = name[:120]
 
-            # D. Code (SKU-like token) from local first, then page-wide.
-            code_match = code_re.search(local) or code_re.search(page_text)
-            material_code = code_match.group(1) if code_match else None
-
-            # E. Brand hint from any known brand appearing in text.
+            # F. Brand hint from any known brand appearing in text.
             brand_hint = None
             for cat_items in CATEGORY_SETS.values():
                 for it in cat_items:
@@ -5714,6 +5895,7 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
 
 
 STUDIO_MAX_UPLOAD_BYTES = 150 * 1024 * 1024  # 150 MB — supplier catalogues.
+STUDIO_UPLOAD_DIR = os.environ.get("STUDIO_UPLOAD_DIR", "/app/backend/uploads_data")
 
 
 @api_router.post("/admin/studio/upload")
@@ -5734,6 +5916,14 @@ async def studio_upload(
         )
     upload_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
+    # Persist the raw PDF bytes to disk so the Reprocess / Replace flows
+    # can re-run the extractor without asking the admin to re-upload.
+    try:
+        os.makedirs(STUDIO_UPLOAD_DIR, exist_ok=True)
+        with open(os.path.join(STUDIO_UPLOAD_DIR, f"{upload_id}.pdf"), "wb") as fh:
+            fh.write(data)
+    except Exception:
+        logger.exception("failed to persist upload blob")
     upload_doc = {
         "id": upload_id,
         "filename": file.filename,
@@ -5745,6 +5935,7 @@ async def studio_upload(
         "extraction_mode": None,
         "failure_reason": None,
         "created_at": now,
+        "has_blob": True,
     }
     await db.ke_uploads.insert_one(upload_doc)
     try:
@@ -5818,6 +6009,7 @@ class StudioRecordEditPayload(BaseModel):
     color_name: str | None = None
     region: str | None = None
     notes: str | None = None
+    tags: list[str] | None = None
     keywords: list[str] | None = None
 
 
@@ -5841,8 +6033,10 @@ async def studio_edit_record(
     res = await db.ke_records.update_one({"id": record_id}, {"$set": updates})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Record not found")
-    await _refresh_studio_index()
     doc = await db.ke_records.find_one({"id": record_id})
+    if doc and doc.get("upload_id"):
+        await _recompute_upload_status(doc["upload_id"])
+    await _refresh_studio_index()
     return _clean_record(doc)
 
 
@@ -5851,25 +6045,46 @@ async def studio_bulk_records(
     payload: StudioBulkPayload,
     user: dict = Depends(require_admin),
 ):
-    """Bulk publish / archive / reject / delete for a set of records."""
+    """Bulk publish / archive / reject / delete for a set of records.
+    Publish is idempotent — records already `published` are skipped so we
+    never create duplicate publications."""
     if not payload.record_ids:
         raise HTTPException(status_code=400, detail="record_ids is required")
     now = datetime.now(timezone.utc).isoformat()
     q = {"id": {"$in": payload.record_ids}}
+    # Track parent uploads BEFORE the mutation so status recompute still
+    # works even for the delete case.
+    parents = set()
+    async for d in db.ke_records.find(q, {"upload_id": 1}):
+        if d.get("upload_id"):
+            parents.add(d["upload_id"])
     if payload.action == "publish":
-        res = await db.ke_records.update_many(q, {"$set": {"status": "published", "published_at": now}})
+        # Idempotent — skip already-published records to prevent double
+        # publications and stale `published_at` overwrites.
+        res = await db.ke_records.update_many(
+            {**q, "status": {"$ne": "published"}},
+            {"$set": {"status": "published", "published_at": now}},
+        )
         count = res.modified_count
     elif payload.action == "archive":
-        res = await db.ke_records.update_many(q, {"$set": {"status": "archived", "archived_at": now}})
+        res = await db.ke_records.update_many(
+            {**q, "status": {"$ne": "archived"}},
+            {"$set": {"status": "archived", "archived_at": now}},
+        )
         count = res.modified_count
     elif payload.action == "reject":
-        res = await db.ke_records.update_many(q, {"$set": {"status": "rejected"}})
+        res = await db.ke_records.update_many(
+            {**q, "status": {"$ne": "rejected"}},
+            {"$set": {"status": "rejected"}},
+        )
         count = res.modified_count
     elif payload.action == "delete":
         res = await db.ke_records.delete_many(q)
         count = res.deleted_count
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action: {payload.action}")
+    for uid in parents:
+        await _recompute_upload_status(uid)
     await _refresh_studio_index()
     return {"action": payload.action, "affected": count}
 
@@ -5879,7 +6094,10 @@ async def studio_delete_record(record_id: str, user: dict = Depends(require_admi
     doc = await db.ke_records.find_one({"id": record_id})
     if not doc:
         raise HTTPException(status_code=404, detail="Record not found")
+    upload_id = doc.get("upload_id")
     await db.ke_records.delete_one({"id": record_id})
+    if upload_id:
+        await _recompute_upload_status(upload_id)
     await _refresh_studio_index()
     return {"deleted": record_id}
 
@@ -5889,10 +6107,19 @@ async def studio_approve(payload: StudioApprovePayload, user: dict = Depends(req
     if not payload.record_ids:
         raise HTTPException(status_code=400, detail="record_ids required")
     now = datetime.now(timezone.utc).isoformat()
+    # Track parent uploads first so status recompute stays correct.
+    parents = set()
+    async for d in db.ke_records.find({"id": {"$in": payload.record_ids}}, {"upload_id": 1}):
+        if d.get("upload_id"):
+            parents.add(d["upload_id"])
+    # Idempotent: only flip records that are not yet published — this
+    # guarantees a record is never "published twice".
     result = await db.ke_records.update_many(
         {"id": {"$in": payload.record_ids}, "status": {"$ne": "published"}},
         {"$set": {"status": "published", "published_at": now}},
     )
+    for uid in parents:
+        await _recompute_upload_status(uid)
     await _refresh_studio_index()
     return {"approved": result.modified_count}
 
@@ -5901,10 +6128,16 @@ async def studio_approve(payload: StudioApprovePayload, user: dict = Depends(req
 async def studio_reject(payload: StudioApprovePayload, user: dict = Depends(require_admin)):
     if not payload.record_ids:
         raise HTTPException(status_code=400, detail="record_ids required")
+    parents = set()
+    async for d in db.ke_records.find({"id": {"$in": payload.record_ids}}, {"upload_id": 1}):
+        if d.get("upload_id"):
+            parents.add(d["upload_id"])
     result = await db.ke_records.update_many(
         {"id": {"$in": payload.record_ids}},
         {"$set": {"status": "rejected"}},
     )
+    for uid in parents:
+        await _recompute_upload_status(uid)
     return {"rejected": result.modified_count}
 
 
@@ -5912,11 +6145,12 @@ async def studio_reject(payload: StudioApprovePayload, user: dict = Depends(requ
 async def studio_publish_all(upload_id: str, user: dict = Depends(require_admin)):
     """Convenience: approve every remaining draft record from this upload."""
     now = datetime.now(timezone.utc).isoformat()
+    # Only drafts get flipped — never re-touch already-published records.
     result = await db.ke_records.update_many(
         {"upload_id": upload_id, "status": "draft"},
         {"$set": {"status": "published", "published_at": now}},
     )
-    await db.ke_uploads.update_one({"id": upload_id}, {"$set": {"status": "published"}})
+    await _recompute_upload_status(upload_id)
     await _refresh_studio_index()
     return {"approved": result.modified_count, "upload_id": upload_id}
 
@@ -5948,8 +6182,161 @@ async def studio_delete_upload(upload_id: str, user: dict = Depends(require_admi
         )
     rec_res = await db.ke_records.delete_many({"upload_id": upload_id})
     await db.ke_uploads.delete_one({"id": upload_id})
+    # Best-effort: remove the on-disk PDF blob if we persisted it.
+    try:
+        blob = os.path.join(STUDIO_UPLOAD_DIR, f"{upload_id}.pdf")
+        if os.path.exists(blob):
+            os.remove(blob)
+    except Exception:
+        logger.exception("failed to remove upload blob")
     await _refresh_studio_index()
     return {"deleted_upload": upload_id, "deleted_records": rec_res.deleted_count}
+
+
+@api_router.post("/admin/studio/uploads/{upload_id}/reprocess")
+async def studio_reprocess_upload(upload_id: str, user: dict = Depends(require_admin)):
+    """Re-run extraction on the stored PDF blob for this upload.
+    Wipes any existing draft records for the upload and regenerates them
+    with the latest extractor. Records that were already published stay
+    untouched (so a re-process never demotes live catalogue data)."""
+    upload = await db.ke_uploads.find_one({"id": upload_id})
+    if not upload:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    if upload.get("demo_seed"):
+        raise HTTPException(status_code=400, detail="Reference seed catalogues cannot be reprocessed.")
+    blob_path = os.path.join(STUDIO_UPLOAD_DIR, f"{upload_id}.pdf")
+    if not os.path.exists(blob_path):
+        raise HTTPException(
+            status_code=400,
+            detail="Original PDF is no longer stored on this server. Please re-upload the catalogue.",
+        )
+    with open(blob_path, "rb") as fh:
+        data = fh.read()
+    # Wipe draft/rejected/archived records — keep only published ones so
+    # already-live catalogue data remains stable across reprocess.
+    await db.ke_records.delete_many({
+        "upload_id": upload_id,
+        "status": {"$in": ["draft", "rejected", "archived"]},
+    })
+    await db.ke_uploads.update_one({"id": upload_id}, {"$set": {"status": "processing"}})
+    try:
+        records, meta = _extract_records_from_pdf(data, upload_id)
+        if records:
+            await db.ke_records.insert_many(records)
+        update_fields = {
+            "page_count": meta["total_pages"],
+            "records_extracted": len(records),
+            "extraction_mode": meta["extraction_mode"],
+            "failure_reason": meta["failure_reason"],
+            "pages_ocrd": meta.get("pages_ocrd", 0),
+            "pages_with_text": meta.get("pages_with_text", 0),
+            "reprocessed_at": datetime.now(timezone.utc).isoformat(),
+            # Reset from "processing" so _recompute_upload_status can act.
+            "status": "review" if records else "failed",
+        }
+        await db.ke_uploads.update_one({"id": upload_id}, {"$set": update_fields})
+    except Exception as e:
+        logger.exception("studio reprocess failed")
+        await db.ke_uploads.update_one(
+            {"id": upload_id},
+            {"$set": {"status": "failed", "failure_reason": f"Reprocess failed: {e}"}},
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+    await _recompute_upload_status(upload_id)
+    await _refresh_studio_index()
+    return {"upload_id": upload_id, "records_extracted": len(records)}
+
+
+@api_router.post("/admin/studio/uploads/{upload_id}/replace")
+async def studio_replace_upload(
+    upload_id: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(require_admin),
+):
+    """Replace a catalogue's PDF with a new file, wipe all existing
+    records for it, and re-run extraction. Used when a supplier ships a
+    corrected edition of the same catalogue."""
+    upload = await db.ke_uploads.find_one({"id": upload_id})
+    if not upload:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    if upload.get("demo_seed"):
+        raise HTTPException(status_code=400, detail="Reference seed catalogues cannot be replaced.")
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted")
+    data = await file.read()
+    if len(data) > STUDIO_MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"PDF too large (max {STUDIO_MAX_UPLOAD_BYTES // (1024 * 1024)} MB)",
+        )
+    try:
+        os.makedirs(STUDIO_UPLOAD_DIR, exist_ok=True)
+        with open(os.path.join(STUDIO_UPLOAD_DIR, f"{upload_id}.pdf"), "wb") as fh:
+            fh.write(data)
+    except Exception:
+        logger.exception("failed to persist replacement blob")
+    await db.ke_records.delete_many({"upload_id": upload_id})
+    await db.ke_uploads.update_one({"id": upload_id}, {"$set": {
+        "filename": file.filename,
+        "size_bytes": len(data),
+        "status": "processing",
+        "failure_reason": None,
+        "replaced_at": datetime.now(timezone.utc).isoformat(),
+        "has_blob": True,
+    }})
+    try:
+        records, meta = _extract_records_from_pdf(data, upload_id)
+        if records:
+            await db.ke_records.insert_many(records)
+        update_fields = {
+            "page_count": meta["total_pages"],
+            "records_extracted": len(records),
+            "extraction_mode": meta["extraction_mode"],
+            "failure_reason": meta["failure_reason"],
+            "pages_ocrd": meta.get("pages_ocrd", 0),
+            "pages_with_text": meta.get("pages_with_text", 0),
+            "status": "review" if records else "failed",
+        }
+        await db.ke_uploads.update_one({"id": upload_id}, {"$set": update_fields})
+    except Exception as e:
+        logger.exception("studio replace failed")
+        await db.ke_uploads.update_one(
+            {"id": upload_id},
+            {"$set": {"status": "failed", "failure_reason": f"Replace failed: {e}"}},
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+    await _recompute_upload_status(upload_id)
+    await _refresh_studio_index()
+    return {"upload_id": upload_id, "records_extracted": len(records), "filename": file.filename}
+
+
+@api_router.get("/admin/studio/uploads/{upload_id}/page/{page_number}")
+async def studio_upload_page_preview(
+    upload_id: str,
+    page_number: int,
+    user: dict = Depends(require_admin),
+):
+    """Return a JPEG thumbnail of a single page from the stored PDF —
+    used by the Review Queue 'Preview page' modal."""
+    upload = await db.ke_uploads.find_one({"id": upload_id})
+    if not upload:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    blob_path = os.path.join(STUDIO_UPLOAD_DIR, f"{upload_id}.pdf")
+    if not os.path.exists(blob_path):
+        raise HTTPException(status_code=404, detail="Original PDF is no longer stored on this server.")
+    try:
+        d = fitz.open(blob_path)
+        if page_number < 1 or page_number > d.page_count:
+            raise HTTPException(status_code=404, detail="Page out of range")
+        p = d[page_number - 1]
+        pix = p.get_pixmap(matrix=fitz.Matrix(1.4, 1.4), alpha=False)
+        b64 = base64.b64encode(pix.tobytes("jpeg")).decode()
+        d.close()
+        return {"upload_id": upload_id, "page_number": page_number, "image_b64": b64}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Preview failed: {e}")
 
 
 @api_router.post("/admin/studio/uploads/{upload_id}/archive")

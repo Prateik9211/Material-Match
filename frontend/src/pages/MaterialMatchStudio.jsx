@@ -32,17 +32,20 @@ function StatusBadge({ status }) {
   const map = {
     processing: "bg-amber-50 text-amber-700 border-amber-200",
     review: "bg-blue-50 text-blue-700 border-blue-200",
+    review_remaining: "bg-blue-50 text-blue-700 border-blue-200",
     published: "bg-emerald-50 text-emerald-700 border-emerald-200",
     failed: "bg-rose-50 text-rose-700 border-rose-200",
     draft: "bg-stone-panel text-warm-grey border-stone-border-soft",
     rejected: "bg-neutral-100 text-neutral-500 border-neutral-200",
+    archived: "bg-neutral-100 text-neutral-600 border-neutral-300",
   };
+  const label = { review_remaining: "review remaining" }[status] || status;
   return (
     <span
       className={`text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full border font-semibold ${map[status] || map.draft}`}
       data-testid={`studio-status-${status}`}
     >
-      {status}
+      {label}
     </span>
   );
 }
@@ -199,7 +202,7 @@ function UploadTab({ onUploaded }) {
 /* ------------------------------------------------------------------ */
 /*                    Tab 2 — Processing Queue (uploads list)         */
 /* ------------------------------------------------------------------ */
-function ProcessingTab({ uploads, loading, onRefresh, onOpenReview, onDelete, onArchive, onCleanup }) {
+function ProcessingTab({ uploads, loading, onRefresh, onOpenReview, onDelete, onArchive, onCleanup, onReprocess, onReplace }) {
   const nonSeedFailed = uploads.filter((u) => !u.demo_seed && u.status === "failed").length;
   return (
     <div className="space-y-4" data-testid="studio-processing-tab">
@@ -290,7 +293,25 @@ function ProcessingTab({ uploads, loading, onRefresh, onOpenReview, onDelete, on
                 <div className="flex flex-col items-end gap-1.5 shrink-0">
                   <StatusBadge status={u.status} />
                   {!isSeed && (
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-1 flex-wrap justify-end">
+                      <button
+                        type="button"
+                        onClick={() => onReprocess(u)}
+                        className="inline-flex items-center gap-1 text-[10px] uppercase tracking-widest text-warm-grey hover:text-charcoal px-2 py-1 rounded-full border border-stone-border-soft bg-white"
+                        data-testid={`studio-upload-reprocess-${i}`}
+                        title="Re-run extraction on the stored PDF"
+                      >
+                        <RefreshCw className="w-3 h-3" strokeWidth={1.75} /> Reprocess
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onReplace(u)}
+                        className="inline-flex items-center gap-1 text-[10px] uppercase tracking-widest text-warm-grey hover:text-charcoal px-2 py-1 rounded-full border border-stone-border-soft bg-white"
+                        data-testid={`studio-upload-replace-${i}`}
+                        title="Replace the PDF with a new edition"
+                      >
+                        <Upload className="w-3 h-3" strokeWidth={1.75} /> Replace
+                      </button>
                       {isPublished ? (
                         <button
                           type="button"
@@ -389,15 +410,18 @@ function ReviewTab({ uploads, selectedUploadId, setSelectedUploadId, onDelete })
       return s;
     });
   };
-  const selectableRecords = records.filter((r) => r.status !== "rejected");
-  const allSelected = selectableRecords.length > 0 && selectableRecords.every((r) => selected.has(r.id));
+  // Select All must only pick DRAFT records per spec — never touches
+  // already-published / archived / rejected rows.
+  const draftRecords = records.filter((r) => r.status === "draft");
+  const allDraftsSelected = draftRecords.length > 0 && draftRecords.every((r) => selected.has(r.id));
   const toggleSelectAll = () => {
-    if (allSelected) {
+    if (allDraftsSelected) {
       setSelected(new Set());
     } else {
-      setSelected(new Set(selectableRecords.map((r) => r.id)));
+      setSelected(new Set(draftRecords.map((r) => r.id)));
     }
   };
+  const [previewingPage, setPreviewingPage] = useState(null);
 
   const runAction = async (kind) => {
     const ids = Array.from(selected);
@@ -479,11 +503,11 @@ function ReviewTab({ uploads, selectedUploadId, setSelectedUploadId, onDelete })
               <button
                 type="button"
                 onClick={toggleSelectAll}
-                disabled={selectableRecords.length === 0}
+                disabled={draftRecords.length === 0}
                 className="text-xs px-3 py-1.5 rounded-full border border-stone-border-soft bg-white hover:border-charcoal/40 disabled:opacity-40"
                 data-testid="studio-review-select-all"
               >
-                {allSelected ? "Deselect all" : "Select all"}
+                {allDraftsSelected ? "Deselect all" : `Select all drafts (${draftRecords.length})`}
               </button>
               <button
                 type="button"
@@ -628,7 +652,7 @@ function ReviewTab({ uploads, selectedUploadId, setSelectedUploadId, onDelete })
                           </span>
                         )}
                       </div>
-                      <div className="mt-2 flex items-center gap-1">
+                      <div className="mt-2 flex items-center gap-1 flex-wrap">
                         <button
                           type="button"
                           onClick={() => setEditing(r)}
@@ -636,6 +660,24 @@ function ReviewTab({ uploads, selectedUploadId, setSelectedUploadId, onDelete })
                           data-testid={`studio-record-edit-${i}`}
                         >
                           Edit
+                        </button>
+                        {r.status === "draft" && (
+                          <button
+                            type="button"
+                            onClick={() => recordAction("publish", [r.id])}
+                            className="text-[10px] uppercase tracking-widest text-white bg-charcoal hover:bg-charcoal/90 px-2 py-0.5 rounded-full border border-charcoal"
+                            data-testid={`studio-record-publish-${i}`}
+                          >
+                            Publish
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setPreviewingPage({ upload_id: r.upload_id, page: r.page_number })}
+                          className="text-[10px] uppercase tracking-widest text-warm-grey hover:text-charcoal px-2 py-0.5 rounded-full border border-stone-border-soft bg-white"
+                          data-testid={`studio-record-preview-${i}`}
+                        >
+                          Preview page
                         </button>
                         <button
                           type="button"
@@ -671,6 +713,64 @@ function ReviewTab({ uploads, selectedUploadId, setSelectedUploadId, onDelete })
           onSaved={async () => { setEditing(null); await load(selectedUploadId); }}
         />
       )}
+      {previewingPage && (
+        <PreviewPageModal
+          uploadId={previewingPage.upload_id}
+          page={previewingPage.page}
+          onClose={() => setPreviewingPage(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+
+function PreviewPageModal({ uploadId, page, onClose }) {
+  const [img, setImg] = useState(null);
+  const [err, setErr] = useState(null);
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const r = await api.get(`/admin/studio/uploads/${uploadId}/page/${page}`);
+        if (active) setImg(r.data.image_b64);
+      } catch (e) {
+        if (active) setErr(formatApiError(e));
+      }
+    })();
+    return () => { active = false; };
+  }, [uploadId, page]);
+  return (
+    <div
+      className="fixed inset-0 bg-charcoal/70 z-50 flex items-center justify-center p-4"
+      onClick={onClose}
+      data-testid="studio-preview-modal"
+    >
+      <div
+        className="bg-white rounded-2xl border border-stone-border-soft p-4 max-w-4xl max-h-[90vh] overflow-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-overline">Source page {page}</div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-xs px-3 py-1 rounded-full border border-stone-border-soft hover:bg-stone-panel/40"
+            data-testid="studio-preview-close"
+          >
+            Close
+          </button>
+        </div>
+        {err && <div className="text-sm text-rose-700 p-4">{err}</div>}
+        {!err && !img && <div className="text-sm text-warm-grey p-4">Loading preview…</div>}
+        {img && (
+          <img
+            src={`data:image/jpeg;base64,${img}`}
+            alt={`Page ${page}`}
+            className="max-w-full h-auto rounded-lg border border-stone-border-soft"
+          />
+        )}
+      </div>
     </div>
   );
 }
@@ -685,13 +785,21 @@ function EditRecordModal({ record, onClose, onSaved }) {
     material_family: record.material_family || "",
     finish: record.finish || "",
     region: record.region || "",
+    tags: (record.tags || []).join(", "),
     notes: record.notes || "",
   });
   const [saving, setSaving] = useState(false);
   const save = async () => {
     setSaving(true);
     try {
-      await api.patch(`/admin/studio/records/${record.id}`, form);
+      const payload = { ...form };
+      // Normalise the comma-separated tags string back into an array
+      // before sending to the backend.
+      payload.tags = String(form.tags || "")
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean);
+      await api.patch(`/admin/studio/records/${record.id}`, payload);
       toast.success("Record updated");
       await onSaved();
     } catch (e) {
@@ -727,6 +835,17 @@ function EditRecordModal({ record, onClose, onSaved }) {
               />
             </label>
           ))}
+          <label className="text-xs text-warm-grey col-span-2">
+            <div className="mb-1">Tags (comma-separated)</div>
+            <input
+              type="text"
+              value={form.tags}
+              onChange={(e) => setForm({ ...form, tags: e.target.value })}
+              placeholder="matte, textured, indoor"
+              className="w-full text-sm px-3 py-2 rounded-lg border border-stone-border-soft bg-white text-charcoal"
+              data-testid="studio-edit-field-tags"
+            />
+          </label>
           <label className="text-xs text-warm-grey col-span-2">
             <div className="mb-1">Notes</div>
             <textarea
@@ -1029,6 +1148,44 @@ export default function MaterialMatchStudio() {
     }
   };
 
+  const reprocessUpload = async (u) => {
+    if (!window.confirm(
+      `Re-run extraction on "${u.filename}"? Existing draft, rejected and archived records will be replaced. Published records stay in place.`
+    )) return;
+    try {
+      toast.info("Reprocessing catalogue — this may take up to 2 minutes for scanned PDFs…");
+      const r = await api.post(`/admin/studio/uploads/${u.id}/reprocess`);
+      toast.success(`Reprocessed ${u.filename} — ${r.data.records_extracted} record(s) extracted`);
+      await loadUploads();
+    } catch (e) {
+      toast.error(formatApiError(e));
+    }
+  };
+
+  const replaceUpload = async (u) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "application/pdf";
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      if (!window.confirm(
+        `Replace "${u.filename}" with "${file.name}"? All existing records for this catalogue will be deleted and extraction will re-run on the new file.`
+      )) return;
+      const form = new FormData();
+      form.append("file", file);
+      try {
+        toast.info("Uploading replacement…");
+        const r = await api.post(`/admin/studio/uploads/${u.id}/replace`, form);
+        toast.success(`Replaced — ${r.data.records_extracted} record(s) extracted`);
+        await loadUploads();
+      } catch (e) {
+        toast.error(formatApiError(e));
+      }
+    };
+    input.click();
+  };
+
   return (
     <div className="min-h-screen bg-paper" data-testid="material-match-studio-page">
       <Header />
@@ -1114,6 +1271,8 @@ export default function MaterialMatchStudio() {
             onDelete={deleteUpload}
             onArchive={archiveUpload}
             onCleanup={runCleanup}
+            onReprocess={reprocessUpload}
+            onReplace={replaceUpload}
           />
         )}
         {tab === "review" && (

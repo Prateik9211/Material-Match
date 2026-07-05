@@ -1,0 +1,35 @@
+{
+  "summary": "Sprint 8.7 pre-submission verification of MaterialMatch Studio: catalogue lifecycle recompute, double-publish guard, Tags field in Edit modal, Preview page modal, per-card Publish/Preview buttons, drafts-only Select All, Reprocess & Replace & Archive endpoints. Backend: 15/15 new tests (tests/test_studio_sprint87.py) + 21/21 regression (test_studio_pipeline.py + test_studio_bulk_edit.py, 3 skipped due to already-consumed drafts on advance_multiswatch.pdf). Frontend Playwright on the live preview URL: admin login → /admin/studio → Review Queue with 1mm-Color-E-Folder catalogue (141 draft records). Verified: 'Select all drafts (141)' label; clicking selects exactly 141 checkboxes and label flips to 'Deselect all'; deselect clears to 0. 141 per-card Publish (studio-record-publish-N) and 141 Preview page (studio-record-preview-N) buttons rendered. Preview page modal (studio-preview-modal) opens with base64 image (data:image/... src), closes cleanly via studio-preview-close. Edit modal Tags field (studio-edit-field-tags) accepts 'uitest-matte, uitest-indoor', PATCH succeeds ('Record updated' toast), reopening reloads the exact string. Processing tab: Reprocess + Replace + Delete/Archive testids present on 8 non-seed uploads (studio-upload-reprocess-{0..7}, studio-upload-replace-{0..7}); 'Reference · protected' label rendered on all 3 seed rows (Asian Paints, Greenlam, Kajaria) — Reprocess/Replace hidden as required.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Review Queue upload <select>", "issues": ["Pre-existing React hydration warning '<span> cannot be a child of <option>' still present (carried over from iteration_13). Non-blocking."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_studio_sprint87.py",
+    "/app/test_reports/pytest/studio_sprint87.xml",
+    "/app/test_reports/pytest/studio_regression.xml"
+  ],
+  "action_items": [
+    "Optional: clean up <span> inside <option> in Review Queue upload selector to silence long-standing hydration warning."
+  ],
+  "critical_code_review_comments": [
+    "server.py now 6408 lines — Studio routes (~500 lines) should be extracted to backend/routes/studio.py after freeze.",
+    "Reprocess vs Replace logic overlap: both wipe records and re-extract; consider factoring the extraction+persist step into a helper to avoid duplicated error handling.",
+    "MaterialMatchStudio.jsx continues to grow with new PreviewPageModal + tag field; split into per-tab files (ReviewTab, ProcessingTab, EditRecordModal, PreviewPageModal) post-freeze.",
+    "Double-publish guard is via `status: {$ne: 'published'}` in update_many — correct and idempotent. Confirmed via test: second approve returns approved:0, published_at unchanged."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_studio_sprint87.py (new — 15 tests)"
+  ],
+  "success_rate": {"backend": "100% (15/15 sprint87 + 21/21 regression)", "frontend": "100% for sprint 8.7 checklist"},
+  "test_credentials": "admin@materialmatch.ai / MaterialAdmin2026! (per /app/memory/test_credentials.md)",
+  "seed_data_creation": "Tests create + delete throwaway 'lifecycle_*.pdf' uploads (cleaned up by TestCleanup). One record on 1mm-Color-E-Folder catalogue has tags=['uitest-matte','uitest-indoor'] (UI test artefact, cosmetic).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Regression: cd /app/backend && REACT_APP_BACKEND_URL=https://design-match-ai.preview.emergentagent.com PYTHONPATH=/app/backend pytest tests/test_studio_sprint87.py tests/test_studio_pipeline.py tests/test_studio_bulk_edit.py -v (36 tests, ~7s). All sprint 8.7 features validated end-to-end. Note: fresh_upload fixture uploads a text-based 2-page PDF via /api/admin/studio/upload — extractor completes in <5s. If the fixture ever yields <2 records, TestCatalogueLifecycle.partial_publish will skip.",
+  "rca of the issue": "N/A — Sprint 8.7 works end-to-end."
+}
