@@ -316,7 +316,7 @@ function MaterialCard({ row, index, onAddToShortlist, shortlisted, onAddCatalogu
   const HIGH_CONF_MIN = 75;
   const hasBest = Array.isArray(buckets.best) && buckets.best.length > 0;
   const strong = (row.catalogue_matches || []).filter((m) => (m.match_percent || 0) >= HIGH_CONF_MIN);
-  const bestMatches = hasBest ? buckets.best : strong.slice(0, 4);
+  const bestMatches = hasBest ? buckets.best.slice(0, 3) : strong.slice(0, 3);
   const recommended = bestMatches[0];
   const alternatives = bestMatches.slice(1, isPaint ? 4 : 4);
   const possible = buckets.possible || [];

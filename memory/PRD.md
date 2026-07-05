@@ -218,6 +218,19 @@ Focus: eliminate weak / misleading matches. No new modules, no refactor.
 - ✅ **Badge language** — Studio "Demo" chip renamed to subtle "Reference" (grey) since the records are real; "Uploaded" chip unchanged.
 - ✅ Regression: all 13 `test_studio_pipeline.py` still pass.
 
+## Sprint 8.3 — Product Freeze / Demo Curation (2026-02-27)
+Focus: v1.0 competition demo. **Architecture is now frozen.**
+- ✅ **Demo image swap** — bedroom Unsplash replaced with a premium warm-modern living room (fluted wood accents, linen sofa, warm oak flooring, arc brass floor lamp, foliage). `/api/demo/reference-image` now auto-detects PNG vs JPEG.
+- ✅ **10 curated zones** — Feature Wall, Sofa Upholstery, Coffee Table, Warm Oak Flooring, Sheer Ivory Linen Curtains, Warm Off-White Paint, Table Lamp, Accent Chair, Brushed-Brass Metal Accents, Indoor Foliage.
+- ✅ **Hand-picked matches** — each zone carries **exactly 3** real records pulled verbatim from `catalogue_seed.py` (78 – 94 %). No fabricated codes / pages / SKUs. Indoor Foliage returns `catalogue_matches=[]` (trust rule → UI shows "No high-confidence catalogue match found.").
+- ✅ **`curated=True` flag** — the demo endpoint no longer re-scores curated rows on every read, so the hand-picked showcase remains stable at 90 %+ average confidence.
+- ✅ **Max 3 recommendations** — backend `_bucket_matches` slices `best[:3]`; frontend `MaterialsFirstSection.bestMatches` slices `.slice(0, 3)`.
+- ✅ **Trust language preserved** — `material_code_display` renders "Code unavailable in current database" when the seed record has no real code; "Reference" badge distinguishes seeded records from user uploads.
+- ✅ **Products refreshed** — 5 curated Indian affiliate products aligned with the living-room reference (brass table lamp, boucle accent chair, walnut coffee table, sheer ivory drape, fiddle leaf fig).
+- ✅ **Sanity**: 13 / 13 backend Studio tests pass. Studio → Upload → Review → Publish → Library workflow unchanged. Knowledge Engine ordering (Uploaded PDF → Reference → Global Library) unchanged.
+
+MaterialMatch v1.0 is FROZEN.
+
 ## Prioritized Backlog
 
 ### P1

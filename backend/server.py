@@ -2184,7 +2184,7 @@ def _bucket_matches(matches: list) -> dict:
         else:
             low.append(m)
     return {
-        "best": best[:4],
+        "best": best[:3],
         "possible": possible,
         "low": low,
         "counts": {"best": len(best), "possible": len(possible), "low": len(low)},
@@ -3885,162 +3885,301 @@ async def _seed_demo_project() -> None:
     surfaces in a real user's dashboard. Uses a fixed slug/id so
     GET /api/demo/project can find it without an id in the URL.
 
-    Sprint 2 Revision — the demo is a premium warm-modern BEDROOM. Every
-    detected material / product / catalogue match corresponds to something
-    that is actually visible in the reference image."""
+    Sprint 8.3 — Product Freeze demo. The demo is a premium warm-modern
+    LIVING ROOM (fluted walnut feature wall, linen sofa, warm oak flooring,
+    sheer linen drapes, brass accents, indoor foliage). Every detected zone,
+    catalogue match and product corresponds to something actually visible in
+    the uploaded reference image. Matches are curated from real seeded
+    catalogues (no fabricated codes) with realistic ≥ 80% scores to showcase
+    the Knowledge Engine at full quality — see `_curate_demo_match` below."""
     marker = {"is_demo": True, "demo_slug": "materialmatch-demo-warm-living"}
     existing = await db.projects.find_one(marker)
     now = datetime.now(timezone.utc).isoformat()
-    # Warm-modern bedroom — bouclé headboard, oak flooring, sheer curtains,
-    # bedside sconce, wool rug, ceramic + brass accents.
-    demo_ref_url = ("https://images.unsplash.com/photo-1595526114035-0d45ed16cfbf"
+    # Premium warm-modern living room reference — vetted for the v1.0 demo.
+    # Wood-forward palette (warm oak floor, wood-framed window, chunky walnut
+    # coffee table, arc brass floor lamp, foliage) matches the curated zone
+    # set below. Unsplash CC0.
+    demo_ref_url = ("https://images.unsplash.com/photo-1618221195710-dd6b41faaea6"
                     "?w=1600&q=80&auto=format&fit=crop")
     demo_ref_b64 = ""
     try:
         import urllib.request
         req = urllib.request.Request(demo_ref_url, headers={"User-Agent": "materialmatch-demo"})
-        with urllib.request.urlopen(req, timeout=8) as r:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=20) as r:  # noqa: S310
             demo_ref_b64 = base64.b64encode(r.read()).decode("utf-8")
+        logger.info("Demo reference image loaded (%d b64 chars)", len(demo_ref_b64))
     except Exception:
         logger.warning("Demo reference image fetch failed — demo will have no image")
 
     def _alt(name, why, cost, durability, maintenance, brands, use_case=""):
         return {"name": name, "why": why, "cost_tier": cost, "durability": durability,
                 "maintenance": maintenance, "brands_to_check": brands, "use_case": use_case}
+
+    # ------------------------------------------------------------------
+    # Curator: convert (brand, material_name, match_percent) tuples into
+    # frontend-shaped catalogue_matches by looking up the REAL seed record
+    # verbatim. If a record can't be found we silently drop it — never
+    # fabricate metadata. Sprint 8.3 (Product Freeze).
+    # ------------------------------------------------------------------
+    def _curate(picks: list) -> list:
+        out: list[dict] = []
+        for entry in picks:
+            brand, mname, pct, sim = entry
+            seed = _find_seed_record(brand, mname)
+            if seed is None:
+                logger.warning("Demo curator: seed record not found for %s / %s", brand, mname)
+                continue
+            code = seed.get("material_code")
+            page = seed.get("page_number")
+            out.append({
+                "id": seed["id"],
+                "brand": seed["brand"],
+                "catalogue": seed["catalogue"],
+                "material_name": seed["material_name"],
+                "material_code": code,
+                "material_code_display": code if code else "Code unavailable in current database",
+                "page_number": page,
+                "page_display": f"p.{page}" if page else "Page unavailable",
+                "material_family": seed["material_family"],
+                "category": seed["category"],
+                "finish": seed.get("finish"),
+                "color_name": seed.get("color_name"),
+                "color_hex": seed.get("color_hex"),
+                "texture": seed.get("texture"),
+                "source": seed.get("source") or "MaterialMatch Library",
+                "match_percent": pct,
+                "similarity": sim,
+            })
+        return out
+
+    _sim_strong = {"visual": 90, "color": 92, "finish": 88, "texture": 86}
+    _sim_high = {"visual": 84, "color": 88, "finish": 82, "texture": 80}
+    _sim_good = {"visual": 78, "color": 82, "finish": 78, "texture": 74}
+
     analysis_rows = [
-        {"zone": "Headboard Wall — Fluted Oak Slat Panel", "material_family": "Wood",
-         "material_type": "Warm oak fluted slat panelling",
-         "color": "Warm oak", "texture": "Vertical fluted slat", "finish": "Matte oiled",
-         "design_style": "Warm modern bedroom", "keywords": ["oak slat", "fluted", "vertical panel", "warm wood"],
-         "confidence": 92, "procurement_difficulty": "Easy in India",
-         "pin": {"x": 50, "y": 32},
-         "indian_alternative": "Greenlam Fluted Oak Panel or Action Tesa fluted MDF with warm oak skin",
-         "brands_to_check": ["Greenlam", "Merino", "Action Tesa"], "vendor_type": "Panel supplier",
-         "sourcing_keywords": ["fluted oak slat panel india"]},
-        {"zone": "Bed Frame — Upholstered Bouclé Headboard", "material_family": "Fabric",
-         "material_type": "Cream bouclé upholstered headboard",
-         "color": "Cream bouclé", "texture": "Loop pile bouclé", "finish": "Textured soft",
-         "design_style": "Warm modern bedroom", "keywords": ["boucle", "cream", "upholstered", "headboard"],
-         "confidence": 90, "procurement_difficulty": "Easy",
-         "pin": {"x": 50, "y": 55},
-         "indian_alternative": "D'Decor cream bouclé over MDF headboard fabricator",
-         "brands_to_check": ["D'Decor", "Urban Ladder", "Home Centre"], "vendor_type": "Upholstery",
-         "sourcing_keywords": ["boucle headboard cream india"]},
-        {"zone": "Bedding — Ivory Linen Bedcover", "material_family": "Fabric",
-         "material_type": "Warm ivory linen bed set",
-         "color": "Warm ivory", "texture": "Woven linen", "finish": "Soft matte",
-         "design_style": "Calm modern", "keywords": ["linen bedding", "ivory", "warm", "cozy"],
-         "confidence": 88, "procurement_difficulty": "Easy",
-         "pin": {"x": 55, "y": 75},
-         "indian_alternative": "Fabindia ivory linen set or Sarita Handa linen bedcover",
-         "brands_to_check": ["Fabindia", "Sarita Handa", "House of MG"], "vendor_type": "Home textile",
-         "sourcing_keywords": ["ivory linen bedding india"]},
-        {"zone": "Flooring — Engineered Warm Oak Plank", "material_family": "Wood",
-         "material_type": "Engineered warm oak plank flooring",
-         "color": "Honey oak", "texture": "Long plank grain", "finish": "Satin oiled",
-         "design_style": "Contemporary warm", "keywords": ["engineered oak", "warm plank floor", "honey"],
-         "confidence": 90, "procurement_difficulty": "Moderate",
-         "pin": {"x": 30, "y": 92},
-         "indian_alternative": "Pergo XP engineered oak or Kajaria Wood Oak Warm 200x1200 wood-look tile",
-         "brands_to_check": ["Pergo", "Action Tesa", "Kajaria"], "vendor_type": "Flooring showroom",
-         "sourcing_keywords": ["engineered oak flooring india"]},
-        {"zone": "Rug — Hand-Tufted Sand Wool Rug", "material_family": "Fabric",
-         "material_type": "Hand-tufted sand wool area rug",
-         "color": "Sand beige", "texture": "Low-loop pile", "finish": "Hand-tufted matte",
-         "design_style": "Japandi neutral", "keywords": ["wool rug", "sand", "neutral", "hand tufted"],
-         "confidence": 84, "procurement_difficulty": "Easy",
-         "pin": {"x": 50, "y": 90},
-         "indian_alternative": "Jaipur Rugs Manchaha or Obeetee hand-tufted wool",
-         "brands_to_check": ["Jaipur Rugs", "Obeetee", "Cocoon"], "vendor_type": "Rug atelier",
-         "sourcing_keywords": ["hand tufted wool rug india"]},
-        {"zone": "Wall Paint — Warm White Matte Emulsion", "material_family": "Paint",
-         "material_type": "Warm white matte emulsion",
-         "color": "Warm white", "texture": "Smooth", "finish": "Matte",
-         "design_style": "Calm modern", "keywords": ["warm white", "matte paint", "royale"],
-         "confidence": 95, "procurement_difficulty": "Very easy",
-         "pin": {"x": 15, "y": 20},
-         "indian_alternative": "Asian Paints Royale 'Cotton White' or Berger Silk Breathe Warm White",
-         "brands_to_check": ["Asian Paints", "Berger", "Nerolac", "Dulux"], "vendor_type": "Paint retailer",
-         "sourcing_keywords": ["asian paints cotton white"]},
-        {"zone": "Nightstand — Warm Walnut Bedside", "material_family": "Furniture",
-         "material_type": "Warm walnut veneered bedside table",
-         "color": "Warm walnut", "texture": "Wood grain", "finish": "Matte oiled",
-         "design_style": "Warm modern", "keywords": ["walnut", "nightstand", "warm"],
-         "confidence": 82, "procurement_difficulty": "Easy",
-         "pin": {"x": 82, "y": 75},
-         "indian_alternative": "Pepperfry Studio walnut nightstand or Gulmohar Lane brass-legged bedside",
-         "brands_to_check": ["Pepperfry", "Gulmohar Lane", "West Elm India"], "vendor_type": "Furniture retailer",
-         "sourcing_keywords": ["walnut nightstand india"]},
-        {"zone": "Bedside Lamp — Brushed Brass Reading Sconce", "material_family": "Lighting",
-         "material_type": "Brushed brass reading sconce",
-         "color": "Warm brass", "texture": "Brushed metal", "finish": "Brushed satin brass",
-         "design_style": "Warm modern", "keywords": ["brass", "sconce", "bedside", "reading"],
-         "confidence": 80, "procurement_difficulty": "Moderate",
-         "pin": {"x": 82, "y": 45},
-         "indian_alternative": "Whitteny warm-brass reading sconce or Havells brass pendant",
-         "brands_to_check": ["Whitteny", "Havells", "The White Teak Co."], "vendor_type": "Lighting studio",
-         "sourcing_keywords": ["brass reading sconce india"]},
-        {"zone": "Curtains — Sheer Ivory Linen Panel", "material_family": "Fabric",
-         "material_type": "Sheer ivory linen curtain panel",
-         "color": "Ivory", "texture": "Loose sheer weave", "finish": "Soft drape",
-         "design_style": "Calm modern", "keywords": ["sheer linen", "ivory curtain", "drape"],
-         "confidence": 82, "procurement_difficulty": "Easy",
-         "pin": {"x": 12, "y": 45},
-         "indian_alternative": "The White Window sheer linen or Deco Window ivory linen panel",
-         "brands_to_check": ["Deco Window", "The White Window", "D'Decor"], "vendor_type": "Window furnishing",
-         "sourcing_keywords": ["sheer linen curtain india"]},
-        # Sprint 2 Refinement — softly-labelled marble-look feature wall so
-        # the demo showcases "*-look" architectural language explicitly.
-        {"zone": "Behind-Bed Feature Wall — Marble-look Panel", "material_family": "Stone",
-         "material_type": "Marble-look glossy wall panel (warm beige)",
-         "color": "Warm beige with subtle veining", "texture": "Fine vein", "finish": "Polished glazed",
-         "design_style": "Warm modern", "keywords": ["marble look", "beige", "veined", "gloss"],
-         "confidence": 76, "procurement_difficulty": "Easy in India",
-         "pin": {"x": 65, "y": 25},
-         "indian_alternative": "Kalinga Cream Delight Quartz or Kajaria Statuario 800x1600 porcelain slab",
-         "brands_to_check": ["Kalinga Stone", "Kajaria", "Somany"], "vendor_type": "Slab / panel supplier",
-         "sourcing_keywords": ["marble look wall panel india", "porcelain slab statuario"]},
+        # ─── 1 · Feature wall — fluted warm-wood slat panelling ─────────
+        {
+            "zone": "Feature Wall — Fluted Warm-Wood Slat Panelling",
+            "material_family": "Wood", "material_type": "Fluted warm-wood slat feature panel (deep honey walnut)",
+            "color": "Deep warm walnut", "texture": "Vertical fluted slat", "finish": "Matte oiled",
+            "design_style": "Warm contemporary", "keywords": ["fluted", "warm wood", "slat", "feature wall", "walnut"],
+            "confidence": 93, "procurement_difficulty": "Easy in India",
+            "pin": {"x": 50, "y": 40},
+            "indian_alternative": "Greenlam Fluted Oak Panel or Merino Fluted Walnut Panel — spec vertical rhythm to match reference.",
+            "brands_to_check": ["Greenlam", "Merino", "Ebco"], "vendor_type": "Panel supplier",
+            "sourcing_keywords": ["fluted wood panel india", "warm walnut slat feature wall"],
+            "catalogue_matches": _curate([
+                ("Greenlam", "Fluted Oak Panel", 93, _sim_strong),
+                ("Merino", "Fluted Walnut Panel", 90, _sim_high),
+                ("Greenlam", "Smoked Oak Laminate", 84, _sim_good),
+            ]),
+        },
+        # ─── 2 · Sofa upholstery — warm linen weave ─────────────────────
+        {
+            "zone": "Sofa Upholstery — Warm Linen Weave",
+            "material_family": "Fabric", "material_type": "Oatmeal linen-weave upholstery",
+            "color": "Warm oatmeal beige", "texture": "Fine linen weave", "finish": "Soft matte",
+            "design_style": "Warm minimalist", "keywords": ["linen", "oatmeal", "beige", "upholstery", "weave"],
+            "confidence": 89, "procurement_difficulty": "Easy",
+            "pin": {"x": 40, "y": 68},
+            "indian_alternative": "D'Decor Boucle Cream Upholstery or Fabindia Natural Cotton Slub — request performance-grade weave.",
+            "brands_to_check": ["D'Decor", "Fabindia", "Sarita Handa"], "vendor_type": "Upholstery textile",
+            "sourcing_keywords": ["linen upholstery india", "oatmeal sofa fabric"],
+            "catalogue_matches": _curate([
+                ("D'Decor", "Boucle Cream Upholstery", 88, _sim_high),
+                ("Fabindia", "Natural Cotton Slub", 84, _sim_good),
+                ("Sarita Handa", "Linen Slub Bedcover", 80, _sim_good),
+            ]),
+        },
+        # ─── 3 · Coffee table — warm walnut wood block ──────────────────
+        {
+            "zone": "Coffee Table — Warm Walnut Wood",
+            "material_family": "Furniture", "material_type": "Warm walnut low coffee table",
+            "color": "Warm walnut brown", "texture": "Fine straight grain", "finish": "Matte oiled",
+            "design_style": "Warm contemporary", "keywords": ["walnut", "coffee table", "warm wood", "matte"],
+            "confidence": 88, "procurement_difficulty": "Easy",
+            "pin": {"x": 48, "y": 78},
+            "indian_alternative": "Pepperfry Warm Walnut collection or bespoke fabricator over Merino Warm Walnut HPL.",
+            "brands_to_check": ["Pepperfry", "Gulmohar Lane", "West Elm India"], "vendor_type": "Furniture retailer",
+            "sourcing_keywords": ["warm walnut coffee table india"],
+            "catalogue_matches": _curate([
+                ("Pepperfry", "Warm Walnut Nightstand", 90, _sim_strong),
+                ("Merino", "Warm Walnut Décor HPL", 86, _sim_high),
+                ("Greenlam", "American Walnut Crown", 84, _sim_good),
+            ]),
+        },
+        # ─── 4 · Flooring — warm oak plank ──────────────────────────────
+        {
+            "zone": "Flooring — Warm Oak Plank",
+            "material_family": "Wood", "material_type": "Engineered warm oak plank flooring",
+            "color": "Medium warm oak", "texture": "Straight plank grain", "finish": "Satin oiled",
+            "design_style": "Warm contemporary", "keywords": ["oak plank", "warm floor", "engineered wood"],
+            "confidence": 92, "procurement_difficulty": "Moderate",
+            "pin": {"x": 20, "y": 92},
+            "indian_alternative": "Kajaria Wood Oak Warm 200x1200 wood-look porcelain, or Pergo XP engineered oak.",
+            "brands_to_check": ["Kajaria", "Somany", "Pergo"], "vendor_type": "Flooring showroom",
+            "sourcing_keywords": ["warm oak plank flooring india", "wood look porcelain 200x1200"],
+            "catalogue_matches": _curate([
+                ("Kajaria", "Wood Oak Warm 200x1200", 93, _sim_strong),
+                ("Somany", "Oak Plank 200x1200", 90, _sim_high),
+                ("Greenlam", "Warm Oak HPL", 82, _sim_good),
+            ]),
+        },
+        # ─── 5 · Curtains — sheer ivory linen drape ─────────────────────
+        {
+            "zone": "Curtains — Sheer Ivory Linen Drape",
+            "material_family": "Fabric", "material_type": "Floor-to-ceiling sheer ivory linen curtain",
+            "color": "Warm ivory", "texture": "Loose linen weave", "finish": "Soft drape",
+            "design_style": "Warm minimalist", "keywords": ["sheer linen", "ivory curtain", "drape"],
+            "confidence": 90, "procurement_difficulty": "Easy",
+            "pin": {"x": 88, "y": 40},
+            "indian_alternative": "D'Decor Sheer Ivory Linen Panel — request generous pleat for the same drape volume.",
+            "brands_to_check": ["D'Decor", "The White Window", "Deco Window"], "vendor_type": "Window furnishing",
+            "sourcing_keywords": ["sheer linen curtain india", "ivory drape floor to ceiling"],
+            "catalogue_matches": _curate([
+                ("D'Decor", "Sheer Ivory Linen Panel", 94, _sim_strong),
+                ("Fabindia", "Ivory Linen Bedding", 82, _sim_good),
+                ("Sarita Handa", "Organic Cotton Sateen Set", 78, _sim_good),
+            ]),
+        },
+        # ─── 6 · Painted wall / ceiling — warm off-white ────────────────
+        {
+            "zone": "Painted Walls & Ceiling — Warm Off-White",
+            "material_family": "Paint", "material_type": "Warm off-white matte emulsion",
+            "color": "Warm off-white", "texture": "Smooth", "finish": "Matte emulsion",
+            "design_style": "Warm minimalist", "keywords": ["warm white", "matte paint", "off white", "emulsion"],
+            "confidence": 95, "procurement_difficulty": "Very easy",
+            "pin": {"x": 15, "y": 20},
+            "indian_alternative": "Asian Paints Cotton White or Warm Ivory (Royale) — confirm sheen with sample.",
+            "brands_to_check": ["Asian Paints", "Berger", "Nerolac", "Dulux"], "vendor_type": "Paint retailer",
+            "sourcing_keywords": ["asian paints cotton white", "warm off white emulsion india"],
+            "catalogue_matches": _curate([
+                ("Asian Paints", "Cotton White", 94, _sim_strong),
+                ("Asian Paints", "Warm Ivory", 90, _sim_high),
+                ("Asian Paints", "Almond Whisper", 85, _sim_good),
+            ]),
+        },
+        # ─── 7 · Table lamp — sculpted base + fabric shade ──────────────
+        {
+            "zone": "Table Lamp — Sculpted Base with Warm Shade",
+            "material_family": "Lighting", "material_type": "Sculpted base table lamp with warm fabric shade",
+            "color": "Warm ivory & brushed brass", "texture": "Smooth base, fine woven shade", "finish": "Matte + brushed satin",
+            "design_style": "Warm modern", "keywords": ["table lamp", "warm shade", "brass base", "sculpted"],
+            "confidence": 85, "procurement_difficulty": "Moderate",
+            "pin": {"x": 85, "y": 55},
+            "indian_alternative": "Jainsons Emporio Marble Base Table Lamp or The White Teak Co. brass table lamp.",
+            "brands_to_check": ["Jainsons Emporio", "The White Teak Co.", "Havells"], "vendor_type": "Lighting studio",
+            "sourcing_keywords": ["table lamp warm brass india", "sculpted base table lamp"],
+            "catalogue_matches": _curate([
+                ("Jainsons Emporio", "Marble Base Table Lamp", 88, _sim_high),
+                ("The White Teak Co.", "Slim Brass Floor Lamp", 82, _sim_good),
+                ("Whispering Homes", "Fluted Glass Wall Sconce", 78, _sim_good),
+            ]),
+        },
+        # ─── 8 · Accent chair — textured neutral upholstery ─────────────
+        {
+            "zone": "Accent Chair — Textured Neutral Upholstery",
+            "material_family": "Fabric", "material_type": "Textured neutral upholstery lounge chair",
+            "color": "Light warm greige", "texture": "Bouclé / dense linen", "finish": "Soft textured",
+            "design_style": "Warm contemporary", "keywords": ["boucle", "accent chair", "neutral", "textured"],
+            "confidence": 87, "procurement_difficulty": "Easy",
+            "pin": {"x": 20, "y": 66},
+            "indian_alternative": "Pepperfry Bouclé Reading Chair or Urban Ladder bouclé lounge — request tight loop weave.",
+            "brands_to_check": ["Pepperfry", "Urban Ladder", "D'Decor"], "vendor_type": "Furniture + upholstery",
+            "sourcing_keywords": ["boucle accent chair india", "neutral upholstered lounge chair"],
+            "catalogue_matches": _curate([
+                ("Pepperfry", "Bouclé Reading Chair", 90, _sim_strong),
+                ("D'Decor", "Boucle Cream Upholstery", 86, _sim_high),
+                ("Urban Ladder", "Bouclé Upholstered Headboard", 80, _sim_good),
+            ]),
+        },
+        # ─── 9 · Metal accents — brushed brass ──────────────────────────
+        {
+            "zone": "Metal Accents — Brushed Brass Trims & Pulls",
+            "material_family": "Hardware", "material_type": "Brushed brass trim / cove profile",
+            "color": "Warm brass", "texture": "Brushed satin", "finish": "Brushed satin brass",
+            "design_style": "Warm contemporary", "keywords": ["brass", "brushed", "trim", "cove profile", "hardware"],
+            "confidence": 86, "procurement_difficulty": "Easy in India",
+            "pin": {"x": 60, "y": 60},
+            "indian_alternative": "Häfele India brass trims & pulls, Ebco fluted brass wall strip for feature accents.",
+            "brands_to_check": ["Häfele India", "Ebco", "Godrej Locks"], "vendor_type": "Architectural hardware",
+            "sourcing_keywords": ["brushed brass trim india", "brass cove profile"],
+            "catalogue_matches": _curate([
+                ("Häfele India", "Slim Brass Pull Handle 320mm", 89, _sim_high),
+                ("Häfele India", "Brass Cove Profile 12mm", 86, _sim_high),
+                ("Ebco", "Fluted Brass Wall Cladding Strip", 83, _sim_good),
+            ]),
+        },
+        # ─── 10 · Indoor foliage — no catalogue recommendation ──────────
+        {
+            "zone": "Indoor Foliage — Statement Plant",
+            "material_family": "Plant", "material_type": "Live indoor foliage in matte planter",
+            "color": "Deep green with warm-neutral pot", "texture": "Natural leaf",
+            "finish": "Natural, unfinished",
+            "design_style": "Biophilic accent", "keywords": ["plant", "foliage", "indoor greenery"],
+            "confidence": 82, "procurement_difficulty": "Nursery — not a catalogue item",
+            "pin": {"x": 75, "y": 82},
+            "indian_alternative": "Ugaoo or Nurserylive — Fiddle Leaf Fig / Rubber Plant + minimal matte planter.",
+            "brands_to_check": ["Ugaoo", "Nurserylive"], "vendor_type": "Nursery",
+            "sourcing_keywords": ["fiddle leaf fig india", "indoor plant nursery"],
+            # TRUST RULE — plants are not a catalogue-searchable material. We
+            # intentionally return no matches so the UI shows
+            # "No high-confidence catalogue match found."
+            "catalogue_matches": [],
+            "match_buckets": {"best": [], "possible": [], "low": [],
+                              "counts": {"best": 0, "possible": 0, "low": 0}},
+        },
     ]
-    # Sprint 2 Revision: attach classification, top catalogue matches
-    # (5–8 per row across the seeded global catalogue) and alternative
-    # material systems.  This is what makes the demo internally consistent.
+
+    # Attach match_buckets for the 9 curated rows (bucketed with the same
+    # curated list so best[] contains up to 3 hand-picked hits). Every row
+    # is flagged `curated=True` so /api/demo/project preserves the hand-picked
+    # matches verbatim instead of re-scoring on every read.
+    for r in analysis_rows:
+        r["curated"] = True
+        if r.get("match_buckets") is None or "match_buckets" not in r:
+            r["match_buckets"] = _bucket_matches(r.get("catalogue_matches") or [])
+
+    # Attach brain + classification + likely_family without letting the
+    # standard matcher overwrite the curated catalogue_matches (setdefault /
+    # "not in row" guards preserve them).
     _enrich_rows_with_catalogue(analysis_rows, top_k=8)
     products_list = [
-        {"id": "product_1", "product_name": "Brushed Brass Bedside Reading Sconce",
+        {"id": "product_1", "product_name": "Sculpted Brushed-Brass Table Lamp",
          "category": "lighting",
-         "description": "Slim brushed brass wall sconce with directional head — perfect over a bed.",
-         "style_keywords": ["modern", "minimalist", "warm"], "color_keywords": ["brass", "gold"],
-         "material_keywords": ["brass", "steel"], "finish_keywords": ["brushed"],
-         "estimated_price_inr": "₹6,499", "search_keywords": ["brass reading sconce bedside india"],
+         "description": "Warm brushed-brass sculpted base table lamp with fabric drum shade — matches the reference side-table.",
+         "style_keywords": ["modern", "warm", "sculpted"], "color_keywords": ["brass", "warm"],
+         "material_keywords": ["brass", "fabric"], "finish_keywords": ["brushed", "matte"],
+         "estimated_price_inr": "₹8,999", "search_keywords": ["brushed brass table lamp warm shade india"],
          "confidence": 88},
-        {"id": "product_2", "product_name": "Bouclé Upholstered Accent Chair",
+        {"id": "product_2", "product_name": "Bouclé Neutral Accent Lounge Chair",
          "category": "furniture",
-         "description": "Sculptural bouclé lounge chair on stained walnut base — reading corner ready.",
-         "style_keywords": ["contemporary", "curved", "cozy"], "color_keywords": ["cream"],
+         "description": "Sculptural bouclé lounge chair — anchors the reading corner shown in the reference.",
+         "style_keywords": ["contemporary", "curved", "cozy"], "color_keywords": ["greige", "warm"],
          "material_keywords": ["boucle", "wood"], "finish_keywords": ["soft"],
-         "estimated_price_inr": "₹27,999", "search_keywords": ["boucle lounge chair bedroom india"],
-         "confidence": 85},
-        {"id": "product_3", "product_name": "Sand-tone Hand-Tufted Wool Rug",
-         "category": "textile-decor",
-         "description": "Neutral wool rug with loop-pile texture — anchors the bed area.",
-         "style_keywords": ["japandi", "neutral"], "color_keywords": ["sand", "ivory"],
-         "material_keywords": ["wool"], "finish_keywords": ["hand-tufted"],
-         "estimated_price_inr": "₹18,900", "search_keywords": ["wool bedroom rug india"],
-         "confidence": 82},
-        {"id": "product_4", "product_name": "Warm Walnut Bedside Nightstand",
+         "estimated_price_inr": "₹28,999", "search_keywords": ["boucle accent chair india warm"],
+         "confidence": 86},
+        {"id": "product_3", "product_name": "Warm Walnut Low Coffee Table",
          "category": "furniture",
-         "description": "Compact walnut-veneered nightstand with a single drawer and brass pull.",
-         "style_keywords": ["warm modern", "minimalist"], "color_keywords": ["walnut", "brass"],
-         "material_keywords": ["walnut", "brass"], "finish_keywords": ["matte"],
-         "estimated_price_inr": "₹14,999", "search_keywords": ["walnut nightstand india"],
+         "description": "Low-slung walnut-veneered coffee table with clean rectangular form.",
+         "style_keywords": ["warm modern", "minimalist"], "color_keywords": ["walnut", "warm brown"],
+         "material_keywords": ["walnut", "wood"], "finish_keywords": ["matte oiled"],
+         "estimated_price_inr": "₹22,499", "search_keywords": ["walnut coffee table india"],
+         "confidence": 87},
+        {"id": "product_4", "product_name": "Sheer Ivory Linen Curtain Panel",
+         "category": "textile-decor",
+         "description": "Floor-to-ceiling sheer ivory linen drape — reproduces the soft glow behind the sofa.",
+         "style_keywords": ["warm minimalist"], "color_keywords": ["ivory", "warm"],
+         "material_keywords": ["linen"], "finish_keywords": ["sheer"],
+         "estimated_price_inr": "₹4,499 per panel", "search_keywords": ["sheer ivory linen curtain india"],
          "confidence": 84},
-        {"id": "product_5", "product_name": "Ceramic Table Vase Warm Beige",
-         "category": "decor",
-         "description": "Matte ceramic vase in warm beige — organic modern accent piece.",
-         "style_keywords": ["organic", "minimalist"], "color_keywords": ["beige", "terracotta"],
-         "material_keywords": ["ceramic"], "finish_keywords": ["matte"],
-         "estimated_price_inr": "₹2,199", "search_keywords": ["ceramic vase warm beige india"],
-         "confidence": 78},
+        {"id": "product_5", "product_name": "Statement Fiddle Leaf Fig with Matte Planter",
+         "category": "plant-planter",
+         "description": "Live indoor foliage in a matte warm-neutral planter — mirrors the reference biophilic accent.",
+         "style_keywords": ["biophilic", "warm minimalist"], "color_keywords": ["deep green", "warm neutral"],
+         "material_keywords": ["plant", "ceramic"], "finish_keywords": ["natural", "matte"],
+         "estimated_price_inr": "₹3,199", "search_keywords": ["fiddle leaf fig india indoor"],
+         "confidence": 82},
     ]
     # Enrich products with affiliate matches + fallback search URLs.
     enriched_products = []
@@ -4052,46 +4191,46 @@ async def _seed_demo_project() -> None:
         enriched_products.append(pp)
     match_results = {
         "top_matches": [
-            {"filename": "warm-bedroom-catalogue.pdf", "page_number": 16,
-             "match_percent": 94, "material_name": "Greenlam Fluted Oak Panel",
-             "explanation": "Same vertical fluted rhythm and warm honey-oak tone on the headboard wall."},
-            {"filename": "warm-bedroom-catalogue.pdf", "page_number": 12,
-             "match_percent": 89, "material_name": "D'Decor Bouclé Cream Upholstery",
-             "explanation": "Matching loop-pile bouclé texture and cream palette on the headboard."},
-            {"filename": "warm-bedroom-catalogue.pdf", "page_number": 21,
-             "match_percent": 87, "material_name": "Kajaria Wood Oak Warm 200x1200",
-             "explanation": "Warm honey oak plank grain — near-identical tone to the flooring."},
+            {"filename": "materialmatch-demo-living-room.pdf", "page_number": 16,
+             "match_percent": 93, "material_name": "Greenlam Fluted Oak Panel",
+             "explanation": "Same vertical fluted rhythm and deep warm-wood tone as the sofa feature wall."},
+            {"filename": "materialmatch-demo-living-room.pdf", "page_number": 22,
+             "match_percent": 93, "material_name": "Kajaria Wood Oak Warm 200x1200",
+             "explanation": "Warm oak plank finish that mirrors the medium-tone timber flooring in the reference."},
+            {"filename": "materialmatch-demo-living-room.pdf", "page_number": 8,
+             "match_percent": 94, "material_name": "D'Decor Sheer Ivory Linen Panel",
+             "explanation": "Soft, generously-pleated sheer linen — reproduces the floor-to-ceiling drape."},
         ],
         "generated_at": now,
     }
     demo_doc = {
         **marker,
-        "name": "Warm Modern Bedroom — Demo",
-        "client_name": "Bengaluru Residence · Sample",
+        "name": "Earthen Serenity Living — Demo",
+        "client_name": "Reference Residence · MaterialMatch v1.0",
         "user_id": "system-demo",
         "reference_image_b64": demo_ref_b64,
         "status": "completed",
         "preferred_region": "IN",
         "mock_analysis": {
             "summary": {
-                "overall_style": "Warm modern bedroom — layered oak, bouclé and linen",
-                "design_style": "Warm modern bedroom",
-                "material_palette": "Honey oak, cream bouclé, warm ivory linen, sand wool, warm white paint",
-                "key_finishes": "Fluted oak slat, matte oiled wood, hand-tufted wool, sheer linen, brushed brass",
-                "sourcing_note": "Every material is sourceable in India — Greenlam / Merino for oak, Fabindia / Sarita Handa for linen, Jaipur Rugs for wool, Asian Paints Cotton White on walls, Whitteny / Havells for brass lighting.",
-                "palette": ["Honey oak", "Cream bouclé", "Warm ivory", "Sand", "Warm brass"],
-                "dominant_materials": ["Fluted oak slat wall", "Bouclé headboard", "Linen bedding", "Warm oak flooring"],
-                "confidence": 90,
+                "overall_style": "Warm contemporary living — fluted walnut, warm oak, linen and brushed brass",
+                "design_style": "Warm contemporary living",
+                "material_palette": "Fluted walnut, warm oak, oatmeal linen, sheer ivory, warm off-white paint, brushed brass",
+                "key_finishes": "Fluted vertical wood slat, matte oiled walnut, linen weave, sheer drape, brushed satin brass",
+                "sourcing_note": "Every spec is sourceable in India — Greenlam / Merino for panelling, Kajaria / Somany for warm oak flooring, D'Decor / Fabindia for linen, Asian Paints Cotton White for walls, Häfele India for brass hardware.",
+                "palette": ["Warm walnut", "Warm oak", "Oatmeal", "Warm ivory", "Brushed brass", "Deep foliage green"],
+                "dominant_materials": ["Fluted walnut feature wall", "Warm oak flooring", "Linen sofa upholstery", "Sheer ivory drape"],
+                "confidence": 92,
             },
             "rows": analysis_rows,
             "generated_at": now,
-            "version": "demo-v2",
+            "version": "demo-v3-living-room",
         },
         "products_detected": {
             "products": enriched_products,
             "generated_at": now,
             "region": "IN",
-            "version": "demo-v1",
+            "version": "demo-v3",
         },
         "match_results": match_results,
         "created_at": now,
@@ -4111,31 +4250,35 @@ async def _seed_demo_project() -> None:
     room_doc = {
         **room_marker,
         "user_id": "system-demo",
-        "name": "Primary Bedroom",
-        "room_type": "bedroom",
+        "name": "Primary Living Room",
+        "room_type": "living-room",
         "order": 0,
         "current_site_photos": [],
         "moodboards": [],
         "reference_images": [],
         "final_render_images": [],
         "concept_overview": (
-            "This bedroom is designed to feel calm, warm and considered. A restrained "
-            "palette of honey oak, cream bouclé and ivory linen creates a quiet contrast "
-            "of textures. Layered warm-white lighting and a hand-tufted wool rug soften the "
-            "composition, while curated brushed-brass accents introduce a subtle premium note. "
-            "Every specification supports a client-ready look that is timeless, inviting and "
-            "unmistakably Indian in its sourcing story."
+            "A warm contemporary living room built around three anchor gestures: a "
+            "fluted deep-walnut feature wall behind the sofa, warm oak plank flooring "
+            "underfoot, and a floor-to-ceiling sheer ivory linen drape that softens the "
+            "afternoon light. An oatmeal linen sofa is grounded by a low warm-walnut "
+            "coffee table; a bouclé accent chair and a sculpted brushed-brass table lamp "
+            "hold the reading corner. Statement foliage introduces a biophilic accent, "
+            "and brushed-brass hardware ties the whole palette together. Every spec is "
+            "sourceable in India from real supplier catalogues indexed in the "
+            "MaterialMatch Knowledge Engine."
         ),
         "concept_overview_ai_draft": "",
         "designer_notes": (
-            "Delivery in phases: shell + panelling first (4 weeks), then upholstery + rug "
-            "(2 weeks), then lighting + decor (1 week). Final styling on-site over a weekend."
+            "Delivery in phases: fluted-panel feature wall + flooring first (5 weeks), "
+            "then upholstery + drapes (2 weeks), then lighting, hardware and styling "
+            "(1 week). Final on-site styling over a weekend."
         ),
         "pinned_material_row_ids": [
-            "Headboard Wall — Fluted Oak Slat Panel",
-            "Bed Frame — Upholstered Bouclé Headboard",
-            "Flooring — Engineered Warm Oak Plank",
-            "Wall Paint — Warm White Matte Emulsion",
+            "Feature Wall — Fluted Warm-Wood Slat Panelling",
+            "Sofa Upholstery — Warm Linen Weave",
+            "Flooring — Warm Oak Plank",
+            "Curtains — Sheer Ivory Linen Drape",
         ],
         "pinned_product_ids": ["product_1", "product_2", "product_3", "product_4"],
         "share_slug": "materialmatch-demo",
@@ -4775,25 +4918,36 @@ async def get_demo_project():
     doc = await db.projects.find_one({"is_demo": True, "demo_slug": "materialmatch-demo-warm-living"})
     if not doc:
         raise HTTPException(status_code=404, detail="Demo project not seeded")
-    # Sprint 5 — re-enrich rows on every read so newly-published Studio
-    # records show up as searchable matches without requiring a re-seed.
+    # Sprint 8.3 (Product Freeze) — rows flagged `curated=True` keep their
+    # hand-picked catalogue matches verbatim so the demo showcases the
+    # Knowledge Engine at its best quality. Non-curated rows (if any) are
+    # re-enriched live so new Studio uploads still influence them.
     rows = (doc.get("mock_analysis") or {}).get("rows") or []
-    for r in rows:
+    rows_to_reenrich = [r for r in rows if not r.get("curated")]
+    for r in rows_to_reenrich:
         for k in ("catalogue_matches", "match_buckets", "brain",
                   "searched_categories", "searched_libraries", "excluded_libraries"):
             r.pop(k, None)
-    if rows:
-        _enrich_rows_with_catalogue(rows)
+    if rows_to_reenrich:
+        _enrich_rows_with_catalogue(rows_to_reenrich)
     return _sanitize_demo_project(doc)
 
 
 @api_router.get("/demo/reference-image")
 async def get_demo_reference_image():
-    """Public: fetch the demo project's reference image as a data URL."""
+    """Public: fetch the demo project's reference image as a data URL.
+    The demo asset is a PNG (see _seed_demo_project → demo_ref_url) so the
+    data URL declares image/png. Browsers still decode based on the actual
+    signature bytes, but declaring the correct mime prevents CDN sniffing
+    hiccups on the demo page."""
     doc = await db.projects.find_one({"is_demo": True, "demo_slug": "materialmatch-demo-warm-living"})
     if not doc or not doc.get("reference_image_b64"):
         raise HTTPException(status_code=404, detail="Demo reference not available")
-    return {"data_url": f"data:image/jpeg;base64,{doc['reference_image_b64']}"}
+    b64 = doc["reference_image_b64"]
+    # Auto-detect PNG vs JPEG from the first bytes so we always send the
+    # correct mime type without hardcoding the asset format.
+    mime = "image/png" if b64.startswith("iVBOR") else "image/jpeg"
+    return {"data_url": f"data:{mime};base64,{b64}"}
 
 
 # ============================================================================
