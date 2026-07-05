@@ -342,6 +342,7 @@ function ReviewTab({ uploads, selectedUploadId, setSelectedUploadId, onDelete })
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState(new Set());
   const [acting, setActing] = useState(false);
+  const [editing, setEditing] = useState(null);
 
   const load = useCallback(async (uploadId) => {
     if (!uploadId) {
@@ -359,6 +360,22 @@ function ReviewTab({ uploads, selectedUploadId, setSelectedUploadId, onDelete })
       setLoading(false);
     }
   }, []);
+
+  const recordAction = async (action, ids, confirmMsg) => {
+    if (!ids || ids.length === 0) return;
+    if (confirmMsg && !window.confirm(confirmMsg)) return;
+    setActing(true);
+    try {
+      await api.post("/admin/studio/records/bulk", { record_ids: ids, action });
+      toast.success(`${action[0].toUpperCase()}${action.slice(1)}d ${ids.length} record(s)`);
+      setSelected(new Set());
+      await load(selectedUploadId);
+    } catch (e) {
+      toast.error(formatApiError(e));
+    } finally {
+      setActing(false);
+    }
+  };
 
   useEffect(() => {
     load(selectedUploadId);
@@ -523,13 +540,13 @@ function ReviewTab({ uploads, selectedUploadId, setSelectedUploadId, onDelete })
             <div className="grid md:grid-cols-2 gap-3" data-testid="studio-review-list">
               {records.map((r, i) => {
                 const isSel = selected.has(r.id);
-                const disabled = r.status !== "draft";
+                const disabled = r.status !== "draft" && r.status !== "published";
                 return (
-                  <label
+                  <div
                     key={r.id}
-                    className={`flex items-start gap-3 rounded-xl border p-3 bg-white cursor-pointer transition-colors ${
+                    className={`flex items-start gap-3 rounded-xl border p-3 bg-white transition-colors ${
                       disabled
-                        ? "opacity-60 cursor-not-allowed border-stone-border-soft"
+                        ? "opacity-70 border-stone-border-soft"
                         : isSel
                         ? "border-charcoal/60 bg-stone-panel/40"
                         : "border-stone-border-soft hover:border-charcoal/30"
@@ -539,28 +556,29 @@ function ReviewTab({ uploads, selectedUploadId, setSelectedUploadId, onDelete })
                     <input
                       type="checkbox"
                       checked={isSel}
-                      disabled={disabled}
+                      disabled={r.status === "rejected"}
                       onChange={() => toggle(r.id)}
-                      className="mt-1"
+                      className="mt-1 cursor-pointer"
                       data-testid={`studio-review-checkbox-${i}`}
                     />
-                    {r.page_preview_b64 ? (
-                      <img
-                        src={`data:image/jpeg;base64,${r.page_preview_b64}`}
-                        alt=""
-                        className="w-14 h-14 object-cover rounded-lg border border-stone-border-soft shrink-0"
-                      />
-                    ) : (
-                      <div
-                        className="w-14 h-14 rounded-lg shrink-0 border border-stone-border-soft"
-                        style={{ backgroundColor: r.color_hex || "#B7ADA0" }}
-                      />
-                    )}
+                    <div
+                      className="w-14 h-14 rounded-lg shrink-0 border border-stone-border-soft overflow-hidden"
+                      style={{ backgroundColor: r.color_hex || "#B7ADA0" }}
+                    >
+                      {r.page_preview_b64 && (
+                        <img
+                          src={`data:image/jpeg;base64,${r.page_preview_b64}`}
+                          alt=""
+                          className="w-full h-full object-cover"
+                        />
+                      )}
+                    </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-baseline justify-between gap-2">
                         <div className="min-w-0">
                           <div className="text-[10px] uppercase tracking-widest text-warm-grey/70 truncate">
                             {r.brand || "Unknown brand"} · Page {r.page_number}
+                            {r.swatch_index_on_page ? ` · Swatch ${r.swatch_index_on_page}` : ""}
                           </div>
                           <div className="text-sm font-semibold text-charcoal truncate">
                             {r.material_name}
@@ -574,23 +592,142 @@ function ReviewTab({ uploads, selectedUploadId, setSelectedUploadId, onDelete })
                         </span>
                         {r.material_code && (
                           <span>
-                            Code ·{" "}
-                            <span className="font-mono text-charcoal">{r.material_code}</span>
+                            Code · <span className="font-mono text-charcoal">{r.material_code}</span>
                           </span>
                         )}
                         <span>
-                          Swatch ·{" "}
-                          <span className="font-mono text-charcoal">{r.color_hex}</span>
+                          Swatch · <span className="font-mono text-charcoal">{r.color_hex}</span>
                         </span>
+                        {typeof r.confidence === "number" && (
+                          <span>
+                            Conf · <span className="text-charcoal">{r.confidence}%</span>
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-2 flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setEditing(r)}
+                          className="text-[10px] uppercase tracking-widest text-warm-grey hover:text-charcoal px-2 py-0.5 rounded-full border border-stone-border-soft bg-white"
+                          data-testid={`studio-record-edit-${i}`}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => recordAction("delete", [r.id], `Delete "${r.material_name}"?`)}
+                          className="text-[10px] uppercase tracking-widest text-rose-700 hover:bg-rose-50 px-2 py-0.5 rounded-full border border-rose-200 bg-white"
+                          data-testid={`studio-record-delete-${i}`}
+                        >
+                          Delete
+                        </button>
+                        {r.status === "published" && (
+                          <button
+                            type="button"
+                            onClick={() => recordAction("archive", [r.id], `Archive "${r.material_name}"? It will stop appearing in matching results.`)}
+                            className="text-[10px] uppercase tracking-widest text-warm-grey hover:text-charcoal px-2 py-0.5 rounded-full border border-stone-border-soft bg-white"
+                            data-testid={`studio-record-archive-${i}`}
+                          >
+                            Archive
+                          </button>
+                        )}
                       </div>
                     </div>
-                  </label>
+                  </div>
                 );
               })}
             </div>
           )}
         </>
       )}
+      {editing && (
+        <EditRecordModal
+          record={editing}
+          onClose={() => setEditing(null)}
+          onSaved={async () => { setEditing(null); await load(selectedUploadId); }}
+        />
+      )}
+    </div>
+  );
+}
+
+
+function EditRecordModal({ record, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    brand: record.brand || "",
+    material_name: record.material_name || "",
+    material_code: record.material_code || "",
+    category: record.category || "",
+    material_family: record.material_family || "",
+    finish: record.finish || "",
+    notes: record.notes || "",
+  });
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.patch(`/admin/studio/records/${record.id}`, form);
+      toast.success("Record updated");
+      await onSaved();
+    } catch (e) {
+      toast.error(formatApiError(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <div
+      className="fixed inset-0 bg-charcoal/50 z-50 flex items-center justify-center p-4"
+      onClick={onClose}
+      data-testid="studio-edit-modal"
+    >
+      <div
+        className="bg-white rounded-2xl border border-stone-border-soft p-6 w-full max-w-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="text-overline mb-1">Edit material record</div>
+        <h3 className="font-display text-xl font-semibold text-charcoal mb-4">
+          {record.material_name}
+        </h3>
+        <div className="grid grid-cols-2 gap-3">
+          {["brand", "material_name", "material_code", "category", "material_family", "finish"].map((k) => (
+            <label key={k} className="text-xs text-warm-grey">
+              <div className="mb-1 capitalize">{k.replace("_", " ")}</div>
+              <input
+                type="text"
+                value={form[k]}
+                onChange={(e) => setForm({ ...form, [k]: e.target.value })}
+                className="w-full text-sm px-3 py-2 rounded-lg border border-stone-border-soft bg-white text-charcoal"
+                data-testid={`studio-edit-field-${k}`}
+              />
+            </label>
+          ))}
+          <label className="text-xs text-warm-grey col-span-2">
+            <div className="mb-1">Notes</div>
+            <textarea
+              rows={2}
+              value={form.notes}
+              onChange={(e) => setForm({ ...form, notes: e.target.value })}
+              className="w-full text-sm px-3 py-2 rounded-lg border border-stone-border-soft bg-white text-charcoal"
+              data-testid="studio-edit-field-notes"
+            />
+          </label>
+        </div>
+        <div className="flex items-center justify-end gap-2 mt-5">
+          <button type="button" onClick={onClose} className="text-xs px-3 py-1.5 rounded-full border border-stone-border-soft bg-white">
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving}
+            className="text-xs px-3 py-1.5 rounded-full bg-charcoal text-white disabled:opacity-40"
+            data-testid="studio-edit-save"
+          >
+            {saving ? "Saving…" : "Save changes"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

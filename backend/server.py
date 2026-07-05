@@ -5418,19 +5418,139 @@ def _tesseract_available() -> bool:
         return False
 
 
+def _detect_swatches_on_page(page) -> list:
+    """Find candidate material-swatch bounding boxes on a page. Returns a
+    list of `fitz.Rect` in page coordinates. Filters out decorative graphics,
+    QR codes, huge hero images and page-fill banners.
+
+    Heuristic:
+      - Use `page.get_image_rects(xref)` for every embedded image.
+      - Reject rects < 0.5% or > 55% of the page area.
+      - Reject extreme aspect ratios (banner / thin strip / QR strip).
+      - Dedup near-identical rects."""
+    try:
+        images = page.get_images(full=True)
+    except Exception:
+        return []
+    page_area = max(1.0, page.rect.width * page.rect.height)
+    rects: list = []
+    for img in images:
+        xref = img[0]
+        try:
+            for r in page.get_image_rects(xref):
+                area = r.width * r.height
+                if area < page_area * 0.005:
+                    continue
+                if area > page_area * 0.55:
+                    continue
+                ar = r.width / max(1.0, r.height)
+                if ar > 4.5 or ar < 0.22:
+                    continue
+                rects.append(r)
+        except Exception:
+            continue
+    # Dedup near-duplicates (some PDFs embed the same image twice).
+    unique: list = []
+    for r in rects:
+        if not any(abs(r.x0 - u.x0) < 4 and abs(r.y0 - u.y0) < 4
+                   and abs(r.x1 - u.x1) < 4 and abs(r.y1 - u.y1) < 4 for u in unique):
+            unique.append(r)
+    return unique
+
+
+def _swatch_dominant_hex_and_thumb(page, rect) -> tuple[str, str | None]:
+    """Sample a swatch rectangle and return (color_hex, thumbnail_b64)."""
+    try:
+        pix = page.get_pixmap(clip=rect, matrix=fitz.Matrix(1.4, 1.4), alpha=False)
+        samples = pix.samples  # RGB bytes
+        n = max(1, len(samples) // 3)
+        r = sum(samples[0::3]) // n
+        g = sum(samples[1::3]) // n
+        b = sum(samples[2::3]) // n
+        return f"#{r:02X}{g:02X}{b:02X}", base64.b64encode(pix.tobytes("jpeg")).decode()
+    except Exception:
+        return "#B7ADA0", None
+
+
+def _nearest_text_for_rect(page, rect, radius: float = 260.0) -> str:
+    """Return concatenated text of the closest text blocks to the swatch rect.
+    Falls back to on-the-fly OCR of a text strip beneath the swatch."""
+    try:
+        blocks = page.get_text("blocks") or []
+    except Exception:
+        blocks = []
+    scored = []
+    cx, cy = (rect.x0 + rect.x1) / 2, (rect.y0 + rect.y1) / 2
+    for b in blocks:
+        if len(b) < 5:
+            continue
+        x0, y0, x1, y1, txt = b[0], b[1], b[2], b[3], (b[4] or "").strip()
+        if not txt or b[6] if len(b) > 6 else False:
+            continue
+        if not txt:
+            continue
+        bx, by = (x0 + x1) / 2, (y0 + y1) / 2
+        dx, dy = bx - cx, by - cy
+        dist = (dx * dx + dy * dy) ** 0.5
+        if dist > radius:
+            continue
+        scored.append((dist, txt))
+    scored.sort(key=lambda t: t[0])
+    txt = " ".join(t for _, t in scored[:4]).strip()
+    return txt
+
+
+def _ocr_text_below_swatch(page, rect) -> str:
+    """OCR a horizontal strip immediately below a swatch to catch labels
+    that live outside the embedded PDF text stream (common in scanned or
+    lifestyle-render catalogues)."""
+    if not _tesseract_available():
+        return ""
+    try:
+        import pytesseract  # type: ignore
+        from PIL import Image
+        import io as _io
+        strip = fitz.Rect(
+            max(0, rect.x0 - 6),
+            rect.y1,
+            min(page.rect.width, rect.x1 + 6),
+            min(page.rect.height, rect.y1 + max(80, rect.height * 0.6)),
+        )
+        pix = page.get_pixmap(clip=strip, matrix=fitz.Matrix(220 / 72, 220 / 72), alpha=False)
+        img = Image.open(_io.BytesIO(pix.tobytes("png")))
+        return (pytesseract.image_to_string(img) or "").strip()
+    except Exception:
+        return ""
+
+
+def _classify_category_from_text(text_l: str) -> str:
+    if any(k in text_l for k in ("laminate", "hpl", "décor", "decor ")):
+        return "Laminates"
+    if any(k in text_l for k in ("paint", "emulsion", "shade")):
+        return "Paints"
+    if "veneer" in text_l:
+        return "Veneers"
+    if any(k in text_l for k in ("marble", "quartz", "granite", "onyx")):
+        return "Stone"
+    if any(k in text_l for k in ("tile", "porcelain", "vitrified")):
+        return "Tiles"
+    if any(k in text_l for k in ("linen", "boucle", "cotton", "fabric", "sateen")):
+        return "Fabric"
+    if any(k in text_l for k in ("pendant", "sconce", "lamp", "chandelier")):
+        return "Lighting"
+    return "Laminates"
+
+
 def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[dict], dict]:
-    """Parse PDF via PyMuPDF and heuristically extract per-page material records.
+    """Smart catalogue ingestion (Sprint 8.6). A single page may contain
+    multiple material swatches; we identify each swatch rectangle
+    independently, sample its dominant colour, and associate the *nearest*
+    text block for the material name & code. Empty / cover / warranty pages
+    are skipped when no swatch candidates are found. OCR runs per-page only
+    when there is no embedded text and per-swatch when the embedded text
+    doesn't reach the swatch (lifestyle spreads).
 
-    Returns `(records, meta)` where meta = {
-        total_pages, pages_with_text, pages_ocr'd, extraction_mode,
-        failure_reason (optional)
-    }.
-
-    Approach: for each page take the first heading-like line as material name,
-    extract a code-like token, sample the dominant colour. If a page has no
-    embedded text we fall back to OCR (tesseract) before giving up. Meta is
-    surfaced on the upload doc so the admin sees a meaningful diagnostic
-    instead of a silent '0 records extracted'."""
+    Returns `(records, meta)`."""
     import re
     records: list[dict] = []
     now = datetime.now(timezone.utc).isoformat()
@@ -5440,116 +5560,151 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
         logger.exception("PDF open failed")
         raise HTTPException(status_code=400, detail=f"Could not parse PDF: {e}")
     total_pages = pdf.page_count
-    pages_with_text = 0
-    pages_ocrd = 0
+    pages_with_swatches = 0
     pages_ocr_attempted = 0
+    pages_ocrd = 0
     ocr_available = _tesseract_available()
     code_re = re.compile(r"\b([A-Z]{1,4}[-]?\d{2,5}(?:[-]?[A-Z0-9]{1,3})?)\b")
+
+    # Filename → brand hint. Falls through to per-swatch text scan below.
+    fname_l = ""
+    for cat_items in CATEGORY_SETS.values():
+        for it in cat_items:
+            if it["brand"].lower() in fname_l:
+                pass
+
     for pi, page in enumerate(pdf, start=1):
-        text = page.get_text("text") or ""
-        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        # 1. Get all candidate swatch rectangles on the page.
+        swatch_rects = _detect_swatches_on_page(page)
+        # 2. Get whole-page text (or OCR fallback if none) to give the name /
+        #    code extractor a broader haystack for pages where text lives
+        #    away from the swatch.
+        page_text = page.get_text("text") or ""
         used_ocr = False
-        # If the page has essentially no embedded text (image-based / scanned
-        # supplier catalogue) fall back to OCR before skipping the page.
-        if not lines and ocr_available:
+        if not page_text.strip() and ocr_available:
             pages_ocr_attempted += 1
-            ocr_text = _pdf_page_ocr_text(page)
-            if ocr_text.strip():
-                text = ocr_text
-                lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+            page_text = _pdf_page_ocr_text(page)
+            if page_text.strip():
                 pages_ocrd += 1
                 used_ocr = True
-        if not lines:
+        # 3. Pages with no swatches AND (either no text OR text is all
+        #    warranty / cover boilerplate) are skipped silently.
+        if not swatch_rects:
             continue
-        pages_with_text += 1
-        # Heuristics: first meaningful line = material name; scan for code + brand hints.
-        material_name = next((ln for ln in lines if 3 < len(ln) < 80), lines[0])[:120]
-        code_match = code_re.search(text)
-        material_code = code_match.group(1) if code_match else None
-        # Guess brand from filename or first line if it matches a seeded brand.
-        brand_hint = None
-        text_l = text.lower()
-        for cat_items in CATEGORY_SETS.values():
-            for it in cat_items:
-                if it["brand"].lower() in text_l:
-                    brand_hint = it["brand"]
+        pages_with_swatches += 1
+
+        for si, rect in enumerate(swatch_rects, start=1):
+            # A. Local text: prefer PDF text blocks near the swatch.
+            local = _nearest_text_for_rect(page, rect)
+            # B. If local text is thin, OCR the strip below the swatch.
+            if len(local) < 8 and ocr_available:
+                local = _ocr_text_below_swatch(page, rect)
+            haystack = f"{local}\n{page_text}"
+            haystack_l = haystack.lower()
+
+            # C. Material name = first strong line from local text; fall
+            # back to the first meaningful whole-page line.
+            local_lines = [ln.strip() for ln in local.splitlines() if ln.strip()]
+            name = None
+            for ln in local_lines:
+                if 3 < len(ln) < 80 and not ln.isnumeric():
+                    name = ln
                     break
+            if not name:
+                page_lines = [ln.strip() for ln in page_text.splitlines() if ln.strip()]
+                name = next((ln for ln in page_lines if 3 < len(ln) < 80), None)
+            if not name:
+                name = f"Swatch {pi}.{si}"
+            name = name[:120]
+
+            # D. Code (SKU-like token) from local first, then page-wide.
+            code_match = code_re.search(local) or code_re.search(page_text)
+            material_code = code_match.group(1) if code_match else None
+
+            # E. Brand hint from any known brand appearing in text.
+            brand_hint = None
+            for cat_items in CATEGORY_SETS.values():
+                for it in cat_items:
+                    if it["brand"].lower() in haystack_l:
+                        brand_hint = it["brand"]
+                        break
+                if brand_hint:
+                    break
+
+            # F. Category / family from keywords.
+            cat_guess = _classify_category_from_text(haystack_l)
+            family = cat_guess.rstrip("s") if cat_guess in {"Paints", "Laminates", "Veneers", "Tiles"} else cat_guess
+
+            # G. Colour + thumbnail from the swatch clip.
+            color_hex, thumb_b64 = _swatch_dominant_hex_and_thumb(page, rect)
+
+            # H. Confidence — better when we found both a name candidate
+            # AND a code; lower when name is auto-generated.
+            conf = 60
+            if name and not name.startswith("Swatch "):
+                conf += 20
+            if material_code:
+                conf += 15
             if brand_hint:
-                break
-        # Guess category from keywords.
-        cat_guess = "Laminates"
-        if any(k in text_l for k in ("paint", "emulsion", "shade")):
-            cat_guess = "Paints"
-        elif any(k in text_l for k in ("veneer",)):
-            cat_guess = "Veneers"
-        elif any(k in text_l for k in ("marble", "quartz", "granite")):
-            cat_guess = "Stone"
-        elif any(k in text_l for k in ("tile", "porcelain", "vitrified")):
-            cat_guess = "Tiles"
-        elif any(k in text_l for k in ("linen", "boucle", "cotton", "fabric", "sateen")):
-            cat_guess = "Fabric"
-        elif any(k in text_l for k in ("pendant", "sconce", "lamp")):
-            cat_guess = "Lighting"
-        color_hex, thumb_b64 = _swatch_from_page(page)
-        rec_id = str(uuid.uuid4())
-        records.append({
-            "id": rec_id,
-            "upload_id": upload_id,
-            "brand": brand_hint,
-            "collection": None,
-            "material_name": material_name,
-            "material_code": material_code,
-            "category": cat_guess,
-            "material_family": cat_guess.rstrip("s") if cat_guess in {"Paints", "Laminates", "Veneers", "Tiles"} else cat_guess,
-            "finish": None,
-            "color_name": None,
-            "color_hex": color_hex,
-            "texture": None,
-            "pattern": None,
-            "application": None,
-            "page_number": pi,
-            "page_preview_b64": thumb_b64,
-            "status": "draft",
-            "keywords": [w.lower() for w in re.findall(r"[a-zA-Z]{4,}", material_name)][:8],
-            "created_at": now,
-            "published_at": None,
-            "extraction_mode": "ocr" if used_ocr else "text",
-        })
+                conf += 5
+            conf = min(95, conf)
+
+            records.append({
+                "id": str(uuid.uuid4()),
+                "upload_id": upload_id,
+                "brand": brand_hint,
+                "collection": None,
+                "material_name": name,
+                "material_code": material_code,
+                "category": cat_guess,
+                "material_family": family,
+                "finish": None,
+                "color_name": None,
+                "color_hex": color_hex,
+                "texture": None,
+                "pattern": None,
+                "application": None,
+                "page_number": pi,
+                "swatch_index_on_page": si,
+                "swatch_bbox": [round(rect.x0, 1), round(rect.y0, 1),
+                                round(rect.x1, 1), round(rect.y1, 1)],
+                "page_preview_b64": thumb_b64,
+                "status": "draft",
+                "keywords": [w.lower() for w in re.findall(r"[a-zA-Z]{4,}", name)][:8],
+                "created_at": now,
+                "published_at": None,
+                "extraction_mode": "ocr" if used_ocr else "text",
+                "confidence": conf,
+            })
+
     pdf.close()
 
-    # Assemble diagnostic metadata.
     if records:
-        if pages_ocrd == 0:
-            mode = "text"
-        elif pages_with_text == pages_ocrd:
-            mode = "ocr"
-        else:
-            mode = "text+ocr"
+        mode = "ocr" if pages_ocrd and pages_ocrd == pages_with_swatches else (
+            "text+ocr" if pages_ocrd else "text"
+        )
         meta = {
             "total_pages": total_pages,
-            "pages_with_text": pages_with_text,
+            "pages_with_swatches": pages_with_swatches,
             "pages_ocrd": pages_ocrd,
+            "pages_ocr_attempted": pages_ocr_attempted,
             "extraction_mode": mode,
             "failure_reason": None,
         }
     else:
-        # Explain WHY nothing was extracted so the admin isn't left guessing.
         if total_pages == 0:
             reason = "PDF has no pages."
-        elif not ocr_available and pages_with_text == 0:
+        elif not ocr_available and pages_ocr_attempted == 0:
             reason = ("This catalogue appears to be image-based (no machine-readable text) "
                       "and OCR is not available on this server.")
         elif pages_ocr_attempted > 0 and pages_ocrd == 0:
-            reason = ("OCR completed but no material entries were recognised in this "
-                      "catalogue layout. Try a higher-resolution scan.")
-        elif pages_ocr_attempted == 0:
-            reason = ("No machine-readable text detected in this PDF and no image pages "
-                      "were sent for OCR.")
+            reason = ("OCR completed but no material swatches were detected — the catalogue "
+                      "may be all cover / lifestyle pages or use an unsupported layout.")
         else:
-            reason = "Catalogue layout not yet supported — no material records recognised."
+            reason = "No material swatches were detected on any page."
         meta = {
             "total_pages": total_pages,
-            "pages_with_text": 0,
+            "pages_with_swatches": 0,
             "pages_ocrd": pages_ocrd,
             "pages_ocr_attempted": pages_ocr_attempted,
             "extraction_mode": "failed",
@@ -5650,6 +5805,82 @@ async def studio_list_uploads(user: dict = Depends(require_admin)):
 async def studio_upload_records(upload_id: str, user: dict = Depends(require_admin)):
     docs = await db.ke_records.find({"upload_id": upload_id}).sort("page_number", 1).to_list(500)
     return {"upload_id": upload_id, "records": [_clean_record(d) for d in docs]}
+
+
+
+class StudioRecordEditPayload(BaseModel):
+    brand: str | None = None
+    material_name: str | None = None
+    material_code: str | None = None
+    category: str | None = None
+    material_family: str | None = None
+    finish: str | None = None
+    color_name: str | None = None
+    notes: str | None = None
+    keywords: list[str] | None = None
+
+
+class StudioBulkPayload(BaseModel):
+    record_ids: list[str]
+    action: str  # "publish" | "archive" | "reject" | "delete"
+
+
+@api_router.patch("/admin/studio/records/{record_id}")
+async def studio_edit_record(
+    record_id: str,
+    payload: StudioRecordEditPayload,
+    user: dict = Depends(require_admin),
+):
+    """Manual edit of an extracted material record before / after publish.
+    AI does the first-pass extraction, the admin owns the final metadata."""
+    updates = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    res = await db.ke_records.update_one({"id": record_id}, {"$set": updates})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Record not found")
+    await _refresh_studio_index()
+    doc = await db.ke_records.find_one({"id": record_id})
+    return _clean_record(doc)
+
+
+@api_router.post("/admin/studio/records/bulk")
+async def studio_bulk_records(
+    payload: StudioBulkPayload,
+    user: dict = Depends(require_admin),
+):
+    """Bulk publish / archive / reject / delete for a set of records."""
+    if not payload.record_ids:
+        raise HTTPException(status_code=400, detail="record_ids is required")
+    now = datetime.now(timezone.utc).isoformat()
+    q = {"id": {"$in": payload.record_ids}}
+    if payload.action == "publish":
+        res = await db.ke_records.update_many(q, {"$set": {"status": "published", "published_at": now}})
+        count = res.modified_count
+    elif payload.action == "archive":
+        res = await db.ke_records.update_many(q, {"$set": {"status": "archived", "archived_at": now}})
+        count = res.modified_count
+    elif payload.action == "reject":
+        res = await db.ke_records.update_many(q, {"$set": {"status": "rejected"}})
+        count = res.modified_count
+    elif payload.action == "delete":
+        res = await db.ke_records.delete_many(q)
+        count = res.deleted_count
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown action: {payload.action}")
+    await _refresh_studio_index()
+    return {"action": payload.action, "affected": count}
+
+
+@api_router.delete("/admin/studio/records/{record_id}")
+async def studio_delete_record(record_id: str, user: dict = Depends(require_admin)):
+    doc = await db.ke_records.find_one({"id": record_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Record not found")
+    await db.ke_records.delete_one({"id": record_id})
+    await _refresh_studio_index()
+    return {"deleted": record_id}
 
 
 @api_router.post("/admin/studio/records/approve")
