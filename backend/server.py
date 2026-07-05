@@ -4805,6 +4805,37 @@ async def admin_knowledge_engine(
     filtered: list[dict] = []
     all_brands: set[str] = set()
     all_categories: set[str] = set()
+    # Studio-uploaded catalogues rank first so admins can verify their
+    # ingested PDFs are searchable in the live Knowledge Engine.
+    studio_docs = await db.ke_records.find({"status": "published"}).to_list(2000)
+    for rec in studio_docs:
+        item = {
+            "id": rec.get("id"),
+            "brand": rec.get("brand") or "Uploaded catalogue",
+            "catalogue": rec.get("collection") or "Uploaded PDF",
+            "material_name": rec.get("material_name") or "Extracted material",
+            "material_code": rec.get("material_code"),
+            "material_family": rec.get("material_family") or rec.get("category") or "",
+            "category": rec.get("category") or "Laminates",
+            "finish": rec.get("finish") or "",
+            "color_name": rec.get("color_name") or "",
+            "color_hex": rec.get("color_hex") or "#B7ADA0",
+            "texture": rec.get("texture") or "",
+            "page_number": rec.get("page_number"),
+            "keywords": rec.get("keywords", []),
+            "source": "Uploaded PDF",
+        }
+        all_brands.add(item["brand"])
+        all_categories.add(item["category"])
+        if category and item["category"] != category:
+            continue
+        if brand and item["brand"] != brand:
+            continue
+        if q_l:
+            hay = f"{item['brand']} {item['catalogue']} {item['material_name']} {item.get('color_name','')} {' '.join(item.get('keywords', []))}".lower()
+            if q_l not in hay:
+                continue
+        filtered.append({**item, "status": "published"})
     for item in SEEDED_CATALOGUE:
         all_brands.add(item["brand"])
         all_categories.add(item["category"])
@@ -4820,6 +4851,7 @@ async def admin_knowledge_engine(
             **{k: v for k, v in item.items() if k != "keywords"},
             "keywords": item.get("keywords", []),
             "status": "published",
+            "source": item.get("source") or "Global Library",
         })
     total = len(filtered)
     page = filtered[offset:offset + max(1, min(500, limit))]

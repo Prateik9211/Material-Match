@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import api from "@/lib/api";
-import { LogOut, LayoutGrid, Shield, BookOpen } from "lucide-react";
+import { LogOut, LayoutGrid, Shield, BookOpen, Rocket } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Header({ variant = "app" }) {
@@ -82,6 +82,15 @@ export default function Header({ variant = "app" }) {
                   >
                     <Shield className="w-4 h-4" strokeWidth={1.5} />
                     Knowledge Engine
+                  </button>
+                  <button
+                    onClick={() => navigate("/admin/studio")}
+                    className="hidden sm:inline-flex items-center gap-2 text-sm text-neutral-700 hover:text-black px-3 py-2"
+                    data-testid="nav-admin-studio"
+                    title="MaterialMatch Studio — catalogue ingestion"
+                  >
+                    <Rocket className="w-4 h-4" strokeWidth={1.5} />
+                    Studio
                   </button>
                 </>
               )}

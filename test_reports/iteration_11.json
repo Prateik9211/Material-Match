@@ -1,0 +1,38 @@
+{
+  "summary": "Sprint 8 (MaterialMatch Studio — PDF ingestion admin workflow) verified end-to-end. Backend: NEW /app/backend/tests/test_studio_pipeline.py with 13 tests covering (a) 403 admin-guard on upload/list/library for non-admin, (b) 400 non-PDF rejection, (c) full upload→draft→approve→library pipeline with GET-verification after each mutation, (d) uploaded record ranked FIRST in /api/admin/knowledge-engine search by unique brand, (e) empty record_ids returns 400, (f) publish-all convenience endpoint marks upload status='published', (g) reject flow — 13/13 PASS in 1.92s. Frontend (admin@materialmatch.ai): login redirects to /dashboard, nav-admin-studio link present in header, clicking it opens /admin/studio. studio-stats + all 4 studio-tab-{upload,processing,review,library} render. Upload of /tmp/demo_catalogue.pdf produces studio-upload-success card with 'Extraction complete demo_catalogue.pdf 4 record(s) extracted across 4 page(s).' Processing queue lists 6 uploads (5 prior + this one); clicking studio-upload-row-0 navigates to Review tab with 4 draft records loaded. studio-review-select-all-draft selects exactly 4 checkboxes; studio-review-approve marks them published. Library tab loads 13 published rows with studio-library-refresh and studio-library-category filter present. On /admin/knowledge-engine, ke-open-studio button present and navigates back to /admin/studio; 13 ke-record-source-uploaded-* UPLOADED badges rendered ahead of seeded rows (matches backend prioritization). Non-PDF upload surfaces 'Only PDF files are accepted' error text.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "MaterialMatchStudio — Review tab dropdown (studio-review-upload-select)", "issues": ["React hydration warning in console: 'In HTML, <span> cannot be a child of <option>' — native <option> element has a <span> child inside the select dropdown; browser strips it and console logs a hydration mismatch. Non-functional but noisy. Consider using plain text inside <option> or switching to a shadcn Select component."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_studio_pipeline.py",
+    "/app/test_reports/pytest/studio.xml"
+  ],
+  "action_items": [
+    "(Optional/minor) Remove <span> children inside <option> elements in the Review-tab upload dropdown to silence the React hydration warning."
+  ],
+  "critical_code_review_comments": [
+    "server.py has grown to 5161 lines — Studio (upload/list/approve/reject/publish/library + _extract_records_from_pdf + _STUDIO_INDEXED_RECORDS) is ~350 LOC that should be extracted to backend/routes/studio.py alongside a studio_service.py for PyMuPDF extraction. This will make future additions (OCR, deduping, per-brand extractors) manageable.",
+    "_extract_records_from_pdf uses simple regex heuristics on page text; extracted material_name defaults to filename-derived brand when no matchable text is found. Consider surfacing a confidence field per record so reviewers can prioritize low-confidence rows.",
+    "/api/admin/studio/upload returns 500 on generic extraction failure — a bad/corrupt but valid-header PDF may propagate PyMuPDF errors to the client. Consider catching fitz-specific exceptions and returning a friendlier 422.",
+    "Publish flow uses two collection updates (ke_records + ke_uploads) without a transaction — a partial failure could leave upload status='review' while records are 'published'. Low-risk given single-region Mongo but worth a note.",
+    "Frontend MaterialMatchStudio.jsx should debounce/lock the upload button while an in-flight upload is running to prevent duplicate submissions (couldn't be reproduced but nothing in the code stops it)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_studio_pipeline.py (new — 13 tests, all pass)"
+  ],
+  "success_rate": {
+    "backend": "100% (13/13 Studio tests)",
+    "frontend": "100% for all sprint-8 flows (login → studio nav → 4 tabs → upload success card → processing rows → review approve → library list → KE uploaded-badge + open-studio button → non-PDF error)"
+  },
+  "test_credentials": "admin@materialmatch.ai / MaterialAdmin2026! (existing) and designer@test.com / Designer2026! (existing) — no new users created.",
+  "seed_data_creation": "Backend test uploads 3 synthetic PDFs (unique brand tokens 'TESTBrand{hex}', 'PubAll{hex}', 'Rej{hex}') via /api/admin/studio/upload — records are persisted in db.ke_records; no cleanup endpoint exists so they remain (harmless — surfaced only under /admin/studio/library). Frontend test uploaded /tmp/demo_catalogue.pdf and published its 4 records.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Sprint 8 regression: cd /app/backend && PYTHONPATH=/app/backend pytest tests/test_studio_pipeline.py -v (13 tests, ~2s). Studio endpoints: POST /api/admin/studio/upload (multipart 'file' PDF), GET /api/admin/studio/uploads, GET /api/admin/studio/uploads/{id}/records, POST /api/admin/studio/records/approve|reject {record_ids:[]}, POST /api/admin/studio/uploads/{id}/publish, GET /api/admin/studio/library?category=. Non-admin gets 403; non-PDF gets 400; empty record_ids gets 400. Records: status draft→published or rejected. KE /api/admin/knowledge-engine merges published Studio records FIRST then SEEDED_CATALOGUE (server.py:4810). Frontend testids: nav-admin-studio (header), studio-stats, studio-tab-{upload|processing|review|library}, studio-upload-input, studio-upload-btn, studio-upload-success, studio-upload-row-{i}, studio-review-upload-select, studio-review-select-all-draft, studio-review-approve, studio-review-reject, studio-review-publish-all, studio-review-row-{i}, studio-review-checkbox-{i}, studio-library-row-{i}, studio-library-refresh, studio-library-category, ke-open-studio, ke-record-source-uploaded-{i}. Login route: /auth (NOT /login).",
+  "rca of the issue": "N/A — no functional issues. Only noise: React hydration warning about <span> inside <option> in review-upload-select dropdown (cosmetic)."
+}

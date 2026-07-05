@@ -11,6 +11,7 @@ import Analysis from "@/pages/Analysis";
 import Match from "@/pages/Match";
 import AdminAffiliates from "@/pages/AdminAffiliates";
 import AdminKnowledgeEngine from "@/pages/AdminKnowledgeEngine";
+import MaterialMatchStudio from "@/pages/MaterialMatchStudio";
 import ConceptWorkspace from "@/pages/ConceptWorkspace";
 import PublicRoom from "@/pages/PublicRoom";
 import Demo from "@/pages/Demo";
@@ -69,6 +70,14 @@ function App() {
             element={
               <ProtectedRoute>
                 <AdminKnowledgeEngine />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/studio"
+            element={
+              <ProtectedRoute>
+                <MaterialMatchStudio />
               </ProtectedRoute>
             }
           />

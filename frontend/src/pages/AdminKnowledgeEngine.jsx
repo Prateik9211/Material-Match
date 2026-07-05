@@ -4,7 +4,7 @@ import Header from "@/components/Header";
 import { useAuth } from "@/context/AuthContext";
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
-import { Search, Filter, Database, Lock, Upload, FileText } from "lucide-react";
+import { Search, Filter, Database, Lock, Upload, FileText, Rocket, ArrowRight } from "lucide-react";
 
 function StatBox({ label, value, testid }) {
   return (
@@ -34,9 +34,19 @@ function RecordRow({ r, index }) {
             </div>
             <div className="text-sm font-semibold text-charcoal truncate">{r.material_name}</div>
           </div>
-          <span className="text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full border font-semibold bg-sage-soft text-sage border-sage/30">
-            {r.status || "published"}
-          </span>
+          <div className="flex items-center gap-1 shrink-0">
+            {r.source === "Uploaded PDF" && (
+              <span
+                className="text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full border font-semibold bg-charcoal text-white border-charcoal"
+                data-testid={`ke-record-source-uploaded-${index}`}
+              >
+                Uploaded
+              </span>
+            )}
+            <span className="text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full border font-semibold bg-sage-soft text-sage border-sage/30">
+              {r.status || "published"}
+            </span>
+          </div>
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-warm-grey">
           <span>Cat · <span className="text-charcoal">{r.category}</span></span>
@@ -118,8 +128,20 @@ export default function AdminKnowledgeEngine() {
           </div>
           <h1 className="font-display text-4xl font-bold tracking-tight text-charcoal">MaterialMatch Library</h1>
           <p className="text-warm-grey mt-2 max-w-2xl">
-            Read-only browse of the platform-managed material & product Knowledge Engine. Manual record entry, CSV/JSON import and PDF ingestion are staged for the next sprint — the data model already supports them.
+            Read-only browse of the platform-managed material & product Knowledge Engine. Uploaded catalogue records (via MaterialMatch Studio) are ranked ahead of the seeded library.
           </p>
+          <div className="mt-4">
+            <button
+              type="button"
+              onClick={() => navigate("/admin/studio")}
+              className="inline-flex items-center gap-2 text-sm bg-charcoal text-white px-4 py-2 rounded-full font-medium hover:bg-charcoal/90"
+              data-testid="ke-open-studio"
+            >
+              <Rocket className="w-4 h-4" strokeWidth={1.5} />
+              Open MaterialMatch Studio
+              <ArrowRight className="w-3.5 h-3.5" strokeWidth={1.75} />
+            </button>
+          </div>
         </div>
 
         {/* Coverage stats */}
