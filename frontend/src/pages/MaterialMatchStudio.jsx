@@ -16,6 +16,9 @@ import {
   RefreshCw,
   Rocket,
   ChevronRight,
+  Trash2,
+  Archive,
+  Sparkles,
 } from "lucide-react";
 
 const TABS = [
@@ -196,22 +199,34 @@ function UploadTab({ onUploaded }) {
 /* ------------------------------------------------------------------ */
 /*                    Tab 2 — Processing Queue (uploads list)         */
 /* ------------------------------------------------------------------ */
-function ProcessingTab({ uploads, loading, onRefresh, onOpenReview }) {
+function ProcessingTab({ uploads, loading, onRefresh, onOpenReview, onDelete, onArchive, onCleanup }) {
+  const nonSeedFailed = uploads.filter((u) => !u.demo_seed && u.status === "failed").length;
   return (
     <div className="space-y-4" data-testid="studio-processing-tab">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <div className="text-overline mb-1">Ingestion pipeline</div>
           <h2 className="font-display text-2xl font-semibold text-charcoal">Processing Queue</h2>
         </div>
-        <button
-          type="button"
-          onClick={onRefresh}
-          className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-stone-border-soft bg-white hover:border-charcoal/40"
-          data-testid="studio-processing-refresh"
-        >
-          <RefreshCw className="w-3.5 h-3.5" /> Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onCleanup}
+            className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-stone-border-soft bg-white hover:border-charcoal/40"
+            data-testid="studio-processing-cleanup"
+            title="Remove development / test uploads and stuck-processing rows"
+          >
+            <Sparkles className="w-3.5 h-3.5" /> Cleanup dev-test
+          </button>
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-stone-border-soft bg-white hover:border-charcoal/40"
+            data-testid="studio-processing-refresh"
+          >
+            <RefreshCw className="w-3.5 h-3.5" /> Refresh
+          </button>
+        </div>
       </div>
       {loading ? (
         <div className="text-center text-sm text-warm-grey py-12">Loading uploads…</div>
@@ -224,55 +239,96 @@ function ProcessingTab({ uploads, loading, onRefresh, onOpenReview }) {
         </div>
       ) : (
         <div className="grid md:grid-cols-2 gap-3" data-testid="studio-uploads-list">
-          {uploads.map((u, i) => (
-            <button
-              key={u.id}
-              type="button"
-              onClick={() => onOpenReview(u.id)}
-              className="text-left rounded-xl border border-stone-border-soft bg-white p-4 hover:border-charcoal/40 transition-colors flex items-start justify-between gap-3"
-              data-testid={`studio-upload-row-${i}`}
-            >
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2 mb-1">
-                  <FileText className="w-4 h-4 text-warm-grey shrink-0" strokeWidth={1.5} />
-                  <div className="text-sm font-semibold text-charcoal truncate" title={u.filename}>
-                    {u.filename}
+          {uploads.map((u, i) => {
+            const isSeed = !!u.demo_seed;
+            const isPublished = u.status === "published";
+            return (
+              <div
+                key={u.id}
+                className="rounded-xl border border-stone-border-soft bg-white p-4 flex items-start justify-between gap-3 hover:border-charcoal/30 transition-colors"
+                data-testid={`studio-upload-row-${i}`}
+              >
+                <button
+                  type="button"
+                  onClick={() => onOpenReview(u.id)}
+                  className="text-left min-w-0 flex-1"
+                  title="Open in Review Queue"
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <FileText className="w-4 h-4 text-warm-grey shrink-0" strokeWidth={1.5} />
+                    <div className="text-sm font-semibold text-charcoal truncate" title={u.filename}>
+                      {u.filename}
+                    </div>
                   </div>
-                </div>
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-warm-grey">
-                  <span>
-                    Pages · <span className="font-mono text-charcoal">{u.page_count ?? "—"}</span>
-                  </span>
-                  <span>
-                    Records ·{" "}
-                    <span className="font-mono text-charcoal">{u.records_extracted ?? 0}</span>
-                  </span>
-                  {u.extraction_mode === "ocr" && (
-                    <span className="text-charcoal font-medium">OCR</span>
-                  )}
-                  {u.extraction_mode === "text+ocr" && (
-                    <span className="text-charcoal font-medium">Text + OCR</span>
-                  )}
-                  <span className="truncate">
-                    Uploaded · {new Date(u.created_at).toLocaleString()}
-                  </span>
-                </div>
-                {u.failure_reason && (
-                  <div
-                    className="mt-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1"
-                    data-testid={`studio-upload-failure-${i}`}
-                  >
-                    {u.failure_reason}
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-warm-grey">
+                    <span>
+                      Pages · <span className="font-mono text-charcoal">{u.page_count ?? "—"}</span>
+                    </span>
+                    <span>
+                      Records ·{" "}
+                      <span className="font-mono text-charcoal">{u.records_extracted ?? 0}</span>
+                    </span>
+                    {u.extraction_mode === "ocr" && (
+                      <span className="text-charcoal font-medium">OCR</span>
+                    )}
+                    {u.extraction_mode === "text+ocr" && (
+                      <span className="text-charcoal font-medium">Text + OCR</span>
+                    )}
+                    <span className="truncate">
+                      Uploaded · {new Date(u.created_at).toLocaleString()}
+                    </span>
                   </div>
-                )}
+                  {u.failure_reason && (
+                    <div
+                      className="mt-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1"
+                      data-testid={`studio-upload-failure-${i}`}
+                    >
+                      {u.failure_reason}
+                    </div>
+                  )}
+                </button>
+                <div className="flex flex-col items-end gap-1.5 shrink-0">
+                  <StatusBadge status={u.status} />
+                  {!isSeed && (
+                    <div className="flex items-center gap-1">
+                      {isPublished ? (
+                        <button
+                          type="button"
+                          onClick={() => onArchive(u)}
+                          className="inline-flex items-center gap-1 text-[10px] uppercase tracking-widest text-warm-grey hover:text-charcoal px-2 py-1 rounded-full border border-stone-border-soft bg-white"
+                          data-testid={`studio-upload-archive-${i}`}
+                          title="Archive — records stop appearing in matching"
+                        >
+                          <Archive className="w-3 h-3" strokeWidth={1.75} /> Archive
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => onDelete(u)}
+                          className="inline-flex items-center gap-1 text-[10px] uppercase tracking-widest text-rose-700 hover:bg-rose-50 px-2 py-1 rounded-full border border-rose-200 bg-white"
+                          data-testid={`studio-upload-delete-${i}`}
+                          title="Delete this upload and its records"
+                        >
+                          <Trash2 className="w-3 h-3" strokeWidth={1.75} /> Delete
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {isSeed && (
+                    <span className="text-[9px] uppercase tracking-widest text-warm-grey/70">
+                      Reference · protected
+                    </span>
+                  )}
+                </div>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <StatusBadge status={u.status} />
-                <ChevronRight className="w-4 h-4 text-warm-grey" strokeWidth={1.5} />
-              </div>
-            </button>
-          ))}
+            );
+          })}
         </div>
+      )}
+      {nonSeedFailed > 0 && (
+        <p className="text-[11px] text-warm-grey mt-1">
+          {nonSeedFailed} failed upload{nonSeedFailed > 1 ? "s" : ""} can be removed individually or via <span className="text-charcoal font-semibold">Cleanup dev-test</span>.
+        </p>
       )}
     </div>
   );
@@ -281,7 +337,7 @@ function ProcessingTab({ uploads, loading, onRefresh, onOpenReview }) {
 /* ------------------------------------------------------------------ */
 /*                     Tab 3 — Review Queue (per upload)              */
 /* ------------------------------------------------------------------ */
-function ReviewTab({ uploads, selectedUploadId, setSelectedUploadId }) {
+function ReviewTab({ uploads, selectedUploadId, setSelectedUploadId, onDelete }) {
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState(new Set());
@@ -449,9 +505,19 @@ function ReviewTab({ uploads, selectedUploadId, setSelectedUploadId }) {
               <p className="text-warm-grey text-sm">
                 {activeUpload?.failure_reason || "The catalogue layout was not recognised."}
               </p>
-              <p className="text-warm-grey text-xs mt-2">
+              <p className="text-warm-grey text-xs mt-2 mb-4">
                 Approve and Publish are disabled until records can be extracted. Try re-uploading a text-based PDF or a higher-resolution scan.
               </p>
+              {activeUpload && !activeUpload.demo_seed && (
+                <button
+                  type="button"
+                  onClick={() => onDelete && onDelete(activeUpload)}
+                  className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-rose-200 text-rose-700 bg-white hover:bg-rose-50"
+                  data-testid="studio-review-delete-failed"
+                >
+                  <Trash2 className="w-3.5 h-3.5" /> Delete this upload
+                </button>
+              )}
             </div>
           ) : (
             <div className="grid md:grid-cols-2 gap-3" data-testid="studio-review-list">
@@ -532,7 +598,7 @@ function ReviewTab({ uploads, selectedUploadId, setSelectedUploadId }) {
 /* ------------------------------------------------------------------ */
 /*                    Tab 4 — Published Library                       */
 /* ------------------------------------------------------------------ */
-function LibraryTab() {
+function LibraryTab({ uploads, onArchive }) {
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [category, setCategory] = useState("");
@@ -658,6 +724,26 @@ function LibraryTab() {
                     Swatch · <span className="font-mono text-charcoal">{r.color_hex}</span>
                   </span>
                 </div>
+                {(() => {
+                  const parent = uploads.find((u) => u.id === r.upload_id);
+                  if (!parent || parent.demo_seed) return null;
+                  return (
+                    <div className="mt-2">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          onArchive && onArchive(parent);
+                        }}
+                        className="inline-flex items-center gap-1 text-[10px] uppercase tracking-widest text-warm-grey hover:text-charcoal px-2 py-1 rounded-full border border-stone-border-soft bg-white"
+                        data-testid={`studio-library-archive-${i}`}
+                        title="Archive the parent catalogue — records stop appearing in matching"
+                      >
+                        <Archive className="w-3 h-3" strokeWidth={1.75} /> Archive catalogue
+                      </button>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           ))}
@@ -724,6 +810,61 @@ export default function MaterialMatchStudio() {
   const openReview = (uploadId) => {
     setSelectedUploadId(uploadId);
     setTab("review");
+  };
+
+  const deleteUpload = async (u) => {
+    if (!u) return;
+    const msg =
+      u.records_extracted > 0
+        ? `Delete "${u.filename}" and its ${u.records_extracted} record(s)? This cannot be undone.`
+        : `Delete "${u.filename}"? This upload has no extracted records.`;
+    if (!window.confirm(msg)) return;
+    try {
+      await api.delete(`/admin/studio/uploads/${u.id}`);
+      toast.success(`Deleted ${u.filename}`);
+      if (selectedUploadId === u.id) setSelectedUploadId("");
+      await loadUploads();
+    } catch (e) {
+      toast.error(formatApiError(e));
+    }
+  };
+
+  const archiveUpload = async (u) => {
+    if (!u) return;
+    if (
+      !window.confirm(
+        `Archive "${u.filename}"? Its records will no longer appear in the MaterialMatch Library or matching results. You can restore it later.`
+      )
+    )
+      return;
+    try {
+      await api.post(`/admin/studio/uploads/${u.id}/archive`);
+      toast.success(`Archived ${u.filename}`);
+      await loadUploads();
+    } catch (e) {
+      toast.error(formatApiError(e));
+    }
+  };
+
+  const runCleanup = async () => {
+    if (
+      !window.confirm(
+        "Cleanup dev-test uploads? This removes any upload whose filename matches a development / test pattern (pub.pdf, rej.pdf, studio_test*, TESTBrand*…) and any upload stuck in 'processing' for more than 15 minutes. Reference catalogues and real supplier uploads are never touched."
+      )
+    )
+      return;
+    try {
+      const r = await api.post("/admin/studio/cleanup");
+      toast.success(
+        `Cleanup complete — removed ${r.data.removed ?? 0} upload(s)` +
+          (r.data.stuck_processing_removed
+            ? `, including ${r.data.stuck_processing_removed} stuck-processing`
+            : "")
+      );
+      await loadUploads();
+    } catch (e) {
+      toast.error(formatApiError(e));
+    }
   };
 
   return (
@@ -808,6 +949,9 @@ export default function MaterialMatchStudio() {
             loading={loadingUploads}
             onRefresh={loadUploads}
             onOpenReview={openReview}
+            onDelete={deleteUpload}
+            onArchive={archiveUpload}
+            onCleanup={runCleanup}
           />
         )}
         {tab === "review" && (
@@ -815,9 +959,10 @@ export default function MaterialMatchStudio() {
             uploads={uploads}
             selectedUploadId={selectedUploadId}
             setSelectedUploadId={setSelectedUploadId}
+            onDelete={deleteUpload}
           />
         )}
-        {tab === "library" && <LibraryTab />}
+        {tab === "library" && <LibraryTab uploads={uploads} onArchive={archiveUpload} />}
       </main>
     </div>
   );

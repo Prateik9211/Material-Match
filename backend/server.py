@@ -1543,6 +1543,7 @@ def _studio_record_to_search_item(rec: dict) -> dict:
 async def _refresh_studio_index() -> None:
     global _STUDIO_INDEXED_RECORDS
     try:
+        # Only PUBLISHED (non-archived) records feed the matcher.
         docs = await db.ke_records.find({"status": "published"}).to_list(2000)
         # User-uploaded catalogues rank ahead of demo-seeded ones so a real
         # PDF upload always outranks the seeded demo library.
@@ -1551,6 +1552,27 @@ async def _refresh_studio_index() -> None:
         logger.info("Studio index refreshed: %d records", len(_STUDIO_INDEXED_RECORDS))
     except Exception:
         logger.exception("studio index refresh failed")
+
+
+async def _recover_stuck_studio_uploads() -> None:
+    """Any upload still in `processing` state on startup is stuck from a
+    previous OCR / ingress timeout — mark it as `failed` with a diagnostic so
+    the admin can delete it."""
+    if db is None:  # pragma: no cover
+        return
+    stuck = await db.ke_uploads.count_documents({"status": "processing"})
+    if not stuck:
+        return
+    await db.ke_uploads.update_many(
+        {"status": "processing"},
+        {"$set": {
+            "status": "failed",
+            "failure_reason": ("Extraction did not complete — the previous run "
+                               "timed out or the server restarted mid-ingest. "
+                               "Delete and re-upload the PDF."),
+        }},
+    )
+    logger.info("Recovered %d stuck 'processing' uploads → failed", stuck)
 
 
 # ---------------------------------------------------------------------------
@@ -3928,6 +3950,10 @@ async def startup_event():
     except Exception:
         logger.exception("Studio dev-test purge failed")
     try:
+        await _recover_stuck_studio_uploads()
+    except Exception:
+        logger.exception("Studio stuck-upload recovery failed")
+    try:
         await _refresh_studio_index()
     except Exception:
         logger.exception("Studio index warm-up failed")
@@ -5674,6 +5700,86 @@ async def studio_published_library(
         q["category"] = category
     docs = await db.ke_records.find(q).sort("published_at", -1).to_list(min(500, limit))
     return {"records": [_clean_record(d) for d in docs], "total": len(docs)}
+
+
+@api_router.delete("/admin/studio/uploads/{upload_id}")
+async def studio_delete_upload(upload_id: str, user: dict = Depends(require_admin)):
+    """Hard-delete an upload and all its records. Never applied to Reference
+    seed catalogues (demo_seed=True) — those are protected."""
+    upload = await db.ke_uploads.find_one({"id": upload_id})
+    if not upload:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    if upload.get("demo_seed"):
+        raise HTTPException(
+            status_code=400,
+            detail="Reference seed catalogues cannot be deleted from the Studio.",
+        )
+    rec_res = await db.ke_records.delete_many({"upload_id": upload_id})
+    await db.ke_uploads.delete_one({"id": upload_id})
+    await _refresh_studio_index()
+    return {"deleted_upload": upload_id, "deleted_records": rec_res.deleted_count}
+
+
+@api_router.post("/admin/studio/uploads/{upload_id}/archive")
+async def studio_archive_upload(upload_id: str, user: dict = Depends(require_admin)):
+    """Soft-archive a published upload — its records get status='archived' so
+    they no longer surface in matching or the Published Library, but the
+    upload row is retained for audit."""
+    upload = await db.ke_uploads.find_one({"id": upload_id})
+    if not upload:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    if upload.get("demo_seed"):
+        raise HTTPException(
+            status_code=400,
+            detail="Reference seed catalogues cannot be archived. Delete a user-uploaded catalogue instead.",
+        )
+    now = datetime.now(timezone.utc).isoformat()
+    rec_res = await db.ke_records.update_many(
+        {"upload_id": upload_id, "status": {"$ne": "archived"}},
+        {"$set": {"status": "archived", "archived_at": now}},
+    )
+    await db.ke_uploads.update_one({"id": upload_id}, {"$set": {"status": "archived", "archived_at": now}})
+    await _refresh_studio_index()
+    return {"archived_upload": upload_id, "archived_records": rec_res.modified_count}
+
+
+@api_router.post("/admin/studio/uploads/{upload_id}/restore")
+async def studio_restore_upload(upload_id: str, user: dict = Depends(require_admin)):
+    """Undo an archive — bring the upload back into publishing."""
+    upload = await db.ke_uploads.find_one({"id": upload_id})
+    if not upload:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    rec_res = await db.ke_records.update_many(
+        {"upload_id": upload_id, "status": "archived"},
+        {"$set": {"status": "published", "archived_at": None}},
+    )
+    await db.ke_uploads.update_one({"id": upload_id}, {"$set": {"status": "published", "archived_at": None}})
+    await _refresh_studio_index()
+    return {"restored_upload": upload_id, "restored_records": rec_res.modified_count}
+
+
+@api_router.post("/admin/studio/cleanup")
+async def studio_cleanup(user: dict = Depends(require_admin)):
+    """One-click cleanup — run the dev-test filename purge on demand from the
+    admin UI. Never touches Reference seeds or valid supplier uploads."""
+    before = await db.ke_uploads.count_documents({"demo_seed": {"$ne": True}})
+    await _purge_dev_test_uploads()
+    # Also delete any upload that's been stuck in `processing` for more than
+    # 15 minutes — an orphaned upload from an OCR crash / ingress timeout.
+    from datetime import timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat()
+    stuck = await db.ke_uploads.find({
+        "status": "processing", "created_at": {"$lt": cutoff},
+        "demo_seed": {"$ne": True},
+    }).to_list(200)
+    stuck_ids = [u["id"] for u in stuck]
+    if stuck_ids:
+        await db.ke_records.delete_many({"upload_id": {"$in": stuck_ids}})
+        await db.ke_uploads.delete_many({"id": {"$in": stuck_ids}})
+    after = await db.ke_uploads.count_documents({"demo_seed": {"$ne": True}})
+    return {"removed": before - after, "stuck_processing_removed": len(stuck_ids)}
+
+
 
 
 app.include_router(api_router)

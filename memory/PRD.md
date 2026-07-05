@@ -242,6 +242,24 @@ Focus: PDF upload reliability. No new features, no redesign.
 
 **Deployment note**: 150 MB is safe backend-side (verified via localhost + external ingress for a 53 MB text-based PDF — 2.6 s round-trip). Scanned PDFs above ~30 MB may exceed the ~60 s Cloudflare request-duration cap during OCR; that's a platform constraint of `preview.emergentagent.com`, not something the codebase can override.
 
+## Sprint 8.5 — Studio Catalogue Management (2026-02-27)
+Focus: fix the upload → publish flow and let admins prune the queue. No new modules, no redesign.
+- ✅ **Root cause of "0 records / can't publish"**: real user uploads went through fine (the ADVANCE catalogue produced 31 OCR records), but a **prior upload got stuck in `status="processing"` forever** after the OCR ingest process timed out or the server restarted mid-run. There was no way to clear it or retry.
+- ✅ **Startup stuck-upload recovery** — `_recover_stuck_studio_uploads()` moves any surviving `processing` row to `failed` with a clear `failure_reason` on every backend boot.
+- ✅ **Delete / archive / restore endpoints** (all admin-guarded):
+  - `DELETE /api/admin/studio/uploads/{id}` — hard-delete failed / draft uploads + their records.
+  - `POST  /api/admin/studio/uploads/{id}/archive` — soft-archive published uploads. Records switch to `status="archived"` so they immediately drop out of both `_STUDIO_INDEXED_RECORDS` (matcher) and the KE search endpoint. Restorable.
+  - `POST  /api/admin/studio/uploads/{id}/restore` — undo an archive.
+  - `POST  /api/admin/studio/cleanup` — one-click purge of dev-test filenames + any upload stuck in `processing` for > 15 min.
+- ✅ **Reference protection** — Reference-seeded catalogues (`demo_seed=True`) cannot be archived or deleted; the endpoint returns a friendly 400.
+- ✅ **Studio UI**:
+  - Processing Queue rows carry a per-row `Delete` (for non-published, non-seed uploads) or `Archive` (for published user uploads) button. Reference rows show a "Reference · protected" label with no destructive controls.
+  - Published Library rows carry an `Archive catalogue` button (except Reference rows).
+  - Review Queue empty state (0-record failure) now has a `Delete this upload` button + the failure reason.
+  - New top-right `Cleanup dev-test` button in the Processing Queue.
+  - Every destructive action asks for `window.confirm` first with copy that names the catalogue and the consequence.
+- ✅ **End-to-end verified**: upload real supplier PDF → 4 records extracted → all approved → surfaced first in Knowledge Engine search → archive → matches drop from 13 → 3 → restore → matches back to 13. 13/13 studio pytest still pass.
+
 ## Prioritized Backlog
 
 ### P1
