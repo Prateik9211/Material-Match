@@ -1,0 +1,29 @@
+{
+  "summary": "MaterialMatch v1.0 RC1 verification — end-to-end pass. Backend: 30/30 pytest (new /app/backend/tests/test_rc1_demo_trust.py — 10 tests covering demo trust rules, KE routing, designer login; plus existing test_studio_pipeline.py 13/13, test_sprint4_demo.py 7/7 after updating stale demo-name assertion to Earthen Serenity Living). Demo project via GET /api/demo/project: exactly 10 curated zones, 9 with exactly 3 matches each, zone 10 'Indoor Foliage — Statement Plant' with 0 matches (trust rule verified). No MM-DEMO-* fabricated codes anywhere. Every match_percent within 78–94% range. Real brands (Greenlam, Merino, Asian Paints, Kajaria, Somany, D'Decor, Häfele India, Ebco, Sarita Handa, Pepperfry, Urban Ladder, Jainsons Emporio, White Teak Co., Whispering Homes). Reference image endpoint returns data:image/jpeg (loads on /demo). Frontend /demo renders palette chips, 20 brain testids, 1 no-strong-match testid, real match cards with brand/code/pct/page. Landing shows 'Explore Interactive Demo' CTA → /demo. Admin login → /dashboard; header nav Dashboard/Material Library/Affiliates/Knowledge Engine/Studio all resolve 200 (no 404). KE search: 'Warm Ivory' returns Asian Paints Warm Ivory FIRST + Warm Ivory Solid second with REFERENCE badge; 'Fluted' returns Greenlam Fluted Oak Panel first, ZERO Paint records leak in; 'RC Test' (after Studio upload+approve+publish of on-the-fly PDF /tmp/rc.pdf with 'RC Test Laminate Warm Oak / Code: RC-01') returns 'Uploaded catalogue | RC Test Laminate Warm Oak' as the top hit with UPLOADED badge. Studio pipeline verified via curl: upload → 1 record extracted with material_code=RC-01, category=Laminates → approve (approved:1) → publish → library. Designer flow (designer@test.com / Designer2026!): login OK, POST /api/projects creates project, POST /api/projects/{id}/reference uploads image, POST /api/projects/{id}/mock-analyze returns rows with brain classification + allowed_libraries showing category-aware routing (Rug→['Fabric Library'], Lighting→['Hardware Library'], Coffee Table→['Stone Library','Tile Library','Laminate Library'], Floor→['Laminate Library','Veneer Library'], Accent Wall→['Laminate Library','Veneer Library','Tile Library','Stone Library']). Shortlist add (POST /api/projects/{id}/shortlist with source_type=catalogue_match) → GET returns 1 item persisted. No red console errors during normal navigation (only expected 401s from /api/auth/me when signed-out).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_rc1_demo_trust.py",
+    "/app/backend/tests/test_studio_pipeline.py",
+    "/app/backend/tests/test_sprint4_demo.py",
+    "/app/test_reports/pytest/rc1.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now 5511 lines — Studio (upload/list/approve/reject/publish + PyMuPDF extraction) and demo seed (~350+350 LOC) still not extracted. Recommend backend/routes/{studio,demo}.py + backend/services/{studio_service,demo_seed}.py for maintainability. Not blocking RC1.",
+    "/api/projects/{id}/analyze enforces a 20-call/day per-user AI quota — designer accounts hit this ceiling during full E2E runs. Consider surfacing remaining-quota in a header or /api/auth/me so the UI can display it. mock-analyze fallback works but the API returns a plain 400 with no remaining-count metadata.",
+    "KE search 'Cotton White' (unfiltered) returns 2 Paints + 2 Laminates (Merino Cotton White HPL, Formica Cotton Solid 8110). This is expected text-substring behaviour, not a category-routing bug — category-routing is enforced by the matcher, not by KE keyword search. Consider a UI hint that KE search is keyword-based and can be filtered by ?category=Paints for a purer view.",
+    "test_sprint4_demo.py:test_demo_project_no_auth had a stale assertion for the old 'Warm Modern Bedroom — Demo' seed. Updated to the RC1 'Earthen Serenity Living — Demo' expectation (10 zones, 9-of-10 with exactly 3 matches, no MM-DEMO codes)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sprint4_demo.py (updated demo assertions for RC1 Earthen Serenity seed)",
+    "/app/backend/tests/test_rc1_demo_trust.py (new — 10 RC1 verification tests)"
+  ],
+  "success_rate": {"backend": "100% (30/30)", "frontend": "100% for RC1 checklist"},
+  "test_credentials": "admin@materialmatch.ai / MaterialAdmin2026! and designer@test.com / Designer2026! (both existing).",
+  "seed_data_creation": "One RC test PDF uploaded to Studio (upload_id 2dea5fe8-347c-4f8b-b8c6-2e17239943b8) → 1 record 'RC Test Laminate Warm Oak' (RC-01) approved+published → surfaced first in KE 'RC Test' search. One RC test project created for designer with 1 shortlist item.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "RC1 verified. Regression command: cd /app/backend && PYTHONPATH=/app/backend pytest tests/test_rc1_demo_trust.py tests/test_studio_pipeline.py tests/test_sprint4_demo.py -v (30 tests, ~4s). Demo trust invariants live in test_rc1_demo_trust.py::TestDemoTrustRules. Note the 20/day AI analyze quota — use /mock-analyze for regression on the designer live-workflow; /analyze requires quota headroom.",
+  "rca of the issue": "N/A — no bugs found. Only stale test assertion in test_sprint4_demo.py updated to match intentional demo re-seed."
+}

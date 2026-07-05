@@ -17,18 +17,18 @@ class TestDemoEndpoints:
         r = requests.get(f"{BASE_URL}/api/demo/project")
         assert r.status_code == 200
         d = r.json()
-        assert d.get("name") == "Warm Modern Bedroom — Demo"
+        # v1.0 RC1 — demo re-seeded to Earthen Serenity Living living-room
+        assert d.get("name") == "Earthen Serenity Living \u2014 Demo"
         assert d.get("is_demo") is True
-        assert len(d.get("mock_analysis", [])) == 4
-        products = d.get("products_detected", {}).get("products", [])
-        assert len(products) == 5
-        assert len(d.get("match_results", {}).get("top_matches", [])) == 3
-        # security: no user_id / password_hash leak
+        rows = (d.get("mock_analysis") or {}).get("rows", [])
+        assert len(rows) == 10, f"expected 10 curated zones, got {len(rows)}"
+        # 9 zones should each have exactly 3 matches; zone 10 (Foliage) 0 matches
+        counts = [len(r.get("catalogue_matches", [])) for r in rows]
+        assert counts.count(3) == 9 and counts.count(0) == 1, f"match counts={counts}"
+        # No fabricated MM-DEMO-* codes anywhere
         blob = str(d)
+        assert "MM-DEMO" not in blob, "Fabricated MM-DEMO-* codes present"
         assert "password_hash" not in blob
-        # verify at least 2 products have matched_affiliate populated
-        matched = [p for p in products if p.get("matched_affiliate")]
-        assert len(matched) >= 2, f"only {len(matched)} products with affiliate"
 
     def test_demo_reference_image_no_auth(self):
         r = requests.get(f"{BASE_URL}/api/demo/reference-image")
