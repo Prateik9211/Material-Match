@@ -43,12 +43,12 @@ function RecordRow({ r, index }) {
                 Uploaded
               </span>
             )}
-            {r.source === "Demo catalogue" && (
+            {r.source === "Reference catalogue" && (
               <span
-                className="text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full border font-semibold bg-amber-50 text-amber-700 border-amber-200"
-                data-testid={`ke-record-source-demo-${index}`}
+                className="text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full border font-semibold bg-stone-panel text-warm-grey border-stone-border-soft"
+                data-testid={`ke-record-source-reference-${index}`}
               >
-                Demo
+                Reference
               </span>
             )}
             <span className="text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full border font-semibold bg-sage-soft text-sage border-sage/30">

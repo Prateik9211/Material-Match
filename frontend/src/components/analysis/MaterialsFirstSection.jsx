@@ -308,7 +308,15 @@ function MaterialCard({ row, index, onAddToShortlist, shortlisted, onAddCatalogu
   const isPaint = (row.material_family || "").toLowerCase() === "paint"
     || (row.zone || "").toLowerCase().includes("paint");
   const buckets = row.match_buckets || { best: [], possible: [], low: [] };
-  const bestMatches = (buckets.best && buckets.best.length ? buckets.best : (row.catalogue_matches || []).slice(0, 4));
+  // Sprint 8.2 — quality first. Never surface a "possible" or "low" match as
+  // the recommended card just to fill space. Show recommendations only when
+  // we have at least one match ≥ 75 (Best tier is ≥ 80; Possible ≥ 65). If
+  // nothing clears the bar, the card renders "No high-confidence catalogue
+  // match found." — better an honest empty state than a misleading suggestion.
+  const HIGH_CONF_MIN = 75;
+  const hasBest = Array.isArray(buckets.best) && buckets.best.length > 0;
+  const strong = (row.catalogue_matches || []).filter((m) => (m.match_percent || 0) >= HIGH_CONF_MIN);
+  const bestMatches = hasBest ? buckets.best : strong.slice(0, 4);
   const recommended = bestMatches[0];
   const alternatives = bestMatches.slice(1, isPaint ? 4 : 4);
   const possible = buckets.possible || [];
@@ -470,7 +478,7 @@ function MaterialCard({ row, index, onAddToShortlist, shortlisted, onAddCatalogu
         {!recommended && (
           <div className="rounded-xl border border-dashed border-stone-border p-3 text-xs text-warm-grey flex items-start gap-2" data-testid={`no-strong-match-${index}`}>
             <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" strokeWidth={1.75} />
-            <span>No strong catalogue matches yet — try uploading a related supplier PDF to enrich this zone.</span>
+            <span>No high-confidence catalogue match found. Try uploading a related supplier PDF to enrich this zone.</span>
           </div>
         )}
 

@@ -593,10 +593,10 @@ function LibraryTab() {
                   <div className="flex items-center gap-1 shrink-0">
                     {r.demo_seed && (
                       <span
-                        className="text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full border font-semibold bg-amber-50 text-amber-700 border-amber-200"
-                        data-testid={`studio-library-demo-${i}`}
+                        className="text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full border font-semibold bg-stone-panel text-warm-grey border-stone-border-soft"
+                        data-testid={`studio-library-reference-${i}`}
                       >
-                        Demo
+                        Reference
                       </span>
                     )}
                     <StatusBadge status={r.status} />

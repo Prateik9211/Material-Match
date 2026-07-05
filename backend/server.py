@@ -1281,8 +1281,21 @@ def _score_catalogue_item(row: dict, item: dict, weights: dict | None = None) ->
     w = weights or _RANKING_WEIGHTS["_default"]
     fam_row = str(row.get("material_family") or "").lower()
     fam_item = str(item.get("material_family") or "")
-    family_match = fam_item in _FAMILY_ALIAS.get(fam_row, {fam_item})
-    family_score = 100 if family_match else 20
+    # Sprint 8.2 — when the AI-provided family is one we recognise in the
+    # alias table we score family alignment 100 / 20. When it isn't (e.g. AI
+    # returned an application word like "wall"), fall back to a neutral 60 so
+    # a correctly-categorised item isn't unfairly penalised on a semantic
+    # miss — the Brain's category filter has already vetted category fit.
+    if fam_row in _FAMILY_ALIAS:
+        family_match = fam_item in _FAMILY_ALIAS.get(fam_row, {fam_item})
+        family_score = 100 if family_match else 20
+    else:
+        # Unrecognised family label (e.g. AI returned "wall" instead of
+        # "Paint"). Score neutrally-high so a correctly-categorised item
+        # can still reach the "best" tier (≥ 80) on strong colour + keyword
+        # evidence — but don't award full 100.
+        family_match = False
+        family_score = 75
 
     # Keyword Jaccard visual similarity.
     row_tokens = (_tokenize(row.get("material_type")) | _tokenize(row.get("color"))
@@ -1302,21 +1315,23 @@ def _score_catalogue_item(row: dict, item: dict, weights: dict | None = None) ->
     item_hex = item.get("color_hex") or "#B7ADA0"
     color = _color_similarity(row_hex, item_hex)
 
-    # Finish similarity — token overlap.
+    # Finish similarity — token overlap. When one side has no finish data at
+    # all we award a minor 25 baseline (Sprint 8.2: down from 40 to stop empty
+    # metadata inflating scores past the min_overall gate).
     row_finish = _tokenize(row.get("finish"))
     item_finish = _tokenize(item.get("finish"))
     if row_finish and item_finish:
         finish = int(round(100 * len(row_finish & item_finish) / max(1, len(row_finish | item_finish))))
     else:
-        finish = 40
+        finish = 25
 
-    # Texture / grain similarity.
+    # Texture / grain similarity — same rule as finish.
     row_texture = _tokenize(row.get("texture"))
     item_texture = _tokenize(item.get("texture"))
     if row_texture and item_texture:
         texture = int(round(100 * len(row_texture & item_texture) / max(1, len(row_texture | item_texture))))
     else:
-        texture = 40
+        texture = 25
 
     # Weighted composite from Brain profile. Cap at 97 — we never claim exact certainty.
     overall = (
@@ -1337,14 +1352,16 @@ def _score_catalogue_item(row: dict, item: dict, weights: dict | None = None) ->
     }
 
 
-def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 40,
+def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 62,
                               allowed_categories: list | None = None,
                               weights: dict | None = None) -> list:
     """Return top_k catalogue matches with similarity breakdown.
 
-    Sprint 4 — Brain weights shape the scoring per category. When
-    `allowed_categories` is `[]` (Brain confidently could not classify), we
-    return no matches so the UI can prompt for a supplier PDF upload."""
+    Sprint 8.2 — quality tightened: min_overall raised to 62 and the
+    family_match bypass removed so low-scoring items can no longer slip
+    through just because they share a broad family. When no item clears the
+    bar we return `[]` and the UI shows "No high-confidence catalogue match
+    found."""
     scored = []
     allow = set(allowed_categories) if allowed_categories is not None else None
     if allow is not None and not allow:
@@ -1356,7 +1373,7 @@ def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 40,
         if allow is not None and item.get("category") not in allow:
             continue
         s = _score_catalogue_item(row, item, weights=weights)
-        if s["overall"] < min_overall and not s["family_match"]:
+        if s["overall"] < min_overall:
             continue
         scored.append((s, item))
     scored.sort(key=lambda t: t[0]["overall"], reverse=True)
@@ -1537,122 +1554,138 @@ async def _refresh_studio_index() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Sprint 8 — Demo-safe Studio catalogue seed.
+# Sprint 8.2 — Real-record Studio seed.
 #
-# When the Studio library is empty on first boot, we drop in a handful of
-# clearly demo-safe supplier records (Asian Paints, Greenlam, Kajaria) so the
-# competition judges see a populated Published Library right after logging in.
+# On first boot we seed the Studio's Published Library from `catalogue_seed.py`
+# (SEEDED_CATALOGUE). No fabricated MM-DEMO codes — the records are exactly
+# the same real brand / material_name / color_hex / keywords already indexed
+# in the Knowledge Engine, presented here so the Studio isn't empty for a
+# judge who hasn't uploaded a PDF yet.
 #
 # Ground rules:
-#   • Every record carries `demo_seed=True` and belongs to a synthetic
-#     `ke_uploads` doc with filename "MaterialMatch Demo — <brand>.pdf".
-#   • User-uploaded catalogues still outrank these (see _refresh_studio_index
-#     and /admin/knowledge-engine — non-demo rows sort first).
-#   • Product codes are prefixed `MM-DEMO-` so they're never mistaken for
-#     official supplier SKUs.
+#   • Every seeded row carries `demo_seed=True` so user-uploaded PDFs still
+#     outrank them everywhere (see _refresh_studio_index / KE endpoint).
+#   • `material_code` is copied verbatim from the seed (usually None) —
+#     nothing is invented.
+#   • On startup we purge any legacy `MM-DEMO-*` records left behind from an
+#     earlier seed version, then re-seed idempotently by seed_version.
 # ---------------------------------------------------------------------------
-_DEMO_STUDIO_CATALOGUES = [
-    {
-        "filename": "MaterialMatch Demo — Asian Paints Sample Shades.pdf",
-        "brand": "Asian Paints",
-        "collection": "Royale Play Sample Shades",
-        "category": "Paints",
-        "material_family": "Paint",
-        "records": [
-            {"name": "Warm Ivory Cream Emulsion", "code": "MM-DEMO-AP-01",
-             "hex": "#F1E7D6", "color": "Warm Ivory Cream", "finish": "Matt emulsion"},
-            {"name": "Almond Shell Wall Paint",   "code": "MM-DEMO-AP-02",
-             "hex": "#E7D8C2", "color": "Almond Shell",     "finish": "Matt emulsion"},
-            {"name": "Sage Whisper Interior",      "code": "MM-DEMO-AP-03",
-             "hex": "#B8C4A9", "color": "Sage Whisper",     "finish": "Soft sheen"},
-            {"name": "Muted Terracotta Accent",    "code": "MM-DEMO-AP-04",
-             "hex": "#B37A5E", "color": "Muted Terracotta", "finish": "Matt emulsion"},
-        ],
-    },
-    {
-        "filename": "MaterialMatch Demo — Greenlam Signature Laminates.pdf",
-        "brand": "Greenlam",
-        "collection": "Signature Wood Laminates",
-        "category": "Laminates",
-        "material_family": "Laminate",
-        "records": [
-            {"name": "Warm Oak Straight Grain Laminate", "code": "MM-DEMO-GL-01",
-             "hex": "#B79170", "color": "Warm Oak",     "finish": "Matt suede"},
-            {"name": "Smoked Walnut Crown Cut Laminate", "code": "MM-DEMO-GL-02",
-             "hex": "#5B3E2B", "color": "Smoked Walnut", "finish": "Matt"},
-            {"name": "Ivory Solid Textured Laminate",     "code": "MM-DEMO-GL-03",
-             "hex": "#EEE4D3", "color": "Ivory Solid",   "finish": "Textured matt"},
-        ],
-    },
-    {
-        "filename": "MaterialMatch Demo — Kajaria Porcelain Range.pdf",
-        "brand": "Kajaria",
-        "collection": "Eternity Porcelain Range",
-        "category": "Tiles",
-        "material_family": "Porcelain tile",
-        "records": [
-            {"name": "Statuario Marble 800x1600 Porcelain", "code": "MM-DEMO-KJ-01",
-             "hex": "#F1EEE7", "color": "Statuario Marble", "finish": "Glossy"},
-            {"name": "Warm Wood Oak 200x1200 Porcelain",    "code": "MM-DEMO-KJ-02",
-             "hex": "#B29372", "color": "Warm Wood Oak",     "finish": "Matt"},
-            {"name": "Sand Beige Concrete 600x1200",         "code": "MM-DEMO-KJ-03",
-             "hex": "#D6C7B2", "color": "Sand Beige",        "finish": "Matt"},
-        ],
-    },
+_STUDIO_SEED_VERSION = "v2-real"
+
+# Curated real-record picks, grouped into synthetic "catalogue" uploads. Each
+# tuple is (brand, catalogue_display_name, [material_name filter list]).
+_STUDIO_SEED_PICKS: list[tuple[str, str, list[str]]] = [
+    ("Asian Paints", "Asian Paints — Colour Spectra Royale", [
+        "Cotton White", "Warm Ivory", "Almond Whisper", "Pearl Blossom",
+        "Wheat Cream", "Ivory Sand",
+    ]),
+    ("Greenlam", "Greenlam — Signature Wood Laminates", [
+        "Warm Oak HPL", "Smoked Oak Laminate", "Warm Ivory Solid",
+        "Fluted Oak Panel",
+    ]),
+    ("Kajaria", "Kajaria — Eternity Porcelain Range", [
+        "Statuario 800x1600", "Wood Oak Warm 200x1200",
+        "Sand Beige Cement 600x1200", "Terrazzo Warm 600x600",
+    ]),
 ]
 
 
+def _find_seed_record(brand: str, material_name: str) -> dict | None:
+    for item in SEEDED_CATALOGUE:
+        if item.get("brand") == brand and item.get("material_name") == material_name:
+            return item
+    return None
+
+
 async def _seed_demo_studio_catalogues() -> None:
-    """Idempotent: seed demo Studio catalogues + published records so the
-    Published Library is populated on first boot. Skipped once any demo-seed
-    record is already present."""
-    if db is None:  # pragma: no cover — safety when Mongo isn't wired
+    """Idempotent: seed the Studio Published Library with a curated subset of
+    real records from `catalogue_seed.py`. Purges legacy fabricated MM-DEMO-*
+    seeds from earlier versions."""
+    if db is None:  # pragma: no cover
         return
-    existing = await db.ke_records.find_one({"demo_seed": True})
-    if existing:
+    # 1. Migration: purge legacy fabricated records / uploads (any seed version
+    #    other than the current one is stale).
+    stale = await db.ke_records.count_documents(
+        {"demo_seed": True, "$or": [
+            {"seed_version": {"$exists": False}},
+            {"seed_version": {"$ne": _STUDIO_SEED_VERSION}},
+        ]}
+    )
+    if stale:
+        await db.ke_records.delete_many({
+            "demo_seed": True,
+            "$or": [
+                {"seed_version": {"$exists": False}},
+                {"seed_version": {"$ne": _STUDIO_SEED_VERSION}},
+            ],
+        })
+        await db.ke_uploads.delete_many({
+            "demo_seed": True,
+            "$or": [
+                {"seed_version": {"$exists": False}},
+                {"seed_version": {"$ne": _STUDIO_SEED_VERSION}},
+            ],
+        })
+        logger.info("Purged %d legacy Studio demo records", stale)
+
+    # 2. If current-version seed already present, nothing to do.
+    have_current = await db.ke_records.find_one(
+        {"demo_seed": True, "seed_version": _STUDIO_SEED_VERSION}
+    )
+    if have_current:
         return
+
     now = datetime.now(timezone.utc).isoformat()
-    for cat in _DEMO_STUDIO_CATALOGUES:
+    total = 0
+    for brand, catalogue_display, names in _STUDIO_SEED_PICKS:
+        picks = [_find_seed_record(brand, n) for n in names]
+        picks = [p for p in picks if p]
+        if not picks:
+            continue
         upload_id = str(uuid.uuid4())
         await db.ke_uploads.insert_one({
             "id": upload_id,
-            "filename": cat["filename"],
+            "filename": f"{catalogue_display}.pdf",
             "uploaded_by": "system-demo",
             "status": "published",
-            "page_count": len(cat["records"]),
-            "records_extracted": len(cat["records"]),
+            "page_count": len(picks),
+            "records_extracted": len(picks),
             "created_at": now,
             "demo_seed": True,
+            "seed_version": _STUDIO_SEED_VERSION,
         })
         rec_docs = []
-        for pi, rec in enumerate(cat["records"], start=1):
+        for pi, seed in enumerate(picks, start=1):
             rec_docs.append({
                 "id": str(uuid.uuid4()),
                 "upload_id": upload_id,
-                "brand": cat["brand"],
-                "collection": cat["collection"],
-                "material_name": rec["name"],
-                "material_code": rec["code"],
-                "category": cat["category"],
-                "material_family": cat["material_family"],
-                "finish": rec.get("finish"),
-                "color_name": rec.get("color"),
-                "color_hex": rec["hex"],
-                "texture": None,
+                "brand": seed["brand"],
+                "collection": seed.get("catalogue"),
+                "material_name": seed["material_name"],
+                "material_code": seed.get("material_code"),  # verbatim — usually None
+                "category": seed["category"],
+                "material_family": seed.get("material_family") or seed["category"],
+                "finish": seed.get("finish"),
+                "color_name": seed.get("color_name"),
+                "color_hex": seed.get("color_hex"),
+                "texture": seed.get("texture"),
                 "pattern": None,
                 "application": None,
                 "page_number": pi,
                 "page_preview_b64": None,
                 "status": "published",
-                "keywords": [w.lower() for w in rec["name"].split()][:8],
+                "keywords": list(seed.get("keywords", [])),
                 "created_at": now,
                 "published_at": now,
                 "demo_seed": True,
-                "source": "Demo catalogue",
+                "seed_version": _STUDIO_SEED_VERSION,
+                "source": "Reference catalogue",
             })
+            total += 1
         if rec_docs:
             await db.ke_records.insert_many(rec_docs)
-    logger.info("Seeded %d demo Studio catalogues", len(_DEMO_STUDIO_CATALOGUES))
+    if total:
+        logger.info("Seeded %d real Studio reference records", total)
 
 
 
@@ -1834,8 +1867,23 @@ def materialmatch_brain(row: dict) -> dict:
     # 4. Allowed libraries — start from category-aware search then filter by hard exclusions.
     allowed = list(_categories_for_row(row))
 
-    # 5. Wall-paint hard rule (paint applications ALWAYS search Paint only).
-    if app_ctx == "wall paint" or classification.lower() == "paint" or fam.lower() == "paint":
+    # 5. Wall-paint hard rule. Paint applications ALWAYS search Paint only —
+    # but only when the zone context is ambiguous or explicitly "wall paint".
+    # If the zone unambiguously names a non-paint application (backsplash,
+    # feature wall, headboard, flooring, countertop, etc.) we trust the zone
+    # context over the AI-supplied family (Sprint 8.2 — the mock AI often
+    # returns fam="Paint" for any wall-like region, overriding correct
+    # architectural intent).
+    _NON_PAINT_ZONE_CONTEXTS = {
+        "backsplash", "feature wall", "headboard wall", "flooring",
+        "countertop", "bathroom wet wall", "kitchen wall", "ceiling",
+        "curtain", "rug", "bedding", "furniture upholstery",
+        "furniture body", "lighting fixture", "hardware",
+    }
+    zone_overrides_family = app_ctx in _NON_PAINT_ZONE_CONTEXTS
+    if not zone_overrides_family and (
+        app_ctx == "wall paint" or classification.lower() == "paint" or fam.lower() == "paint"
+    ):
         allowed = ["Paints"]
     elif app_ctx == "curtain":
         allowed = ["Fabric"]
@@ -1855,6 +1903,24 @@ def materialmatch_brain(row: dict) -> dict:
         allowed = ["Stone", "Tiles", "Laminates"]
     elif app_ctx == "bathroom wet wall":
         allowed = ["Tiles", "Stone"]
+    elif app_ctx == "backsplash":
+        # Kitchen splashbacks are almost always porcelain tile, natural /
+        # engineered stone slab, or a wipeable laminate panel — never paint.
+        allowed = ["Tiles", "Stone", "Laminates"]
+    elif app_ctx == "kitchen wall":
+        # Kitchen walls above counters follow the same specification set as
+        # backsplashes; paint is only used well away from cooking surfaces.
+        allowed = ["Tiles", "Stone", "Laminates", "Paints"]
+    elif app_ctx == "feature wall":
+        # Feature / TV walls in residential interiors are specified as
+        # decorative panel, laminate, veneer, marble-look porcelain slab or
+        # engineered stone — flat paint alone is rarely the intended finish.
+        if any(k in mtype_l for k in ("marble", "veined", "stone", "gloss", "porcelain", "slab")):
+            allowed = ["Stone", "Tiles", "Laminates"]
+        else:
+            allowed = ["Laminates", "Veneers", "Tiles", "Stone"]
+    elif app_ctx == "headboard wall":
+        allowed = ["Laminates", "Veneers", "Fabric"]
 
     # 6. Hard blacklist by classification.
     blacklist = _HARD_EXCLUSIONS.get(classification, set())

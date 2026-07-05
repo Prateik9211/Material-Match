@@ -205,6 +205,19 @@ Refocused product around **Material Library + Catalogue Intelligence + Product D
 - ✅ **UI badges** — Studio Published Library shows `DEMO` (amber) chip; Knowledge Engine shows `UPLOADED` (black) or `DEMO` (amber) chip next to `PUBLISHED`.
 - ✅ **Match verification** — real project analyze-region on a paints context surfaces user-uploaded records at pct:75 alongside seeded ones.
 
+## Sprint 8.2 — Quality Pass (2026-02-27)
+Focus: eliminate weak / misleading matches. No new modules, no refactor.
+- ✅ **Real-record Studio seed** — fabricated `MM-DEMO-*` records replaced with 14 curated real entries pulled directly from `catalogue_seed.py` (Asian Paints × 6, Greenlam × 4, Kajaria × 4). Legacy records auto-purged on startup via `seed_version` migration.
+- ✅ **Matcher quality gates**:
+  - `min_overall` 40 → **62** in `_find_catalogue_matches`
+  - Removed the `not s["family_match"]` bypass that let sub-40 items through
+  - Absent-data defaults for `finish` / `texture` reduced 40 → 25 (stops empty metadata from inflating scores)
+  - `family_score` when the AI family is unrecognised now scores neutrally 75 (was 20) so category-approved items can still reach the Best tier on strong colour + keyword evidence.
+- ✅ **Brain context expansion** — explicit branches added for `backsplash`, `kitchen wall`, `feature wall` (marble-look vs wood-look), `headboard wall`. Zone context now overrides an AI-supplied `family=Paint` for these clearly non-paint applications.
+- ✅ **UI honesty** — MaterialCard now surfaces a recommended match only when ≥ 1 hit clears **75 %**; otherwise renders "No high-confidence catalogue match found." No more silent fallback to weak `possible` / `low` matches.
+- ✅ **Badge language** — Studio "Demo" chip renamed to subtle "Reference" (grey) since the records are real; "Uploaded" chip unchanged.
+- ✅ Regression: all 13 `test_studio_pipeline.py` still pass.
+
 ## Prioritized Backlog
 
 ### P1
