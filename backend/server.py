@@ -5518,6 +5518,43 @@ def _pdf_page_ocr_text(page, dpi: int = 200) -> str:
         return ""
 
 
+def _page_level_fallback_rect(page):
+    """Type-B catalogue fallback: many scanned supplier PDFs render each
+    page as a SINGLE full-page raster image (a scan of a physical
+    swatch page). Our per-swatch geometry filter rejects those as
+    "hero banners", so we get 0 records for the whole catalogue.
+
+    When (a) no swatch survived the geometry / pixel gates AND (b) the
+    page contains at least one embedded image that covers most of the
+    page, treat the whole page as one page-level swatch candidate. The
+    admin can then use the Preview page + Edit workflow to split /
+    correct these records in the Review Queue. Returns None if the
+    page doesn't fit the Type-B shape."""
+    try:
+        images = page.get_images(full=True)
+    except Exception:
+        return None
+    if not images:
+        return None
+    page_area = max(1.0, page.rect.width * page.rect.height)
+    for img in images:
+        try:
+            for r in page.get_image_rects(img[0]):
+                area = r.width * r.height
+                if area / page_area >= 0.60:
+                    # Give the fallback rect a small internal margin so
+                    # the dominant-colour sampler doesn't hit white gutters.
+                    m_x = r.width * 0.15
+                    m_y = r.height * 0.15
+                    return fitz.Rect(
+                        r.x0 + m_x, r.y0 + m_y,
+                        r.x1 - m_x, r.y1 - m_y,
+                    )
+        except Exception:
+            continue
+    return None
+
+
 def _ocr_available() -> bool:
     """Return True if AT LEAST ONE OCR provider (local or cloud) can
     service a page. Used to decide whether image-only pages should be
@@ -5767,15 +5804,19 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
     import re
     records: list[dict] = []
     now = datetime.now(timezone.utc).isoformat()
+    # ── STAGE 1: PDF VALIDATION ─────────────────────────────────────────
     try:
         pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
     except Exception as e:
-        logger.exception("PDF open failed")
+        logger.exception("[studio %s] PDF_VALIDATION failed: %s", upload_id, e)
         raise HTTPException(status_code=400, detail=f"Could not parse PDF: {e}")
     total_pages = pdf.page_count
+    logger.info("[studio %s] PDF_VALIDATION ok — %d page(s), %.1f MB",
+                upload_id, total_pages, len(pdf_bytes) / (1024 * 1024))
     pages_with_swatches = 0
     pages_ocr_attempted = 0
     pages_ocrd = 0
+    page_level_fallback_count = 0
     ocr_available = _tesseract_available()
     # Adaptive OCR DPI — very large PDFs use a smaller raster so we stay
     # under the container memory ceiling. 200 DPI for <=15 pages, 160
@@ -5796,11 +5837,8 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
                 pass
 
     for pi, page in enumerate(pdf, start=1):
-        # 1. Get all candidate swatch rectangles on the page.
-        swatch_rects = _detect_swatches_on_page(page)
-        # 2. Get whole-page text (or OCR fallback if none) to give the name /
-        #    code extractor a broader haystack for pages where text lives
-        #    away from the swatch.
+        # ── STAGE 2: PAGE RENDERING (implicit via fitz) ─────────────────
+        # ── STAGE 3: OCR (only when needed) ─────────────────────────────
         page_text = page.get_text("text") or ""
         used_ocr = False
         if not page_text.strip() and ocr_available:
@@ -5809,11 +5847,28 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
             if page_text.strip():
                 pages_ocrd += 1
                 used_ocr = True
-        # 3. Pages with no swatches AND (either no text OR text is all
-        #    warranty / cover boilerplate) are skipped silently.
+        # ── STAGE 4: LAYOUT + SWATCH DETECTION ──────────────────────────
+        swatch_rects = _detect_swatches_on_page(page)
+        # ── STAGE 4b: Type-B (scanned single-page-image) fallback ───────
+        # If detection finds nothing but the page IS a full-page raster
+        # image (very common in scanned supplier catalogues), emit a
+        # single page-level candidate record. This ensures scanned
+        # catalogues never yield zero records — the admin can then
+        # verify / split them in the Review Queue.
         if not swatch_rects:
+            fallback_rect = _page_level_fallback_rect(page)
+            if fallback_rect is not None:
+                swatch_rects = [fallback_rect]
+                page_level_fallback_count += 1
+                logger.info("[studio %s] page %d — SWATCH_DETECTION fell back "
+                            "to page-level image (scanned catalogue)",
+                            upload_id, pi)
+        if not swatch_rects:
+            logger.debug("[studio %s] page %d — no swatches detected", upload_id, pi)
             continue
         pages_with_swatches += 1
+        logger.info("[studio %s] page %d — %d swatch(es); text_chars=%d ocr=%s",
+                    upload_id, pi, len(swatch_rects), len(page_text), used_ocr)
 
         for si, rect in enumerate(swatch_rects, start=1):
             # A. Local text: prefer PDF text blocks near the swatch.
@@ -5885,7 +5940,18 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
             local_has_material_kw = any(k in local_l for k in _kw)
             page_has_material_kw = any(k in haystack_l for k in _kw)
             if not (has_local_code or local_has_material_kw or page_has_material_kw):
-                continue
+                # Scanned Type-B pages sometimes have OCR text that doesn't
+                # hit any material keyword (very short OCR yield). We still
+                # emit ONE record per page so the admin can review + label
+                # it manually — better than showing "no records" for an
+                # entire catalogue.
+                is_page_level_fallback = (
+                    si == 1
+                    and len(swatch_rects) == 1
+                    and rect.width * rect.height >= page.rect.width * page.rect.height * 0.30
+                )
+                if not is_page_level_fallback:
+                    continue
 
             # E. Material name selection.
             local_lines = [ln.strip() for ln in local.splitlines() if ln.strip()]
@@ -5894,9 +5960,18 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
                 page_lines = [ln.strip() for ln in page_text.splitlines() if ln.strip()]
                 name = next((ln for ln in page_lines if _looks_like_name(ln)), None)
             # If we ended up with neither a real name nor a local code,
-            # this is almost certainly a decorative element — skip it.
+            # this is almost certainly a decorative element — skip UNLESS
+            # this is the page-level Type-B fallback candidate, in which
+            # case we ship a placeholder name for the admin to correct.
             if not name and not local_code_match:
-                continue
+                is_page_level_fallback = (
+                    si == 1
+                    and len(swatch_rects) == 1
+                    and rect.width * rect.height >= page.rect.width * page.rect.height * 0.30
+                )
+                if not is_page_level_fallback:
+                    continue
+                name = f"Scanned page {pi}"
             if not name:
                 name = f"Swatch {pi}.{si}"
             name = name[:120]
@@ -5958,6 +6033,13 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
             })
 
     pdf.close()
+    # ── STAGE 5: RECORD GENERATION summary ──────────────────────────────
+    logger.info(
+        "[studio %s] RECORD_GENERATION — pages=%d pages_with_swatches=%d "
+        "pages_ocrd=%d page_level_fallback=%d records=%d",
+        upload_id, total_pages, pages_with_swatches, pages_ocrd,
+        page_level_fallback_count, len(records),
+    )
 
     if records:
         mode = "ocr" if pages_ocrd and pages_ocrd == pages_with_swatches else (
@@ -5968,6 +6050,7 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
             "pages_with_swatches": pages_with_swatches,
             "pages_ocrd": pages_ocrd,
             "pages_ocr_attempted": pages_ocr_attempted,
+            "page_level_fallback_count": page_level_fallback_count,
             "extraction_mode": mode,
             "failure_reason": None,
         }
@@ -5980,15 +6063,19 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
                       "for the GPT-4o-mini Vision fallback, or install the tesseract "
                       "binary.")
         elif pages_ocr_attempted > 0 and pages_ocrd == 0:
-            reason = ("OCR completed but no material swatches were detected — the catalogue "
-                      "may be all cover / lifestyle pages or use an unsupported layout.")
+            reason = ("OCR completed but returned no readable text. The catalogue may be "
+                      "a very low-resolution scan or contain only decorative graphics.")
         else:
-            reason = "No material swatches were detected on any page."
+            reason = ("No material swatches were detected on any page. This can happen "
+                      "when the catalogue's images are decorative-only (QR codes, "
+                      "lifestyle photos, logos) or use an unsupported layout. Use "
+                      "the Preview page action to inspect what the extractor saw.")
         meta = {
             "total_pages": total_pages,
             "pages_with_swatches": 0,
             "pages_ocrd": pages_ocrd,
             "pages_ocr_attempted": pages_ocr_attempted,
+            "page_level_fallback_count": page_level_fallback_count,
             "extraction_mode": "failed",
             "failure_reason": reason,
         }
@@ -6008,6 +6095,8 @@ async def _run_studio_extraction(upload_id: str, data: bytes, filename: str) -> 
     OCR'd)."""
     import asyncio
     try:
+        logger.info("[studio %s] UPLOAD accepted — filename=%r size=%.1fMB",
+                    upload_id, filename, len(data) / (1024 * 1024))
         # Off-load the CPU-bound extractor to a worker thread so the
         # asyncio event loop is free for all other requests.
         records, meta = await asyncio.to_thread(
@@ -6015,6 +6104,8 @@ async def _run_studio_extraction(upload_id: str, data: bytes, filename: str) -> 
         )
         if records:
             await db.ke_records.insert_many(records)
+            logger.info("[studio %s] DATABASE_SAVE — inserted %d record(s)",
+                        upload_id, len(records))
         status = "review" if records else "failed"
         update_fields = {
             "status": status,
@@ -6026,12 +6117,16 @@ async def _run_studio_extraction(upload_id: str, data: bytes, filename: str) -> 
             ),
             "pages_ocrd": meta.get("pages_ocrd", 0),
             "pages_with_text": meta.get("pages_with_text", 0),
+            "page_level_fallback_count": meta.get("page_level_fallback_count", 0),
             "extracted_at": datetime.now(timezone.utc).isoformat(),
         }
         await db.ke_uploads.update_one({"id": upload_id}, {"$set": update_fields})
+        logger.info("[studio %s] FINAL_STATUS = %s (records=%d)",
+                    upload_id, status, len(records))
         await _refresh_studio_index()
     except Exception as e:
-        logger.exception("studio ingest failed (background) for %s", filename)
+        logger.exception("[studio %s] EXTRACTION_CRASHED filename=%r",
+                         upload_id, filename)
         # Best-effort — always record a diagnostic on failure so the
         # admin sees a meaningful message in the Processing Queue.
         try:

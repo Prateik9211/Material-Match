@@ -19,6 +19,7 @@ import {
   Trash2,
   Archive,
   Sparkles,
+  AlertCircle,
 } from "lucide-react";
 
 const TABS = [
@@ -28,22 +29,33 @@ const TABS = [
   { id: "library", label: "Published Library", icon: BookOpen },
 ];
 
-function StatusBadge({ status }) {
+function StatusBadge({ status, records }) {
+  // A `failed` upload with 0 records is meaningfully different from a
+  // crash — it means "extraction ran to completion but found nothing".
+  // Surface that clearly so admins don't confuse it with a stuck job.
+  const effective =
+    status === "failed" && (records === 0 || records === undefined)
+      ? "no_records"
+      : status;
   const map = {
     processing: "bg-amber-50 text-amber-700 border-amber-200",
     review: "bg-blue-50 text-blue-700 border-blue-200",
     review_remaining: "bg-blue-50 text-blue-700 border-blue-200",
     published: "bg-emerald-50 text-emerald-700 border-emerald-200",
     failed: "bg-rose-50 text-rose-700 border-rose-200",
+    no_records: "bg-orange-50 text-orange-700 border-orange-200",
     draft: "bg-stone-panel text-warm-grey border-stone-border-soft",
     rejected: "bg-neutral-100 text-neutral-500 border-neutral-200",
     archived: "bg-neutral-100 text-neutral-600 border-neutral-300",
   };
-  const label = { review_remaining: "review remaining" }[status] || status;
+  const label = {
+    review_remaining: "review remaining",
+    no_records: "needs attention",
+  }[effective] || effective;
   return (
     <span
-      className={`text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full border font-semibold ${map[status] || map.draft}`}
-      data-testid={`studio-status-${status}`}
+      className={`text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full border font-semibold ${map[effective] || map.draft}`}
+      data-testid={`studio-status-${effective}`}
     >
       {label}
     </span>
@@ -291,7 +303,7 @@ function ProcessingTab({ uploads, loading, onRefresh, onOpenReview, onDelete, on
                   )}
                 </button>
                 <div className="flex flex-col items-end gap-1.5 shrink-0">
-                  <StatusBadge status={u.status} />
+                  <StatusBadge status={u.status} records={u.records_extracted} />
                   {!isSeed && (
                     <div className="flex items-center gap-1 flex-wrap justify-end">
                       <button
@@ -564,6 +576,9 @@ function ReviewTab({ uploads, selectedUploadId, setSelectedUploadId, onDelete })
               className="text-center text-sm py-14 border border-dashed border-amber-300 bg-amber-50/50 rounded-2xl px-6"
               data-testid="studio-review-empty"
             >
+              <div className="inline-flex items-center gap-2 text-[10px] uppercase tracking-widest px-2 py-0.5 rounded-full border border-orange-200 bg-orange-50 text-orange-700 font-semibold mb-3">
+                <AlertCircle className="w-3 h-3" strokeWidth={2} /> Needs attention
+              </div>
               <div className="font-display text-base font-semibold text-charcoal mb-1">
                 No records could be extracted from this upload.
               </div>
@@ -571,18 +586,30 @@ function ReviewTab({ uploads, selectedUploadId, setSelectedUploadId, onDelete })
                 {activeUpload?.failure_reason || "The catalogue layout was not recognised."}
               </p>
               <p className="text-warm-grey text-xs mt-2 mb-4">
-                Approve and Publish are disabled until records can be extracted. Try re-uploading a text-based PDF or a higher-resolution scan.
+                Use <b>Preview page</b> to inspect what the extractor saw, click <b>Reprocess</b> in the Processing Queue to retry, or delete this upload.
               </p>
-              {activeUpload && !activeUpload.demo_seed && (
-                <button
-                  type="button"
-                  onClick={() => onDelete && onDelete(activeUpload)}
-                  className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-rose-200 text-rose-700 bg-white hover:bg-rose-50"
-                  data-testid="studio-review-delete-failed"
-                >
-                  <Trash2 className="w-3.5 h-3.5" /> Delete this upload
-                </button>
-              )}
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                {activeUpload?.page_count > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setPreviewingPage({ upload_id: activeUpload.id, page: 1 })}
+                    className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-stone-border-soft bg-white hover:bg-stone-panel/40"
+                    data-testid="studio-review-preview-empty"
+                  >
+                    Preview page 1
+                  </button>
+                )}
+                {activeUpload && !activeUpload.demo_seed && (
+                  <button
+                    type="button"
+                    onClick={() => onDelete && onDelete(activeUpload)}
+                    className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-rose-200 text-rose-700 bg-white hover:bg-rose-50"
+                    data-testid="studio-review-delete-failed"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" /> Delete this upload
+                  </button>
+                )}
+              </div>
             </div>
           ) : (
             <div className="grid md:grid-cols-2 gap-3" data-testid="studio-review-list">
@@ -1066,6 +1093,22 @@ export default function MaterialMatchStudio() {
     loadUploads();
   }, [user, loadUploads, navigate]);
 
+  // Live polling — while ANY upload is still in `processing`, refresh
+  // the upload list every 4s so the Processing Queue accurately reflects
+  // backend state (background extraction terminal transitions). Stops
+  // immediately once every row is in a terminal state. This is what
+  // prevents "stuck on Processing / spinner frozen halfway" UI bugs
+  // when the backend has already reached `review` / `failed`.
+  const anyProcessing = useMemo(
+    () => uploads.some((u) => u.status === "processing"),
+    [uploads],
+  );
+  useEffect(() => {
+    if (!anyProcessing) return;
+    const t = setInterval(() => { loadUploads(); }, 4000);
+    return () => clearInterval(t);
+  }, [anyProcessing, loadUploads]);
+
   const totalDraftRecords = useMemo(
     () => uploads.reduce((s, u) => s + (u.status === "review" ? u.records_extracted || 0 : 0), 0),
     [uploads]
@@ -1235,11 +1278,15 @@ export default function MaterialMatchStudio() {
           {TABS.map((t) => {
             const Icon = t.icon;
             const active = tab === t.id;
+            // Spin the Processing Queue icon ONLY while at least one
+            // upload is actually processing. Prevents the "frozen
+            // spinner halfway" bug when there is no active job.
+            const isSpinning = t.id === "processing" && anyProcessing;
             return (
               <button
                 key={t.id}
                 type="button"
-                onClick={() => setTab(t.id)}
+                onClick={() => { setTab(t.id); loadUploads(); }}
                 className={`inline-flex items-center gap-2 px-4 py-3 text-sm border-b-2 transition-colors whitespace-nowrap ${
                   active
                     ? "border-charcoal text-charcoal font-semibold"
@@ -1247,7 +1294,10 @@ export default function MaterialMatchStudio() {
                 }`}
                 data-testid={`studio-tab-${t.id}`}
               >
-                <Icon className="w-4 h-4" strokeWidth={1.5} />
+                <Icon
+                  className={`w-4 h-4 ${isSpinning ? "animate-spin" : ""}`}
+                  strokeWidth={1.5}
+                />
                 {t.label}
               </button>
             );
