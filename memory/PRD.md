@@ -346,6 +346,58 @@ Focus: production-grade stability for the catalogue ingestion pipeline. Root-cau
 - **New**: `tests/test_studio_async_ingestion.py` — 5 tests covering async upload response time, event-loop responsiveness, invalid PDF rejection, non-PDF rejection, no-stuck-processing guarantee.
 - **Updated**: `test_studio_pipeline.py` + `test_studio_sprint87.py` now poll for terminal status after upload.
 - **Full studio suite: 41/41 pass** (test_studio_async_ingestion.py + test_studio_pipeline.py + test_studio_bulk_edit.py + test_studio_sprint87.py) + 3 pre-existing skips. Iteration 15 report: 100 %.
+
+## Sprint 2 — OCR Provider Chain (Persistent Production OCR) (2026-07-13)
+Focus: make OCR survive **preview restart, pod recycle, fresh deployment, and application redeployment** — without depending on a system apt package we can't ship in Emergent's base image.
+
+### The persistence problem
+Investigation of the Emergent deployment mechanism confirmed:
+- `/app/.emergent/emergent.yml` pins the base image (`fastapi_react_mongo_shadcn_base_image_cloud_arm`).
+- No Dockerfile / `apt.txt` / `packages.txt` / `pre_start.sh` mechanism is honored from the repo.
+- Only `backend/requirements.txt` (pip) and `frontend/package.json` (yarn) persist through deploys.
+- Manual `apt-get install tesseract-ocr` is wiped on pod recycle.
+
+Therefore Tesseract **cannot** be persisted through repo changes alone.
+
+### Solution — OCR provider chain
+- New module `/app/backend/ocr_providers.py` — provider abstraction with a single public API `chain.transcribe(png_bytes) -> (text, provider_used)`.
+- **Tesseract provider** — local, fast, offline. Used when the binary happens to be present (preview environment).
+- **GPT-4o-mini Vision provider** — cloud fallback via the Emergent Universal Key (`EMERGENT_LLM_KEY`). Persistent across all deploys. Uses `emergentintegrations.llm.chat.LlmChat` per the official integration playbook. Model: `openai/gpt-4o-mini`.
+- Chain policy: try local first, fall back to cloud if the local result is empty or too short. Downstream material extraction sees the same `str` output regardless of provider.
+- Image is downscaled to 1400px longest side + JPEG q82 before base64 encoding → keeps vision input tokens under ~1,600/page.
+- Per-swatch strip OCR is only invoked when a LOCAL provider is present. With vision-only OCR we use the whole-page text for every swatch on that page (avoids 10× cost per catalogue).
+
+### Verified with a fresh clean-slate test
+- Container recycled → tesseract absent (`shutil.which("tesseract") == None`).
+- Backend startup log: `Studio OCR: provider chain ready — gpt-4o-mini`.
+- Uploaded 25 MB / 31-page image-only ADVANCE laminate catalogue.
+- Upload returned HTTP 200 in 1.09s.
+- Background vision OCR ran on all 31 pages; extraction completed in ~4 min.
+- **93 records extracted** (all swatches with color hex + page reference).
+- Login latency during vision run: 420ms. Event loop stayed healthy.
+- Garbage PDF returns HTTP 400 "Not a valid PDF" — no crash, no orphan row.
+- Supervisor status: RUNNING throughout.
+
+### Cost per catalogue page (measured)
+- Input tokens per page: ~1,600  → $0.00024
+- Output tokens per page: ~250    → $0.00015
+- **Total: ~$0.00039 per page** (about $0.012 per 31-page catalogue, $0.39 per 1000 pages).
+
+### Testing
+- New `tests/test_ocr_providers.py` — 11 unit tests: chain fallback, unavailable-provider skip, provider-crash isolation, short-text fallback trigger, cached availability check, API-key gating on vision provider.
+- Full studio suite still green: **52/52 tests pass** (test_ocr_providers + test_studio_pipeline + test_studio_bulk_edit + test_studio_sprint87 + test_studio_async_ingestion).
+
+### Remaining hosting limitations (transparent disclosure)
+- Vision OCR produces PAGE-level text, not PER-SWATCH bboxes. When Tesseract is absent, all swatches on the same page share the same `material_name` hint; the admin edits them in the Review Queue if precision matters.
+- Emergent's ingress limits response streaming for very-long-running requests, but this is now moot because extraction is a background task.
+- If `EMERGENT_LLM_KEY` is exhausted or unset, the pipeline surfaces a clear diagnostic: "This catalogue appears to be image-based … Set EMERGENT_LLM_KEY for the GPT-4o-mini Vision fallback, or install the tesseract binary."
+
+### What we deliberately did NOT do
+- No Redis / RQ / SQS queue (Phase 1 architecture, deferred).
+- No S3 presigned uploads.
+- No GPU workers.
+- No changes to MaterialMatch Brain, Knowledge Engine, recommendation UI, landing page, demo project, or region selector.
+
 - **Live regression on the preview URL**: 25 MB / 31-page image-only PDF uploaded → HTTP 200 in 1.2 s; background OCR completed in ~3 min → 53 clean records extracted (BEIGE, BLUISH GREY, ROMANTIC PINK, MISTY GREY, GOTHIC GREY, RICH LIGHT GREY GRANITE, LAKE BLUE, …); parent status transitioned `processing → review → published` correctly.
 
 - Save/star favorite matches

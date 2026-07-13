@@ -3946,20 +3946,23 @@ async def get_client_config():
 # ============================================================================
 @app.on_event("startup")
 async def startup_event():
-    # Studio ingestion: log a clear warning if the tesseract OCR binary is
-    # missing. Image-only supplier PDFs cannot be extracted without it,
-    # so the admin needs to know before uploading a scanned catalogue.
+    # Studio ingestion: report which OCR providers are available. We now
+    # run a provider chain (Tesseract → GPT-4o-mini Vision) so image-only
+    # supplier PDFs work in production even without the tesseract binary.
     try:
-        if _tesseract_available():
-            logger.info("Studio OCR: tesseract available — image-only PDFs will be processed.")
+        from ocr_providers import get_ocr_provider_chain
+        chain = get_ocr_provider_chain()
+        avail = chain.available_providers
+        if avail:
+            logger.info("Studio OCR: provider chain ready — %s", ", ".join(avail))
         else:
             logger.warning(
-                "Studio OCR: tesseract binary is NOT installed. Image-only PDFs "
-                "will fail extraction with a clear diagnostic. Install with: "
-                "apt-get install -y tesseract-ocr libtesseract-dev"
+                "Studio OCR: NO providers available. Install tesseract "
+                "(apt-get install tesseract-ocr) OR set EMERGENT_LLM_KEY "
+                "for the GPT-4o-mini Vision fallback."
             )
     except Exception:
-        pass
+        logger.exception("Studio OCR: provider-chain init failed")
     try:
         await db.users.create_index("email", unique=True)
         await db.projects.create_index([("user_id", 1), ("created_at", -1)])
@@ -5464,31 +5467,60 @@ def _swatch_from_page(page) -> tuple[str, str | None]:
 
 
 def _pdf_page_ocr_text(page, dpi: int = 200) -> str:
-    """OCR a full PDF page and return its text. Used as a fallback when the
-    PDF has no embedded machine-readable text on this page. `dpi` is
-    tuned by the caller — small PDFs use 200 DPI, very large PDFs drop
-    to 140 DPI to keep OCR memory bounded (a 31-page A3 scan at 200 DPI
-    is ~1.5 GB of raster which risks OOM on the container)."""
+    """Render a PDF page to a PNG and run it through the OCR provider
+    chain — Tesseract first (fast, offline, may not be present in
+    production), GPT-4o-mini Vision second (persistent, always
+    available via the Emergent Universal Key). Returns plain UTF-8
+    text; downstream material extraction does not need to know which
+    provider produced it.
+
+    `dpi` is chosen by the caller — small PDFs get 200 DPI, very
+    large PDFs drop to ~130 DPI to keep memory bounded."""
     try:
-        import pytesseract  # type: ignore
-        from PIL import Image
-        import io as _io
+        from ocr_providers import get_ocr_provider_chain
         scale = max(0.8, dpi / 72.0)
         pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
-        img = Image.open(_io.BytesIO(pix.tobytes("png")))
-        return pytesseract.image_to_string(img) or ""
+        png_bytes = pix.tobytes("png")
+        chain = get_ocr_provider_chain()
+        text, _provider = chain.transcribe(png_bytes)
+        return text
     except Exception:
         logger.exception("OCR failed for page")
         return ""
 
 
-def _tesseract_available() -> bool:
+def _ocr_available() -> bool:
+    """Return True if AT LEAST ONE OCR provider (local or cloud) can
+    service a page. Used to decide whether image-only pages should be
+    processed at all."""
     try:
-        import pytesseract  # type: ignore
-        _ = pytesseract.get_tesseract_version()
-        return True
+        from ocr_providers import get_ocr_provider_chain
+        return bool(get_ocr_provider_chain().available_providers)
     except Exception:
         return False
+
+
+def _has_local_ocr() -> bool:
+    """Return True if a LOCAL (offline / cheap) OCR provider is present.
+    Used to decide whether the extractor should do per-strip OCR on
+    individual swatches — cheap with tesseract, prohibitively expensive
+    with cloud vision, which already handles the whole page at once."""
+    try:
+        from ocr_providers import get_ocr_provider_chain, TesseractProvider
+        chain = get_ocr_provider_chain()
+        for p in chain._providers:
+            if isinstance(p, TesseractProvider) and p.is_available():
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _tesseract_available() -> bool:
+    """Backwards-compat: kept for existing callers. Returns True if
+    ANY OCR provider is available (tesseract or the cloud fallback).
+    We keep the historical name so all existing gates keep working."""
+    return _ocr_available()
 
 
 def _detect_swatches_on_page(page) -> list:
@@ -5653,13 +5685,14 @@ def _nearest_text_for_rect(page, rect, radius: float = 260.0) -> str:
 def _ocr_text_below_swatch(page, rect) -> str:
     """OCR a horizontal strip immediately below a swatch to catch labels
     that live outside the embedded PDF text stream (common in scanned or
-    lifestyle-render catalogues)."""
-    if not _tesseract_available():
-        return ""
+    lifestyle-render catalogues). Uses the shared OCR provider chain so
+    the same call works with tesseract locally and with GPT-4o-mini
+    Vision in production."""
     try:
-        import pytesseract  # type: ignore
-        from PIL import Image
-        import io as _io
+        from ocr_providers import get_ocr_provider_chain
+        chain = get_ocr_provider_chain()
+        if not chain.available_providers:
+            return ""
         strip = fitz.Rect(
             max(0, rect.x0 - 6),
             rect.y1,
@@ -5667,9 +5700,10 @@ def _ocr_text_below_swatch(page, rect) -> str:
             min(page.rect.height, rect.y1 + max(80, rect.height * 0.6)),
         )
         pix = page.get_pixmap(clip=strip, matrix=fitz.Matrix(220 / 72, 220 / 72), alpha=False)
-        img = Image.open(_io.BytesIO(pix.tobytes("png")))
-        return (pytesseract.image_to_string(img) or "").strip()
+        text, _p = chain.transcribe(pix.tobytes("png"))
+        return (text or "").strip()
     except Exception:
+        logger.exception("swatch-strip OCR failed")
         return ""
 
 
@@ -5755,8 +5789,12 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
         for si, rect in enumerate(swatch_rects, start=1):
             # A. Local text: prefer PDF text blocks near the swatch.
             local = _nearest_text_for_rect(page, rect)
-            # B. If local text is thin, OCR the strip below the swatch.
-            if len(local) < 8 and ocr_available:
+            # B. If local text is thin AND we have a fast local OCR
+            # (tesseract), OCR the strip below the swatch for a stronger
+            # label hint. We DO NOT run per-strip vision OCR — the
+            # whole-page vision text already covers every swatch, and
+            # ~10 strips × 31 pages would 10× our vision cost per PDF.
+            if len(local) < 8 and _has_local_ocr():
                 local = _ocr_text_below_swatch(page, rect)
             haystack = f"{local}\n{page_text}"
             haystack_l = haystack.lower()
@@ -5796,12 +5834,15 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
             # D. Product-context filter — a genuine material swatch is
             # almost always paired with a nearby product name / code /
             # keyword. We require at least one of:
-            #   (a) A material-family keyword in the LOCAL text, or
-            #   (b) A code-like token in the LOCAL text.
+            #   (a) A material-family keyword in the surrounding text, or
+            #   (b) A code-like token in the local text.
+            # LOCAL text is preferred (strong evidence), but when the OCR
+            # provider is a whole-page vision LLM (no per-swatch bboxes)
+            # we accept a page-wide keyword hit as sufficient context.
             # This drops QR codes, logos, decorative circles and banners
-            # that happen to sit on the same page as real swatches.
-            has_local_code = local_code_match is not None
-            local_has_material_kw = any(k in local_l for k in (
+            # that happen to sit on the same page as real swatches while
+            # still working with both tesseract and vision OCR.
+            _kw = (
                 "laminate", "veneer", "wood", "oak", "walnut", "teak",
                 "marble", "stone", "matte", "matt", "gloss", "finish",
                 "colour", "color", "tile", "porcelain", "ceramic", "linen",
@@ -5810,8 +5851,11 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
                 "mica", "sunmica", "acrylic", "hpl", "mdf", "ply",
                 "beige", "grey", "gray", "brown", "cream", "ivory",
                 "black", "white", "red", "blue", "green", "gold",
-            ))
-            if not (has_local_code or local_has_material_kw):
+            )
+            has_local_code = local_code_match is not None
+            local_has_material_kw = any(k in local_l for k in _kw)
+            page_has_material_kw = any(k in haystack_l for k in _kw)
+            if not (has_local_code or local_has_material_kw or page_has_material_kw):
                 continue
 
             # E. Material name selection.
@@ -5902,8 +5946,10 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
         if total_pages == 0:
             reason = "PDF has no pages."
         elif not ocr_available and pages_ocr_attempted == 0:
-            reason = ("This catalogue appears to be image-based (no machine-readable text) "
-                      "and OCR is not available on this server.")
+            reason = ("This catalogue appears to be image-based (no machine-readable "
+                      "text) and no OCR provider is available. Set EMERGENT_LLM_KEY "
+                      "for the GPT-4o-mini Vision fallback, or install the tesseract "
+                      "binary.")
         elif pages_ocr_attempted > 0 and pages_ocrd == 0:
             reason = ("OCR completed but no material swatches were detected — the catalogue "
                       "may be all cover / lifestyle pages or use an unsupported layout.")
