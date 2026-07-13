@@ -3963,6 +3963,35 @@ async def startup_event():
             )
     except Exception:
         logger.exception("Studio OCR: provider-chain init failed")
+
+    # Studio ingestion — recovery sweep. Any upload left in `processing`
+    # is by definition orphaned (the background task that owned it died
+    # with the previous process). We flip those to `failed` with a clear
+    # diagnostic so the admin can click Reprocess to retry. This makes
+    # OCR jobs recoverable across application restarts, pod recycles and
+    # deploys — no upload can ever be stuck on `processing` forever.
+    try:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        res = await db.ke_uploads.update_many(
+            {"status": "processing"},
+            {"$set": {
+                "status": "failed",
+                "failure_reason": (
+                    "Extraction was interrupted by an application restart or "
+                    "provider failure. Click Reprocess to retry — the "
+                    "uploaded PDF is still saved on the server."
+                ),
+                "interrupted_at": now_iso,
+            }},
+        )
+        if res.modified_count:
+            logger.warning(
+                "Studio recovery: reset %d upload(s) from processing → failed",
+                res.modified_count,
+            )
+    except Exception:
+        logger.exception("Studio recovery sweep failed")
+
     try:
         await db.users.create_index("email", unique=True)
         await db.projects.create_index([("user_id", 1), ("created_at", -1)])

@@ -81,3 +81,7 @@ memory/test_credentials.md
 # Mobile development
 android-sdk/frontend/node_modules/.cache/default-development/4.pack
 frontend/node_modules/.cache/default-development/4.pack
+
+# MaterialMatch — persisted upload blobs (per-pod, not for repo)
+backend/uploads_data/
+

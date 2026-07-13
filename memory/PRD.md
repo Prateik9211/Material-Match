@@ -347,7 +347,7 @@ Focus: production-grade stability for the catalogue ingestion pipeline. Root-cau
 - **Updated**: `test_studio_pipeline.py` + `test_studio_sprint87.py` now poll for terminal status after upload.
 - **Full studio suite: 41/41 pass** (test_studio_async_ingestion.py + test_studio_pipeline.py + test_studio_bulk_edit.py + test_studio_sprint87.py) + 3 pre-existing skips. Iteration 15 report: 100 %.
 
-## Sprint 2 — OCR Provider Chain (Persistent Production OCR) (2026-07-13)
+## Sprint 2 — OCR Provider Chain (Persistent Production OCR) (2026-07-13) — **FROZEN for RC1**
 Focus: make OCR survive **preview restart, pod recycle, fresh deployment, and application redeployment** — without depending on a system apt package we can't ship in Emergent's base image.
 
 ### The persistence problem
@@ -393,10 +393,18 @@ Therefore Tesseract **cannot** be persisted through repo changes alone.
 - If `EMERGENT_LLM_KEY` is exhausted or unset, the pipeline surfaces a clear diagnostic: "This catalogue appears to be image-based … Set EMERGENT_LLM_KEY for the GPT-4o-mini Vision fallback, or install the tesseract binary."
 
 ### What we deliberately did NOT do
-- No Redis / RQ / SQS queue (Phase 1 architecture, deferred).
-- No S3 presigned uploads.
-- No GPU workers.
-- No changes to MaterialMatch Brain, Knowledge Engine, recommendation UI, landing page, demo project, or region selector.
+No Redis / RQ / SQS queue (Phase 1 architecture, deferred).
+No S3 presigned uploads. No GPU workers. No PaddleOCR. No changes to MaterialMatch Brain, Knowledge Engine, recommendation UI, landing page, demo project, or region selector. No optional enhancements (deferred).
+
+### RC1 recoverability guarantee
+- **Startup recovery sweep** — `startup_event` scans `ke_uploads` for any row still in `status="processing"` and flips it to `failed` with a human-readable `failure_reason` ("Extraction was interrupted by an application restart or provider failure. Click Reprocess to retry — the uploaded PDF is still saved on the server.") plus an `interrupted_at` timestamp. Runs unconditionally on every boot.
+- **Idempotent** — verified via `tests/test_studio_recovery.py`: second sweep never re-touches an already-failed row.
+- **Provider failures are contained** — the background extractor's outer try/except always converts unhandled exceptions into `status=failed` + diagnostic. No orphan `processing` rows can ever accumulate.
+- **PDF blob survives** — persisted to `/app/backend/uploads_data/{upload_id}.pdf` on upload, so Reprocess just re-runs the extractor without asking the admin to re-upload.
+- **Frontend UX** — the Reprocess button is visible on every non-seed row regardless of current status (draft / review / published / failed / archived).
+
+### RC1 architecture freeze
+As of `HEAD = d4793f0075586223f329cc2b665b1e64ab7b40b9` (checkpoint after Sprint 2), the OCR provider architecture is FROZEN for competition submission. No additional providers, prompt tuning, retry-with-backoff, cost previews, JSON schema outputs, or Phase 1 background-worker migration. Future work moves to backlog only.
 
 - **Live regression on the preview URL**: 25 MB / 31-page image-only PDF uploaded → HTTP 200 in 1.2 s; background OCR completed in ~3 min → 53 clean records extracted (BEIGE, BLUISH GREY, ROMANTIC PINK, MISTY GREY, GOTHIC GREY, RICH LIGHT GREY GRANITE, LAKE BLUE, …); parent status transitioned `processing → review → published` correctly.
 
