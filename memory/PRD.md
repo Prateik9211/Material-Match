@@ -314,6 +314,40 @@ Focus: production-grade catalogue lifecycle + high-precision swatch extraction o
 - Vendor/SKU tagging on catalogue items
 - Stripe billing (Studio free / Practice $49 paywall)
 - Google OAuth social login
+
+## Sprint 1 — Permanent PDF Ingestion Fix (2026-07-13, post-freeze stability)
+Focus: production-grade stability for the catalogue ingestion pipeline. Root-cause fix for large-PDF crashes and event-loop starvation.
+
+### Root cause of previous upload failures
+`_extract_records_from_pdf` was called **inside** the FastAPI request handler for `POST /admin/studio/upload`. On a scanned 25 MB catalogue this ran 60–120 s of CPU-heavy OCR + PDF rendering **on the asyncio event loop**, causing:
+1. Cloudflare 502 (60 s ingress timeout) — the client thought the upload failed even though extraction was still running.
+2. Login / KE search / dashboard freezes — every other request queued behind the OCR loop iteration.
+3. Uploads occasionally stuck in `processing` when the extractor raised an uncaught exception mid-request.
+
+### Fix
+- **Background task** — `POST /admin/studio/upload` now validates the PDF magic bytes with `fitz.open()`, inserts a placeholder `ke_uploads` row with `status="processing"`, then fires-and-forgets `asyncio.create_task(_run_studio_extraction(...))` and returns HTTP 200 in <2 s.
+- **Thread-pool offload** — `_run_studio_extraction` calls the CPU-bound extractor via `asyncio.to_thread(_extract_records_from_pdf, ...)`. The event loop stays responsive — login = 406 ms and `/admin/studio/uploads` = 108 ms while a 31-page OCR run is in progress.
+- **Guaranteed terminal state** — the background task's try/except **always** writes either `status="review"` (with records) or `status="failed"` (with a human-readable `failure_reason`). No upload can be stuck in `processing`.
+- **Reprocess & Replace made async too** — same pattern, both endpoints return immediately with `status=processing`.
+- **Adaptive OCR DPI** — 200 DPI for ≤15-page PDFs, 160 DPI for 15–40 pages, 130 DPI for 40+ pages. Keeps memory bounded on very large scans.
+- **Up-front validation** — invalid PDFs (garbage bytes / non-PDF extensions) return HTTP 400 **before** the ke_uploads row is created. No orphan rows.
+- **Startup diagnostics** — backend logs `Studio OCR: tesseract available` or a `WARNING` with install instructions if the binary is missing.
+
+### Final upload size limit
+`STUDIO_MAX_UPLOAD_BYTES = 150 MB` (unchanged). The container comfortably handles 31-page image-only PDFs at 25 MB with the new adaptive DPI ceiling.
+
+### How backend crash risk was fixed
+- No more event-loop starvation → login, KE search and dashboards stay responsive during OCR.
+- No more Cloudflare 502s → upload response arrives in ~1 s regardless of PDF size.
+- Exceptions inside the extractor no longer bubble up to the request → the background wrapper always converts them into `status=failed` + `failure_reason`.
+- Adaptive OCR DPI + max-150 MB size cap keeps peak memory well under the container ceiling.
+
+### Testing
+- **New**: `tests/test_studio_async_ingestion.py` — 5 tests covering async upload response time, event-loop responsiveness, invalid PDF rejection, non-PDF rejection, no-stuck-processing guarantee.
+- **Updated**: `test_studio_pipeline.py` + `test_studio_sprint87.py` now poll for terminal status after upload.
+- **Full studio suite: 41/41 pass** (test_studio_async_ingestion.py + test_studio_pipeline.py + test_studio_bulk_edit.py + test_studio_sprint87.py) + 3 pre-existing skips. Iteration 15 report: 100 %.
+- **Live regression on the preview URL**: 25 MB / 31-page image-only PDF uploaded → HTTP 200 in 1.2 s; background OCR completed in ~3 min → 53 clean records extracted (BEIGE, BLUISH GREY, ROMANTIC PINK, MISTY GREY, GOTHIC GREY, RICH LIGHT GREY GRANITE, LAKE BLUE, …); parent status transitioned `processing → review → published` correctly.
+
 - Save/star favorite matches
 - Comparison view (side-by-side reference vs matched product)
 - Refactor `server.py` (~2900 lines) into `routes/`, `services/`, `models/` modules
