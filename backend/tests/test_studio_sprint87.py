@@ -73,8 +73,19 @@ def fresh_upload(admin_session):
     )
     assert r.status_code == 200, r.text[:300]
     data = r.json()
-    assert data["records_extracted"] >= 1
-    return data["upload_id"]
+    # Upload is async — wait for the background extractor to finish
+    # before returning to the test.
+    import time as _t
+    upload_id = data["upload_id"]
+    for _ in range(60):
+        u = _get_upload(admin_session, upload_id)
+        if u and u.get("status") not in (None, "processing"):
+            break
+        _t.sleep(0.5)
+    u = _get_upload(admin_session, upload_id)
+    assert u is not None, "upload disappeared"
+    assert u.get("records_extracted", 0) >= 1, f"no records extracted: {u}"
+    return upload_id
 
 
 def _get_upload(session, upload_id):
@@ -171,9 +182,17 @@ class TestReprocess:
             f"{BASE_URL}/api/admin/studio/uploads/{fresh_upload}/reprocess",
             timeout=90,
         )
-        # Blob is stored on upload, so should succeed
+        # Blob is stored on upload, so should succeed.
         assert r.status_code == 200, r.text[:300]
-        assert r.json()["records_extracted"] >= 0
+        # Reprocess is async — wait for the background extractor.
+        import time as _t
+        for _ in range(60):
+            u = _get_upload(admin_session, fresh_upload)
+            if u and u.get("status") not in (None, "processing"):
+                break
+            _t.sleep(0.5)
+        u = _get_upload(admin_session, fresh_upload)
+        assert u.get("records_extracted", 0) >= 0
 
     def test_reprocess_reference_seed_blocked(self, admin_session):
         r = admin_session.get(f"{BASE_URL}/api/admin/studio/uploads", timeout=15)

@@ -10,6 +10,7 @@ import json
 import logging
 import secrets
 import uuid
+import asyncio
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional, Annotated
@@ -3945,6 +3946,20 @@ async def get_client_config():
 # ============================================================================
 @app.on_event("startup")
 async def startup_event():
+    # Studio ingestion: log a clear warning if the tesseract OCR binary is
+    # missing. Image-only supplier PDFs cannot be extracted without it,
+    # so the admin needs to know before uploading a scanned catalogue.
+    try:
+        if _tesseract_available():
+            logger.info("Studio OCR: tesseract available — image-only PDFs will be processed.")
+        else:
+            logger.warning(
+                "Studio OCR: tesseract binary is NOT installed. Image-only PDFs "
+                "will fail extraction with a clear diagnostic. Install with: "
+                "apt-get install -y tesseract-ocr libtesseract-dev"
+            )
+    except Exception:
+        pass
     try:
         await db.users.create_index("email", unique=True)
         await db.projects.create_index([("user_id", 1), ("created_at", -1)])
@@ -5448,16 +5463,18 @@ def _swatch_from_page(page) -> tuple[str, str | None]:
         return "#B7ADA0", None
 
 
-def _pdf_page_ocr_text(page) -> str:
-    """Render a PDF page to an image and run tesseract OCR. Returns the raw
-    OCR text (may be empty). Stability sprint — used as fallback when the
-    PDF has no embedded machine-readable text on this page."""
+def _pdf_page_ocr_text(page, dpi: int = 200) -> str:
+    """OCR a full PDF page and return its text. Used as a fallback when the
+    PDF has no embedded machine-readable text on this page. `dpi` is
+    tuned by the caller — small PDFs use 200 DPI, very large PDFs drop
+    to 140 DPI to keep OCR memory bounded (a 31-page A3 scan at 200 DPI
+    is ~1.5 GB of raster which risks OOM on the container)."""
     try:
         import pytesseract  # type: ignore
         from PIL import Image
         import io as _io
-        # 200 DPI is a good tradeoff between OCR accuracy and speed.
-        pix = page.get_pixmap(matrix=fitz.Matrix(200 / 72, 200 / 72), alpha=False)
+        scale = max(0.8, dpi / 72.0)
+        pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
         img = Image.open(_io.BytesIO(pix.tobytes("png")))
         return pytesseract.image_to_string(img) or ""
     except Exception:
@@ -5697,6 +5714,15 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
     pages_ocr_attempted = 0
     pages_ocrd = 0
     ocr_available = _tesseract_available()
+    # Adaptive OCR DPI — very large PDFs use a smaller raster so we stay
+    # under the container memory ceiling. 200 DPI for <=15 pages, 160
+    # for 15–40 pages, 130 for 40+ pages.
+    if total_pages <= 15:
+        ocr_dpi = 200
+    elif total_pages <= 40:
+        ocr_dpi = 160
+    else:
+        ocr_dpi = 130
     code_re = re.compile(r"\b([A-Z]{1,4}[-]?\d{2,5}(?:[-]?[A-Z0-9]{1,3})?)\b")
 
     # Filename → brand hint. Falls through to per-swatch text scan below.
@@ -5716,7 +5742,7 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
         used_ocr = False
         if not page_text.strip() and ocr_available:
             pages_ocr_attempted += 1
-            page_text = _pdf_page_ocr_text(page)
+            page_text = _pdf_page_ocr_text(page, dpi=ocr_dpi)
             if page_text.strip():
                 pages_ocrd += 1
                 used_ocr = True
@@ -5898,14 +5924,65 @@ STUDIO_MAX_UPLOAD_BYTES = 150 * 1024 * 1024  # 150 MB — supplier catalogues.
 STUDIO_UPLOAD_DIR = os.environ.get("STUDIO_UPLOAD_DIR", "/app/backend/uploads_data")
 
 
+async def _run_studio_extraction(upload_id: str, data: bytes, filename: str) -> None:
+    """Run PDF extraction OUT-OF-BAND (background task). Never raises —
+    always leaves the upload in a terminal state (`review` on success,
+    `failed` with a diagnostic on any error). Runs the CPU-heavy work in
+    a thread pool so the FastAPI event loop stays responsive (login,
+    dashboards and KE search keep working while a large scan is being
+    OCR'd)."""
+    import asyncio
+    try:
+        # Off-load the CPU-bound extractor to a worker thread so the
+        # asyncio event loop is free for all other requests.
+        records, meta = await asyncio.to_thread(
+            _extract_records_from_pdf, data, upload_id
+        )
+        if records:
+            await db.ke_records.insert_many(records)
+        status = "review" if records else "failed"
+        update_fields = {
+            "status": status,
+            "page_count": meta["total_pages"],
+            "records_extracted": len(records),
+            "extraction_mode": meta["extraction_mode"],
+            "failure_reason": meta["failure_reason"] or (
+                None if records else "No publishable material records found."
+            ),
+            "pages_ocrd": meta.get("pages_ocrd", 0),
+            "pages_with_text": meta.get("pages_with_text", 0),
+            "extracted_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.ke_uploads.update_one({"id": upload_id}, {"$set": update_fields})
+        await _refresh_studio_index()
+    except Exception as e:
+        logger.exception("studio ingest failed (background) for %s", filename)
+        # Best-effort — always record a diagnostic on failure so the
+        # admin sees a meaningful message in the Processing Queue.
+        try:
+            await db.ke_uploads.update_one(
+                {"id": upload_id},
+                {"$set": {
+                    "status": "failed",
+                    "failure_reason": f"Extraction crashed: {type(e).__name__}: {e}"[:400],
+                    "extracted_at": datetime.now(timezone.utc).isoformat(),
+                }},
+            )
+        except Exception:
+            logger.exception("failed to write failure state for upload %s", upload_id)
+
+
 @api_router.post("/admin/studio/upload")
 async def studio_upload(
     file: UploadFile = File(...),
     user: dict = Depends(require_admin),
 ):
-    """MaterialMatch Studio — upload a supplier PDF, extract per-page records
-    into `draft` state. Records only become searchable after admin approval.
-    Scanned / image-based PDFs are handled via a tesseract OCR fallback."""
+    """MaterialMatch Studio — upload a supplier PDF. The request returns
+    immediately with the upload id and status='processing'; extraction
+    then runs in a background task so it never blocks the event loop or
+    times out at the ingress. Poll `GET /admin/studio/uploads` (or the
+    Processing Queue in the UI) to observe status transitions:
+    `processing → review → published / partially_published / archived / failed`."""
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
     data = await file.read()
@@ -5914,10 +5991,15 @@ async def studio_upload(
             status_code=413,
             detail=f"PDF too large (max {STUDIO_MAX_UPLOAD_BYTES // (1024 * 1024)} MB)",
         )
+    # Cheap validation up-front so we never spawn a background task for a
+    # non-PDF blob. `fitz.open` is the fastest way to reject garbage.
+    try:
+        _probe = fitz.open(stream=data, filetype="pdf")
+        _probe.close()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Not a valid PDF: {e}")
     upload_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
-    # Persist the raw PDF bytes to disk so the Reprocess / Replace flows
-    # can re-run the extractor without asking the admin to re-upload.
     try:
         os.makedirs(STUDIO_UPLOAD_DIR, exist_ok=True)
         with open(os.path.join(STUDIO_UPLOAD_DIR, f"{upload_id}.pdf"), "wb") as fh:
@@ -5938,43 +6020,17 @@ async def studio_upload(
         "has_blob": True,
     }
     await db.ke_uploads.insert_one(upload_doc)
-    try:
-        records, meta = _extract_records_from_pdf(data, upload_id)
-        if records:
-            await db.ke_records.insert_many(records)
-        status = "review" if records else "failed"
-        update_fields = {
-            "status": status,
-            "page_count": meta["total_pages"],
-            "records_extracted": len(records),
-            "extraction_mode": meta["extraction_mode"],
-            "failure_reason": meta["failure_reason"],
-            "pages_ocrd": meta.get("pages_ocrd", 0),
-            "pages_with_text": meta.get("pages_with_text", 0),
-        }
-        upload_doc.update(update_fields)
-        await db.ke_uploads.update_one({"id": upload_id}, {"$set": update_fields})
-    except HTTPException:
-        await db.ke_uploads.update_one(
-            {"id": upload_id},
-            {"$set": {"status": "failed",
-                      "failure_reason": "PDF could not be parsed."}},
-        )
-        raise
-    except Exception as e:
-        logger.exception("studio ingest failed")
-        await db.ke_uploads.update_one(
-            {"id": upload_id},
-            {"$set": {"status": "failed",
-                      "failure_reason": f"Unexpected ingestion error: {e}"}},
-        )
-        raise HTTPException(status_code=500, detail=str(e))
+    # Fire-and-forget: the caller sees a 202-style response instantly.
+    asyncio.create_task(_run_studio_extraction(upload_id, data, file.filename))
     return {
         "upload_id": upload_id,
-        **{k: upload_doc[k] for k in (
-            "filename", "status", "records_extracted", "page_count",
-            "extraction_mode", "failure_reason",
-        )},
+        "filename": file.filename,
+        "status": "processing",
+        "records_extracted": 0,
+        "page_count": 0,
+        "extraction_mode": None,
+        "failure_reason": None,
+        "message": "Upload accepted. Extraction is running in the background — refresh the Processing Queue in a moment.",
     }
 
 
@@ -6218,33 +6274,19 @@ async def studio_reprocess_upload(upload_id: str, user: dict = Depends(require_a
         "upload_id": upload_id,
         "status": {"$in": ["draft", "rejected", "archived"]},
     })
-    await db.ke_uploads.update_one({"id": upload_id}, {"$set": {"status": "processing"}})
-    try:
-        records, meta = _extract_records_from_pdf(data, upload_id)
-        if records:
-            await db.ke_records.insert_many(records)
-        update_fields = {
-            "page_count": meta["total_pages"],
-            "records_extracted": len(records),
-            "extraction_mode": meta["extraction_mode"],
-            "failure_reason": meta["failure_reason"],
-            "pages_ocrd": meta.get("pages_ocrd", 0),
-            "pages_with_text": meta.get("pages_with_text", 0),
-            "reprocessed_at": datetime.now(timezone.utc).isoformat(),
-            # Reset from "processing" so _recompute_upload_status can act.
-            "status": "review" if records else "failed",
-        }
-        await db.ke_uploads.update_one({"id": upload_id}, {"$set": update_fields})
-    except Exception as e:
-        logger.exception("studio reprocess failed")
-        await db.ke_uploads.update_one(
-            {"id": upload_id},
-            {"$set": {"status": "failed", "failure_reason": f"Reprocess failed: {e}"}},
-        )
-        raise HTTPException(status_code=500, detail=str(e))
-    await _recompute_upload_status(upload_id)
-    await _refresh_studio_index()
-    return {"upload_id": upload_id, "records_extracted": len(records)}
+    await db.ke_uploads.update_one(
+        {"id": upload_id},
+        {"$set": {"status": "processing", "failure_reason": None,
+                   "reprocessed_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    # Run extraction OUT-OF-BAND. Same background pattern as upload —
+    # returns instantly, admin polls the Processing Queue.
+    asyncio.create_task(_run_studio_extraction(upload_id, data, upload.get("filename", "")))
+    return {
+        "upload_id": upload_id,
+        "status": "processing",
+        "message": "Reprocess started. Refresh the Processing Queue in a moment to see the new records.",
+    }
 
 
 @api_router.post("/admin/studio/uploads/{upload_id}/replace")
@@ -6284,30 +6326,16 @@ async def studio_replace_upload(
         "replaced_at": datetime.now(timezone.utc).isoformat(),
         "has_blob": True,
     }})
-    try:
-        records, meta = _extract_records_from_pdf(data, upload_id)
-        if records:
-            await db.ke_records.insert_many(records)
-        update_fields = {
-            "page_count": meta["total_pages"],
-            "records_extracted": len(records),
-            "extraction_mode": meta["extraction_mode"],
-            "failure_reason": meta["failure_reason"],
-            "pages_ocrd": meta.get("pages_ocrd", 0),
-            "pages_with_text": meta.get("pages_with_text", 0),
-            "status": "review" if records else "failed",
-        }
-        await db.ke_uploads.update_one({"id": upload_id}, {"$set": update_fields})
-    except Exception as e:
-        logger.exception("studio replace failed")
-        await db.ke_uploads.update_one(
-            {"id": upload_id},
-            {"$set": {"status": "failed", "failure_reason": f"Replace failed: {e}"}},
-        )
-        raise HTTPException(status_code=500, detail=str(e))
-    await _recompute_upload_status(upload_id)
+    # Wipe every record for this upload, then re-extract in the background.
+    await db.ke_records.delete_many({"upload_id": upload_id})
+    asyncio.create_task(_run_studio_extraction(upload_id, data, file.filename))
     await _refresh_studio_index()
-    return {"upload_id": upload_id, "records_extracted": len(records), "filename": file.filename}
+    return {
+        "upload_id": upload_id,
+        "filename": file.filename,
+        "status": "processing",
+        "message": "Replace accepted. Extraction is running in the background.",
+    }
 
 
 @api_router.get("/admin/studio/uploads/{upload_id}/page/{page_number}")

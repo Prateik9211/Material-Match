@@ -62,6 +62,23 @@ def user_session():
     return s
 
 
+def _wait_for_extraction(session, upload_id: str, timeout: int = 30) -> dict:
+    """Poll the uploads list until the given upload reaches a terminal
+    status (review / published / failed / archived). Upload is now
+    processed in a background task so callers must poll rather than
+    reading `records_extracted` from the upload response."""
+    import time
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        r = session.get(f"{BASE_URL}/api/admin/studio/uploads", timeout=15)
+        assert r.status_code == 200
+        u = next((x for x in r.json()["uploads"] if x["id"] == upload_id), None)
+        if u and u.get("status") not in (None, "processing"):
+            return u
+        time.sleep(0.5)
+    raise AssertionError(f"upload {upload_id} did not finish within {timeout}s")
+
+
 class TestStudioAuth:
     def test_upload_requires_admin(self, user_session):
         pdf = _make_pdf("Guard", "Item", "G-1")
@@ -100,9 +117,13 @@ class TestStudioPipeline:
         assert r.status_code == 200, r.text[:300]
         data = r.json()
         assert "upload_id" in data
-        assert data["records_extracted"] >= 1
-        assert data["status"] == "review"
+        # Upload is async — status is 'processing' initially, records
+        # accumulate as the background task finishes.
+        assert data["status"] == "processing"
         self.__class__.upload_id = data["upload_id"]
+        upload = _wait_for_extraction(admin_session, data["upload_id"])
+        assert upload["records_extracted"] >= 1
+        assert upload["status"] == "review"
 
     def test_02_upload_listed(self, admin_session):
         r = admin_session.get(f"{BASE_URL}/api/admin/studio/uploads", timeout=15)
@@ -161,6 +182,7 @@ class TestPublishAll:
                                files={"file": ("pub.pdf", pdf, "application/pdf")}, timeout=60)
         assert r.status_code == 200
         uid = r.json()["upload_id"]
+        _wait_for_extraction(admin_session, uid)
         r2 = admin_session.post(f"{BASE_URL}/api/admin/studio/uploads/{uid}/publish", timeout=20)
         assert r2.status_code == 200
         assert r2.json()["approved"] >= 1
@@ -177,6 +199,7 @@ class TestStudioReject:
                                files={"file": ("rej.pdf", pdf, "application/pdf")}, timeout=60)
         assert r.status_code == 200
         uid = r.json()["upload_id"]
+        _wait_for_extraction(admin_session, uid)
         r2 = admin_session.get(f"{BASE_URL}/api/admin/studio/uploads/{uid}/records", timeout=15)
         rids = [x["id"] for x in r2.json()["records"]]
         r3 = admin_session.post(f"{BASE_URL}/api/admin/studio/records/reject",
