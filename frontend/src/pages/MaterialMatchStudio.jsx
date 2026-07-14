@@ -311,10 +311,35 @@ function ProcessingTab({ uploads, loading, onRefresh, onOpenReview, onDelete, on
                     {u.extraction_mode === "text+ocr" && (
                       <span className="text-charcoal font-medium">Text + OCR</span>
                     )}
+                    {u.catalogue_brand && (
+                      <span data-testid={`studio-upload-brand-${i}`}>
+                        Brand · <span className="text-charcoal font-medium">{u.catalogue_brand}</span>
+                      </span>
+                    )}
                     <span className="truncate">
                       Uploaded · {new Date(u.created_at).toLocaleString()}
                     </span>
                   </div>
+                  {u.region_rejects && Object.values(u.region_rejects).some((n) => n > 0) && (
+                    <div
+                      className="mt-1.5 flex flex-wrap items-center gap-1 text-[10px]"
+                      data-testid={`studio-upload-rejects-${i}`}
+                    >
+                      <span className="uppercase tracking-widest text-warm-grey/70">
+                        Region filter
+                      </span>
+                      {Object.entries(u.region_rejects)
+                        .filter(([, n]) => n > 0)
+                        .map(([cls, n]) => (
+                          <span
+                            key={cls}
+                            className="px-1.5 py-0.5 rounded-full border border-stone-border-soft bg-stone-panel/40 text-charcoal font-mono"
+                          >
+                            {cls.toLowerCase().replace(/_/g, " ")} · {n}
+                          </span>
+                        ))}
+                    </div>
+                  )}
                   {u.failure_reason && (
                     <div
                       className="mt-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1"
@@ -701,6 +726,14 @@ function ReviewTab({ uploads, selectedUploadId, setSelectedUploadId, onDelete })
                       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-warm-grey">
                         <span>
                           Cat · <span className="text-charcoal">{r.category}</span>
+                          {r.category_hint_conflict && (
+                            <span
+                              className="ml-1 text-amber-700"
+                              title="Detected category differs from the upload hint"
+                            >
+                              ⚠
+                            </span>
+                          )}
                         </span>
                         {r.material_code && (
                           <span>
@@ -715,7 +748,28 @@ function ReviewTab({ uploads, selectedUploadId, setSelectedUploadId, onDelete })
                             Conf · <span className="text-charcoal">{r.confidence}%</span>
                           </span>
                         )}
+                        {r.region_class && r.region_class !== "MATERIAL_SWATCH" && (
+                          <span data-testid={`studio-record-region-${i}`}>
+                            Region · <span className="text-charcoal">{r.region_class.toLowerCase().replace(/_/g, " ")}</span>
+                          </span>
+                        )}
                       </div>
+                      {Array.isArray(r.needs_review_reasons) && r.needs_review_reasons.length > 0 && (
+                        <div
+                          className="mt-1 flex flex-wrap items-center gap-1"
+                          data-testid={`studio-record-reasons-${i}`}
+                        >
+                          {r.needs_review_reasons.map((reason) => (
+                            <span
+                              key={reason}
+                              className="text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full border border-amber-200 bg-amber-50 text-amber-800 font-medium"
+                              title={`Flagged for review — ${reason.replace(/_/g, " ")}`}
+                            >
+                              {reason.replace(/_/g, " ")}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                       <div className="mt-2 flex items-center gap-1 flex-wrap">
                         <button
                           type="button"

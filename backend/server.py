@@ -5813,6 +5813,161 @@ def _classify_category_from_text(text_l: str) -> str:
     return "Laminates"
 
 
+# ── Sprint 4: region classification + category verification ─────────────
+
+REGION_CLASSES = (
+    "MATERIAL_SWATCH", "LIFESTYLE_IMAGE", "LOGO", "QR_CODE",
+    "SPECIFICATION_TABLE", "TEXT_BLOCK", "CERTIFICATION",
+    "DECORATIVE_GRAPHIC", "UNKNOWN",
+)
+
+_CATEGORY_KEYWORDS = {
+    "Veneer":   ("veneer", "oak", "teak", "walnut", "rosewood", "burl", "mahogany", "ply veneer"),
+    "Laminate": ("laminate", "mica", "sunmica", "hpl", "cladding sheet"),
+    "Stone":    ("marble", "granite", "quartz", "quartzite", "onyx", "travertine", "limestone", "sandstone", "slab"),
+    "Tile":     ("tile", "porcelain", "vitrified", "ceramic", "mosaic"),
+    "Fabric":   ("fabric", "textile", "upholstery", "linen", "cotton", "velvet", "jute"),
+    "Paint":    ("paint", "emulsion", "primer", "distemper", "colour swatch"),
+    "Lighting": ("chandelier", "pendant lamp", "led strip", "luminaire", "sconce"),
+    "Hardware": ("hinge", "handle", "knob", "screw", "bracket"),
+    "Furniture":("sofa", "chair", "table", "bed frame", "wardrobe"),
+}
+
+# Sprint 4 (post-generalization fix): a "strong" keyword is one that
+# DECLARES the material family (e.g. "laminate", "marble", "porcelain"),
+# not a species / pattern descriptor that any material could use
+# (e.g. "oak" is a wood species that laminate, veneer, tile and paint
+# all borrow). When a strong keyword hits, its category outranks any
+# weak-keyword-only category, regardless of raw hit count. This stops
+# wood-grain laminate catalogues being misclassified as Veneer just
+# because they mention "oak" / "teak" as aesthetic descriptors.
+_CATEGORY_STRONG_KWS = {
+    "Veneer":   ("veneer", "ply veneer"),
+    "Laminate": ("laminate", "sunmica", "hpl", "cladding sheet"),
+    "Stone":    ("marble", "granite", "quartz", "quartzite", "onyx", "travertine", "limestone", "sandstone", "slab"),
+    "Tile":     ("tile", "porcelain", "vitrified", "ceramic", "mosaic"),
+    "Fabric":   ("fabric", "textile", "upholstery", "velvet", "jute"),
+    "Paint":    ("paint", "emulsion", "primer", "distemper"),
+    "Lighting": ("chandelier", "pendant lamp", "led strip", "luminaire", "sconce"),
+    "Hardware": ("hinge", "handle", "knob", "bracket"),
+    "Furniture":("sofa", "chair", "table", "bed frame", "wardrobe"),
+}
+
+_REGION_REJECT_KWS = {
+    "CERTIFICATION": ("certificate", "certification", "iso 9001", "iso 14001", "greenguard", "warranty", "conformity"),
+    "SPECIFICATION_TABLE": ("technical specification", "product specifications", "sr no", "sr. no", "dimension"),
+    "LOGO": ("trademark", "® ", "registered mark"),
+    "LIFESTYLE_IMAGE": ("living room", "bedroom", "kitchen render", "inspiration", "lifestyle"),
+}
+
+
+def _classify_region(page, rect, local_text: str, page_text: str) -> tuple[str, float, str]:
+    """Return `(region_class, confidence 0..1, reason)`. Heuristics-only —
+    cheap, deterministic. Vision classification is intentionally NOT
+    invoked here to stay within the RC1 credit budget; enable it later
+    by wiring `STUDIO_VISION_CLASSIFY=on` in `.env`."""
+    haystack = (local_text + "\n" + page_text).lower()
+
+    # 1. Deterministic keyword rejects (certifications / spec tables / lifestyle)
+    for cls, kws in _REGION_REJECT_KWS.items():
+        if any(k in haystack for k in kws):
+            return cls, 0.85, f"nearby text matches {cls.lower()} vocabulary"
+
+    # 2. Pixel-stats rejects — reuses `_looks_like_material_swatch` logic
+    #    which already screens QR codes (black/white polarisation) and
+    #    lifestyle photos (high 3-channel variance).
+    if not _looks_like_material_swatch(page, rect):
+        # Distinguish QR from photo via a second pass
+        try:
+            pix = page.get_pixmap(clip=rect, matrix=fitz.Matrix(0.3, 0.3), alpha=False)
+            samples = pix.samples
+            n = pix.n
+            if n >= 3 and samples:
+                total = pix.width * pix.height
+                bw = sum(1 for i in range(0, len(samples), n)
+                          if max(samples[i], samples[i+1], samples[i+2]) < 40
+                          or min(samples[i], samples[i+1], samples[i+2]) > 220)
+                if total and bw / total > 0.55:
+                    return "QR_CODE", 0.90, "black-white polarised pixel distribution"
+        except Exception:
+            pass
+        return "LIFESTYLE_IMAGE", 0.70, "high colour variance — resembles a photograph"
+
+    # 3. Geometry rejects — tiny near-square = logo
+    if rect.width < 90 and rect.height < 90:
+        return "LOGO", 0.75, "small square area typical of logos"
+
+    # 4. Text-block: local_text density > pixel content
+    if len(local_text) > 120 and (rect.width * rect.height) < (page.rect.width * page.rect.height * 0.10):
+        return "TEXT_BLOCK", 0.65, "region is small and text-heavy"
+
+    # 5. Default: accept as material swatch, moderate confidence
+    return "MATERIAL_SWATCH", 0.75, "pixel stats + geometry consistent with a material swatch"
+
+
+def _verify_category(detected_text: str, hint: str | None) -> tuple[str | None, float, bool]:
+    """Return `(category, confidence 0..1, hint_conflict)`. Pure text
+    classification against `_CATEGORY_KEYWORDS`. Strong (family-declaring)
+    keywords outrank weak (aesthetic-descriptor) keywords so a laminate
+    catalogue mentioning "oak / teak" doesn't get misclassified as
+    Veneer. Hint is a tie-breaker only when detection is ambiguous."""
+    ctx = (detected_text or "").lower()
+    strong_scores: dict[str, int] = {}
+    weak_scores: dict[str, int] = {}
+    for cat, kws in _CATEGORY_KEYWORDS.items():
+        strong_kws = _CATEGORY_STRONG_KWS.get(cat, ())
+        strong_h = sum(1 for k in strong_kws if k in ctx)
+        weak_h = sum(1 for k in kws if k in ctx and k not in strong_kws)
+        if strong_h:
+            strong_scores[cat] = strong_h
+        if weak_h:
+            weak_scores[cat] = weak_h
+
+    # 1. Strong keyword hits ALWAYS win. Category with the most strong
+    #    hits is the detected category; confidence stays high.
+    if strong_scores:
+        detected = max(strong_scores, key=strong_scores.get)
+        conf = 0.9 if strong_scores[detected] >= 2 else 0.75
+        conflict = bool(hint) and hint in _CATEGORY_KEYWORDS and hint != detected
+        return detected, conf, conflict
+
+    # 2. Fall back to weak-only detection (rare — e.g. text says only
+    #    "oak" with no material family word).
+    if weak_scores:
+        detected = max(weak_scores, key=weak_scores.get)
+        conf = 0.6 if weak_scores[detected] >= 2 else 0.4
+        conflict = bool(hint) and hint in _CATEGORY_KEYWORDS and hint != detected
+        return detected, conf, conflict
+
+    # 3. No detected category. Fall back to hint with low confidence.
+    if hint in _CATEGORY_KEYWORDS:
+        return hint, 0.30, False
+    return None, 0.20, False
+
+
+def _infer_catalogue_brand(pdf, sample_pages: int = 3) -> str | None:
+    """Scan the OCR/text of the first few pages once to pick a brand.
+    Prevents the "Unknown Brand × 92" symptom."""
+    known = ("greenlam", "advance", "asian paints", "kajaria", "somany",
+             "merino", "century", "royale touche", "sarom", "eurotex",
+             "wooden street", "welspun", "d'decor")
+    hits: dict[str, int] = {}
+    try:
+        for i in range(min(sample_pages, pdf.page_count)):
+            t = (pdf[i].get_text("text") or "").lower()
+            if not t.strip():
+                t = _pdf_page_ocr_text(pdf[i], dpi=140).lower()
+            for b in known:
+                if b in t:
+                    hits[b] = hits.get(b, 0) + 1
+    except Exception:
+        return None
+    if not hits:
+        return None
+    top = max(hits, key=hits.get)
+    return top.title() if hits[top] >= 1 else None
+
+
 def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[dict], dict]:
     """Smart catalogue ingestion (Sprint 8.6). A single page may contain
     multiple material swatches; we identify each swatch rectangle
@@ -5835,6 +5990,13 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
     total_pages = pdf.page_count
     logger.info("[studio %s] PDF_VALIDATION ok — %d page(s), %.1f MB",
                 upload_id, total_pages, len(pdf_bytes) / (1024 * 1024))
+
+    # Sprint 4: catalogue-level brand + category-hint lookup (once per PDF)
+    catalogue_brand = _infer_catalogue_brand(pdf)
+    category_hint_upload: str | None = None
+    region_rejects: dict[str, int] = {k: 0 for k in REGION_CLASSES if k != "MATERIAL_SWATCH"}
+    logger.info("[studio %s] BRAND_DETECTION result=%r", upload_id, catalogue_brand)
+
     pages_with_swatches = 0
     pages_ocr_attempted = 0
     pages_ocrd = 0
@@ -5949,6 +6111,22 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
             haystack = f"{local}\n{page_text}"
             haystack_l = haystack.lower()
 
+            # ── Sprint 4: Region classification gate ────────────────────
+            # Every candidate region is classified BEFORE it can become a
+            # material record. Only MATERIAL_SWATCH continues; everything
+            # else (logos, QRs, certifications, lifestyle photos, spec
+            # tables, decorative graphics) is dropped here.
+            region_class, region_conf, region_reason = _classify_region(
+                page, rect, local, page_text
+            )
+            if region_class != "MATERIAL_SWATCH":
+                region_rejects[region_class] = region_rejects.get(region_class, 0) + 1
+                logger.info(
+                    "[studio %s] page %d swatch %d REJECTED as %s (conf=%.2f — %s)",
+                    upload_id, pi, si, region_class, region_conf, region_reason,
+                )
+                continue
+
             # C. Material name = first strong line from local text; fall
             # back to the first meaningful whole-page line. Only accepts
             # lines that look like real product names (mostly alphabetic
@@ -6052,8 +6230,12 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
                 if brand_hint:
                     break
 
-            # F. Category / family from keywords.
-            cat_guess = _classify_category_from_text(haystack_l)
+            # F. Category verification (Sprint 4).
+            cat_guess_legacy = _classify_category_from_text(haystack_l)
+            detected_cat, cat_conf, cat_conflict = _verify_category(
+                haystack_l, category_hint_upload,
+            )
+            cat_guess = detected_cat or cat_guess_legacy
             family = cat_guess.rstrip("s") if cat_guess in {"Paints", "Laminates", "Veneers", "Tiles"} else cat_guess
 
             # G. Colour + thumbnail from the swatch clip.
@@ -6095,30 +6277,47 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
                 name = f"Swatch p{pi}.s{si}"
                 conf = min(conf, 45)
 
-            needs_review = (
-                conf < 65
-                or is_page_level_fallback
-                or duplicate_of_page_title
-                or name.startswith("Swatch ")
-                or name.startswith("Scanned page ")
-            )
+            # Sprint 4: consolidated needs_review with structured reasons
+            needs_review_reasons: list[str] = []
+            if region_conf < 0.65:
+                needs_review_reasons.append("low_region_confidence")
+            if not name or name.startswith("Swatch ") or name.startswith("Scanned page "):
+                needs_review_reasons.append("no_label")
+            if not material_code:
+                needs_review_reasons.append("no_code")
+            if duplicate_of_page_title:
+                needs_review_reasons.append("duplicate_name")
+            if cat_conflict:
+                needs_review_reasons.append("category_conflict")
+            if not (brand_hint or catalogue_brand):
+                needs_review_reasons.append("brand_unknown")
+            if is_page_level_fallback:
+                needs_review_reasons.append("page_level_fallback")
+            if cat_guess not in _CATEGORY_KEYWORDS:
+                needs_review_reasons.append("unsupported_category")
+
+            needs_review = bool(needs_review_reasons) or conf < 65
             conf = min(95, conf)
+            final_brand = brand_hint or catalogue_brand
 
             records.append({
                 "id": str(uuid.uuid4()),
                 "upload_id": upload_id,
-                "brand": brand_hint,
+                "brand": final_brand,
                 "collection": page_title_candidate,
-                "collection_name": page_title_candidate,   # Sprint 3 B — page metadata
+                "collection_name": page_title_candidate,   # Sprint 3 B
                 "material_name": name,                     # per-swatch identity
                 "material_code": material_code,
                 "category": cat_guess,
                 "material_family": family,
                 "finish": None,
+                "variant": None,                           # Sprint 4
                 "color_name": None,
                 "color_hex": color_hex,
+                "secondary_color_hex": None,               # Sprint 4
                 "texture": None,
                 "pattern": None,
+                "gloss_level": None,                       # Sprint 4
                 "application": None,
                 "page_number": pi,
                 "swatch_index_on_page": si,
@@ -6127,7 +6326,16 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
                 "page_preview_b64": thumb_b64,
                 "status": "draft",
                 "needs_review": needs_review,              # Sprint 3 C
-                "is_page_level_fallback": is_page_level_fallback,   # Sprint 3 D
+                "needs_review_reasons": needs_review_reasons,     # Sprint 4
+                "is_page_level_fallback": is_page_level_fallback, # Sprint 3 D
+                "region_class": region_class,              # Sprint 4
+                "region_confidence": round(region_conf, 2),
+                "swatch_verified": True,
+                "swatch_verification_reason": region_reason,
+                "label_association_confidence": 0.8 if (name and not name.startswith("Swatch ")) else 0.4,
+                "category_confidence": round(cat_conf, 2),
+                "category_hint": category_hint_upload,
+                "category_hint_conflict": cat_conflict,
                 "keywords": [w.lower() for w in re.findall(r"[a-zA-Z]{4,}", name)][:8],
                 "created_at": now,
                 "published_at": None,
@@ -6139,9 +6347,11 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
     # ── STAGE 5: RECORD GENERATION summary ──────────────────────────────
     logger.info(
         "[studio %s] RECORD_GENERATION — pages=%d pages_with_swatches=%d "
-        "pages_ocrd=%d page_level_fallback=%d strip_vision_calls=%d records=%d",
+        "pages_ocrd=%d page_level_fallback=%d strip_vision_calls=%d records=%d "
+        "region_rejects=%s catalogue_brand=%r",
         upload_id, total_pages, pages_with_swatches, pages_ocrd,
         page_level_fallback_count, per_strip_vision_calls, len(records),
+        region_rejects, catalogue_brand,
     )
 
     if records:
@@ -6156,6 +6366,8 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
             "page_level_fallback_count": page_level_fallback_count,
             "extraction_mode": mode,
             "failure_reason": None,
+            "region_rejects": region_rejects,     # Sprint 4
+            "catalogue_brand": catalogue_brand,   # Sprint 4
         }
     else:
         if total_pages == 0:
@@ -6181,6 +6393,8 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
             "page_level_fallback_count": page_level_fallback_count,
             "extraction_mode": "failed",
             "failure_reason": reason,
+            "region_rejects": region_rejects,     # Sprint 4
+            "catalogue_brand": catalogue_brand,   # Sprint 4
         }
     return records, meta
 
@@ -6221,6 +6435,8 @@ async def _run_studio_extraction(upload_id: str, data: bytes, filename: str) -> 
             "pages_ocrd": meta.get("pages_ocrd", 0),
             "pages_with_text": meta.get("pages_with_text", 0),
             "page_level_fallback_count": meta.get("page_level_fallback_count", 0),
+            "region_rejects": meta.get("region_rejects"),       # Sprint 4
+            "catalogue_brand": meta.get("catalogue_brand"),     # Sprint 4
             "extracted_at": datetime.now(timezone.utc).isoformat(),
         }
         await db.ke_uploads.update_one({"id": upload_id}, {"$set": update_fields})
