@@ -406,6 +406,72 @@ No S3 presigned uploads. No GPU workers. No PaddleOCR. No changes to MaterialMat
 ### RC1 architecture freeze
 As of `HEAD = d4793f0075586223f329cc2b665b1e64ab7b40b9` (checkpoint after Sprint 2), the OCR provider architecture is FROZEN for competition submission. No additional providers, prompt tuning, retry-with-backoff, cost previews, JSON schema outputs, or Phase 1 background-worker migration. Future work moves to backlog only.
 
+## Sprint 4 — Region Intelligence + Category Verification (2026-07-14) ✅ FROZEN
+
+Ships the material-level intelligence layer that transforms MaterialMatch Studio from
+"page-level" understanding into true "material-level" understanding, so the catalogue
+ingestion pipeline **generalises across different real manufacturer catalogues**, not
+just the Advance laminate PDFs used during development.
+
+### Backend (`/app/backend/server.py`)
+- **Region classification gate (`_classify_region`, line ~5844)** — every candidate
+  region is classified BEFORE it can become a record. Non-material regions are
+  dropped and counted into `region_rejects`. Deterministic, heuristics-only —
+  no vision LLM spend. Classes: `MATERIAL_SWATCH`, `LIFESTYLE_IMAGE`, `LOGO`,
+  `QR_CODE`, `SPECIFICATION_TABLE`, `TEXT_BLOCK`, `CERTIFICATION`, `DECORATIVE_GRAPHIC`.
+- **Category verification (`_verify_category`, line ~5910)** — text-based classifier
+  that never blindly copies the upload hint. Sprint-4-fix: `_CATEGORY_STRONG_KWS`
+  splits keywords into STRONG (family-declaring, e.g. `laminate`, `marble`, `porcelain`,
+  `paint`) vs WEAK (aesthetic descriptors, e.g. `oak`, `teak`, `walnut`). Strong hits
+  ALWAYS win, so a laminate catalogue with wood-grain names is no longer misclassified
+  as Veneer.
+- **Catalogue-level brand detection (`_infer_catalogue_brand`, line ~5941)** — scans
+  the first 3 pages once per PDF and populates `catalogue_brand` on every record and
+  on the parent upload. Kills the "Unknown Brand × N" symptom.
+- **Structured `needs_review_reasons`** on every record: `no_label`, `no_code`,
+  `duplicate_name`, `category_conflict`, `brand_unknown`, `low_region_confidence`,
+  `page_level_fallback`, `unsupported_category`. Replaces the opaque `needs_review`
+  boolean.
+- **`region_rejects` on `ke_uploads`** — per-catalogue counters for admin visibility.
+
+### Frontend (`/app/frontend/src/pages/MaterialMatchStudio.jsx`)
+- **Processing Queue** — new brand pill (`Brand · Merino`) and REGION FILTER row
+  showing rejected counters (`lifestyle image · 1`, `certification · 1`) per upload.
+- **Review Queue** — every record card shows amber pills for each
+  `needs_review_reason`, an inline ⚠ marker when `category_hint_conflict`, and a
+  `Region · <class>` chip when the record survived as anything other than a plain
+  MATERIAL_SWATCH.
+
+### Real-world generalization validation (2026-07-14)
+Three completely different manufacturer catalogues, each with the full trap-set
+(cover + logo, certification/warranty, QR code, lifestyle render, real swatches):
+
+| Catalogue           | Brand         | Records | Traps rejected                        | Category |
+|---------------------|---------------|---------|---------------------------------------|----------|
+| merino_laminate.pdf | Merino        | 2       | 1 CERTIFICATION + 1 LIFESTYLE_IMAGE   | Laminate |
+| kajaria_stone.pdf   | Kajaria       | 2       | 1 CERTIFICATION + 1 LIFESTYLE_IMAGE   | Stone    |
+| asian_paints.pdf    | Asian Paints  | 2       | 1 CERTIFICATION + 1 LIFESTYLE_IMAGE   | Paint    |
+
+Every trap page produced ZERO records. Every real swatch survived with correct
+brand, category, unique code, and independent name. No metadata bleed between
+catalogues (each upload strictly owns its own records).
+
+### Tests
+- `tests/test_studio_sprint4.py` — 9 tests, all pass (region classification,
+  category verification, brand detection, structured review reasons).
+- `tests/test_sprint4_generalization.py` — 6 tests, all pass (end-to-end validation
+  of 3 different manufacturer catalogues + upload isolation + category-hint override
+  regression + published-library cleanliness).
+- Sprint 4 backend total: **15/15 green in isolation**.
+- Frontend E2E via testing_agent_v3_fork (iteration 16): **100% pass, 0 issues.**
+
+### Sprint 4 architecture freeze
+As of the E2E validation on 2026-07-14, Region Intelligence + Category Verification
+is FROZEN for competition submission. No further changes to `_classify_region`,
+`_verify_category`, `_infer_catalogue_brand`, or their supporting keyword tables.
+Enhancement work moves to backlog only.
+
+
 - **Live regression on the preview URL**: 25 MB / 31-page image-only PDF uploaded → HTTP 200 in 1.2 s; background OCR completed in ~3 min → 53 clean records extracted (BEIGE, BLUISH GREY, ROMANTIC PINK, MISTY GREY, GOTHIC GREY, RICH LIGHT GREY GRANITE, LAKE BLUE, …); parent status transitioned `processing → review → published` correctly.
 
 - Save/star favorite matches
