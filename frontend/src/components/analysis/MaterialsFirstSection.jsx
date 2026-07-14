@@ -555,8 +555,10 @@ function MaterialCard({ row, index, onAddToShortlist, shortlisted, onAddCatalogu
           </div>
         )}
 
-        {/* Indian sourcing note */}
-        {row.indian_alternative && (
+        {/* Indian sourcing note — Sprint 6: hidden unless at least one
+            Published Library match exists, so we never surface a
+            fabricated brand recommendation. */}
+        {row.indian_alternative && (row.catalogue_matches || []).some((m) => m.source_library === "Published Library") && (
           <div className="rounded-xl bg-ochre-soft/40 border border-ochre/20 p-3">
             <div className="flex items-center gap-1.5 mb-1">
               <MapPin className="w-3.5 h-3.5 text-ochre" strokeWidth={2} />

@@ -554,6 +554,110 @@ category verification, OCR provider chain, review workflow) UNTOUCHED. No
 vendor portal, Redis, mood boards, or navigation redesign. All future
 enhancements move to backlog.
 
+## Sprint 6 — Verified Swatch Ingestion + Object-Aware Detection (2026-07-14) ✅
+
+The primary USP of MaterialMatch is that a user can point at a region in their
+reference image and get the corresponding published catalogue product back.
+Sprint 5 proved the plumbing worked in principle; Sprint 6 makes it work in
+practice on real Advance-catalogue-derived reference images.
+
+### Perceptual-hash matching layer (Phase 1 + 2)
+- New `visual_hash.py` module — pHash + dHash + wHash ensemble via `imagehash`.
+  Hashes are 64-bit hex strings so they survive Mongo round-trips.
+- `compute_visual_hashes` is called from the extraction pipeline for EVERY
+  published record. Only ever runs on the isolated `page_preview_b64` swatch
+  crop — never on full pages, room renders or solid-colour placeholders.
+- Startup backfill (`_sprint6_backfill_visual_hashes`) — idempotent; runs
+  once on boot for every record that still lacks a hash. **341 pre-existing
+  published records were backfilled** on first boot.
+- `_find_catalogue_matches` computes visual distance BEFORE fuzzy text
+  ranking. Verdicts: `exact ≤ 6`, `near ≤ 12`, `loose ≤ 20`, `unrelated > 20`.
+  Exact matches are promoted to `match_percent ≥ 92` and marked
+  `exact_visual_match=True`. Near matches get a +15 boost.
+- Category compatibility still wins — a visually-identical TILE swatch
+  never surfaces for a kitchen-cabinet row.
+
+### Object-aware region analysis (Phase 3 + 4)
+- `RegionAnalyzePayload` accepts `full_image_b64` + `bbox`. When both are
+  present, `run_object_aware_region_analysis` sends BOTH the full scene AND
+  the selected crop to `gpt-4o-mini` with a two-step prompt: identify the
+  OBJECT first, then classify its material.
+- `materialmatch_brain` extended with object-aware routing. `object_type`
+  overrides the legacy zone-driven categories:
+  - kitchen cabinet / wardrobe / tv unit / vanity → `["Laminates","Veneers"]`
+    (adds `Paints` only if `material_type` contains "PU"/"painted")
+  - countertop → `["Stone","Tiles","Laminates"]`
+  - backsplash → `["Tiles","Stone","Laminates"]`
+  - sofa / chair / bed / headboard → `["Fabric"]`
+  - feature panel / wall panel → `["Laminates","Veneers","Tiles","Stone"]`
+- Frontend `RegionSelector.jsx` now also renders the full canvas to base64
+  and posts it with the selected bbox on every region analyse.
+
+### Data hygiene (Phase 6 + 7)
+- `_sprint6_cleanup_junk_published_records` — un-publishes records whose
+  `material_name` matches `^Swatch p\d+\.s\d+$` (Sprint 3 placeholder) or
+  starts with page-title patterns like `ADVANCE PANELS`, `INTERIOR CEILING
+  PANELS`, `PRICE LIST`. Idempotent; sends them back to `draft` +
+  `needs_review=True`. **53 junk records were removed** from the user
+  search index on first boot.
+- Sourcing note ("Indian sourcing note" with brand recommendations) is now
+  hidden unless the row has at least one `source_library="Published Library"`
+  match. Never surfaces a fabricated brand recommendation.
+
+### pHash calibration table (real Advance loopback, 2026-07-14)
+| Comparison                                | Verdict     | Hamming (best) |
+|-------------------------------------------|-------------|----------------|
+| AURUM GOLD vs AURUM GOLD (same crop)      | `exact`     | 0              |
+| AURUM GOLD vs AURUM GOLD resized+q60      | `exact`     | 0              |
+| AURUM GOLD vs AURIC COPPER (same family)  | `unrelated` | 24             |
+| AURUM GOLD vs Kajaria Nero Marquina Stone | `unrelated` | 47             |
+Threshold: `exact ≤ 6`, `near ≤ 12`, `loose ≤ 20`.
+
+### End-to-end ADVANCE LOOPBACK proof
+Simulated user reference = resized + JPEG-recompressed AURUM GOLD swatch.
+Enrichment pipeline output:
+
+```
+#1 Advance · 'AURUM GOLD'
+     code=TL-8056 · match_percent=92%
+     source=Published Library · exact_visual_match=True
+     visual_hamming=0 verdict=exact
+     reason=Exact visual match with catalogue swatch (Hamming 0) …
+     source_page_href=/api/admin/studio/uploads/…/page/5
+```
+
+### Additional cost per analysis
+- pHash generation: **$0** (deterministic local computation, ~1 ms per swatch)
+- Object-aware region analyze: **1× vision call with 2 images** ≈ $0.0006
+  per manual region selection (vs $0.0004 crop-only in Sprint 5 — cost
+  increase of ~$0.0002 per selection)
+- No extra AI cost on the standard full-image analyze path.
+
+### Tests
+- `tests/test_sprint6_verified_match.py` — 17 tests: pHash calibration
+  (identical / resized / different / degenerate), exact-visual-match
+  promotion above fuzzy scorer, category-incompatible visual match
+  rejected, object-aware brain routing (kitchen cabinet / wardrobe /
+  countertop / backsplash / sofa / PU exception), payload contract.
+  **All 17 pass.**
+- Frozen suites still green: Sprint 3 + Sprint 4 + Sprint 4 generalization
+  + Sprint 5 + Studio bulk edit + Studio pipeline + v2 analysis. **93 tests
+  green in isolation, 3 skipped** (pre-existing).
+
+### Files changed
+- `/app/backend/visual_hash.py` — NEW (pHash utilities + calibration table)
+- `/app/backend/server.py` — extraction populates `visual_hashes`;
+  `_find_catalogue_matches` gets perceptual-first layer; `materialmatch_brain`
+  gets object-aware routing; two startup migrations
+  (`_sprint6_backfill_visual_hashes`, `_sprint6_cleanup_junk_published_records`);
+  new `run_object_aware_region_analysis` sends full+crop dual images.
+- `/app/backend/tests/test_sprint6_verified_match.py` — NEW (17 tests).
+- `/app/frontend/src/components/analysis/RegionSelector.jsx` — sends full
+  canvas + bbox on analyze-region.
+- `/app/frontend/src/components/analysis/MaterialsFirstSection.jsx` — hides
+  Indian sourcing note unless a Published Library match exists.
+
+
 - **Live regression on the preview URL**: 25 MB / 31-page image-only PDF uploaded → HTTP 200 in 1.2 s; background OCR completed in ~3 min → 53 clean records extracted (BEIGE, BLUISH GREY, ROMANTIC PINK, MISTY GREY, GOTHIC GREY, RICH LIGHT GREY GRANITE, LAKE BLUE, …); parent status transitioned `processing → review → published` correctly.
 
 - Save/star favorite matches

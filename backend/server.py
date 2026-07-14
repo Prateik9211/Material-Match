@@ -1243,6 +1243,13 @@ async def real_analyze(project_id: str, user: dict = Depends(get_current_user)):
 class RegionAnalyzePayload(BaseModel):
     crop_b64: str = Field(min_length=32)  # base64 (no data-url prefix)
     note: Optional[str] = ""
+    # Sprint 6 — object-aware region analysis: send the FULL reference
+    # image + the selected bbox alongside the crop so the LLM can reason
+    # about which OBJECT the selected surface belongs to (e.g. kitchen
+    # cabinet vs wall paint) instead of just looking at an isolated
+    # colour patch. All three fields are optional for backwards compat.
+    full_image_b64: Optional[str] = None      # full reference (may be reused from server-side blob)
+    bbox: Optional[list] = None               # [x, y, w, h] percent of image (0-100)
 
 
 # ---------------------------------------------------------------------------
@@ -1500,21 +1507,23 @@ def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 62,
                               weights: dict | None = None) -> list:
     """Return top_k catalogue matches with similarity breakdown.
 
-    Sprint 5 — user-side matching now consumes real Published Library records
-    correctly:
-      • Category filter accepts singular OR plural names (bridge to Sprint 4).
-      • Result payload includes `swatch_crop_b64` (per-swatch image), the
-        source `upload_id`, `source_page_href` (for View Source), a
-        Human-readable `match_reason`, a `source_library` tag ("Published
-        Library" vs "Seeded Library") and a debug packet.
-      • Deduplicates near-identical records by (material_code | normalized
-        name | swatch hex).
-      • Sub-strong matches (< min_overall) are dropped. Weak-tie matches are
-        capped at top_k."""
+    Sprint 6 — perceptual-first matching. When the reference row carries
+    a `visual_hashes` packet (computed from the user's selected crop or
+    reference image), we FIRST look for exact / near-exact loopback
+    matches against every published swatch in the compatible category.
+    An `exact` verdict (Hamming ≤ 6) is promoted to match_percent ≥ 92
+    and marked `exact_visual_match=True`. `near` (≤12) adds a +15 boost.
+    Perceptually incompatible categories are STILL rejected — a Kajaria
+    tile that visually resembles the reference will not surface for a
+    kitchen cabinet row (the object-aware category gate wins).
+
+    Sprint 5 — user-side matching consumes real Published Library records
+    correctly (singular↔plural bridge, swatch crop preservation, debug
+    packet). See Sprint 5 tests for the earlier acceptance criteria."""
+    from visual_hash import visual_distance, similarity_from_distance
     scored = []
     # Normalise the allow-list once. Both singular and plural forms are
-    # accepted at the item side, so a filter for "Laminates" matches a
-    # Studio record with category="Laminate" and vice-versa.
+    # accepted at the item side.
     allow_norm: set | None = None
     if allowed_categories is not None:
         allow_norm = set(_normalize_category(c) or "" for c in allowed_categories)
@@ -1524,6 +1533,7 @@ def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 62,
     # Studio (uploaded PDF) records first — real user data outranks seed.
     all_items = list(_STUDIO_INDEXED_RECORDS) + list(SEEDED_CATALOGUE)
     glossy = _row_is_glossy(row)
+    ref_hashes = row.get("visual_hashes")  # Sprint 6 — may be None
     for item in all_items:
         item_cat_norm = _normalize_category(item.get("category"))
         category_filter_applied = None
@@ -1532,7 +1542,29 @@ def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 62,
                 continue
             category_filter_applied = item_cat_norm
         s = _score_catalogue_item(row, item, weights=weights)
-        if s["overall"] < min_overall:
+        # Sprint 6 — perceptual layer. Compute BEFORE the overall score
+        # gate so an exact visual match survives even when text metadata
+        # is sparse.
+        vdist = visual_distance(ref_hashes, item.get("visual_hashes"))
+        visual_verdict = vdist["verdict"]
+        # Promote / boost based on verdict. Applied *inside* the category
+        # gate — an incompatible tile that looks similar STILL doesn't
+        # surface for a cabinet row.
+        promoted = False
+        overall = s["overall"]
+        if ref_hashes and item.get("visual_hashes"):
+            if visual_verdict == "exact":
+                overall = max(overall, 92)
+                promoted = True
+            elif visual_verdict == "near":
+                overall = min(97, overall + 15)
+            elif visual_verdict == "loose":
+                overall = min(97, overall + 5)
+        s = {**s, "overall": overall,
+             "visual_hamming": vdist["best"],
+             "visual_verdict": visual_verdict,
+             "exact_visual_match": promoted}
+        if overall < min_overall and not promoted:
             continue
         scored.append((s, item, category_filter_applied))
     scored.sort(key=lambda t: t[0]["overall"], reverse=True)
@@ -1559,10 +1591,11 @@ def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 62,
         page = item.get("page_number")
         # Sprint 5 — soft cap when the source row is a glossy/reflective
         # surface. Highlights and reflections routinely inflate colour
-        # similarity on hard, shiny materials.
+        # similarity on hard, shiny materials. Sprint 6 — never cap an
+        # exact visual match.
         match_pct = s["overall"]
         gloss_capped = False
-        if glossy and match_pct > 85:
+        if glossy and match_pct > 85 and not s.get("exact_visual_match"):
             match_pct = 85
             gloss_capped = True
 
@@ -1577,6 +1610,19 @@ def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 62,
             source_page_href = f"/api/admin/studio/uploads/{item['upload_id']}/page/{page}"
 
         match_reason = _compose_match_reason(row, item, s)
+        # Sprint 6 — override the reason for exact / near visual matches
+        # so the user sees WHY we picked this record.
+        if s.get("exact_visual_match"):
+            match_reason = (
+                f"Exact visual match with catalogue swatch "
+                f"(Hamming distance {s['visual_hamming']}) — "
+                f"{item.get('material_name')} in {item.get('catalogue')}."
+            )
+        elif s.get("visual_verdict") == "near":
+            match_reason = (
+                f"Near-identical visual match (Hamming {s['visual_hamming']}). "
+                + match_reason
+            )
 
         result = {
             "id": item["id"],
@@ -1594,21 +1640,20 @@ def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 62,
             "color_hex": item.get("color_hex"),
             "texture": item.get("texture"),
             "source": item.get("source") or source_library,
-            "source_library": source_library,             # Sprint 5
+            "source_library": source_library,
             "match_percent": match_pct,
-            "match_reason": match_reason,                  # Sprint 5
-            "swatch_crop_b64": item.get("swatch_crop_b64"),# Sprint 5 (may be None for seed)
-            "upload_id": item.get("upload_id"),            # Sprint 5
-            "source_page_href": source_page_href,         # Sprint 5
+            "match_reason": match_reason,
+            "swatch_crop_b64": item.get("swatch_crop_b64"),
+            "upload_id": item.get("upload_id"),
+            "source_page_href": source_page_href,
             "has_swatch_crop": bool(item.get("swatch_crop_b64")),
+            "exact_visual_match": bool(s.get("exact_visual_match")),  # Sprint 6
             "similarity": {
                 "visual": s["visual"],
                 "color": s["color"],
                 "finish": s["finish"],
                 "texture": s["texture"],
             },
-            # Sprint 5 — debug packet (not user-facing but always returned
-            # so QA / logging can trace exactly why each match was picked).
             "debug": {
                 "record_id": item["id"],
                 "source_library": source_library,
@@ -1618,6 +1663,9 @@ def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 62,
                 "final_score_after_gloss_cap": match_pct,
                 "gloss_cap_applied": gloss_capped,
                 "category_filter_matched": cat_filter,
+                "visual_hamming": s.get("visual_hamming"),          # Sprint 6
+                "visual_verdict": s.get("visual_verdict"),         # Sprint 6
+                "exact_visual_match": bool(s.get("exact_visual_match")),
                 "reason_components": {
                     "color": s["color"],
                     "texture": s["texture"],
@@ -1771,6 +1819,7 @@ def _studio_record_to_search_item(rec: dict) -> dict:
         "region_class": rec.get("region_class"),
         "record_confidence": rec.get("confidence"),
         "demo_seed": bool(rec.get("demo_seed")),
+        "visual_hashes": rec.get("visual_hashes"),         # Sprint 6
     }
 
 
@@ -2212,10 +2261,108 @@ _HARD_EXCLUSIONS: dict[str, set[str]] = {
 
 def materialmatch_brain(row: dict) -> dict:
     """The MaterialMatch Brain. Returns the decision packet that drives
-    catalogue matching. Idempotent and pure — no side effects."""
+    catalogue matching. Idempotent and pure — no side effects.
+
+    Sprint 6 — object-aware category gating. When the row carries an
+    `object_type` (populated by the object-aware region analysis), we
+    OVERRIDE the legacy zone-driven routing so a kitchen cabinet or
+    wardrobe never falls back to Paint just because its surface is a
+    flat colour."""
     classification = row.get("classification") or _classify_row(row)
     mtype_l = str(row.get("material_type") or "").lower()
     fam = str(row.get("material_family") or "").strip()
+
+    # Sprint 6 — object-aware routing runs FIRST. If we know what
+    # object was selected, that dictates the compatible categories.
+    object_type = str(row.get("object_type") or "").strip().lower()
+    _CABINETRY_OBJECTS = {
+        "kitchen cabinet", "wardrobe", "tv unit", "vanity",
+        "built-in shelf", "cabinetry",
+    }
+    _COUNTERTOP_OBJECTS = {"countertop", "counter top", "worktop"}
+    _BACKSPLASH_OBJECTS = {"backsplash", "splashback"}
+    _SOFA_OBJECTS = {"sofa", "settee", "couch"}
+    _UPHOLSTERED_FURNITURE = {"chair", "bed", "headboard"}
+    _HARD_WALL_OBJECTS = {"feature panel", "wall panel"}
+
+    is_pu_painted = "pu" in mtype_l or "puf" in mtype_l or "painted" in mtype_l
+
+    if object_type in _CABINETRY_OBJECTS:
+        # Cabinetry is almost always laminate / veneer / acrylic panel.
+        # Only allow Paints when the analyser explicitly identified a
+        # PU-painted finish (the material_type / finish will say so).
+        allowed = ["Laminates", "Veneers"] + (["Paints"] if is_pu_painted else [])
+        detected_finish = _visual_reference_label(row) or (row.get("material_type") or "Detected material")
+        likely_family = _likely_family_label(row)
+        excluded = sorted(set(CATEGORY_SETS.keys()) - set(allowed))
+        weights = _RANKING_WEIGHTS.get(allowed[0], _RANKING_WEIGHTS["_default"])
+        return {
+            "classification": classification,
+            "app_context": "cabinet",
+            "detected_finish": detected_finish,
+            "likely_family": likely_family,
+            "allowed_categories": allowed,
+            "allowed_libraries": [_LIBRARY_LABELS.get(c, c) for c in allowed],
+            "excluded_libraries": [_LIBRARY_LABELS.get(c, c) for c in excluded],
+            "ranking_weights": weights,
+            "object_aware": True,
+        }
+    if object_type in _COUNTERTOP_OBJECTS:
+        allowed = ["Stone", "Tiles", "Laminates"]
+        excluded = sorted(set(CATEGORY_SETS.keys()) - set(allowed))
+        return {
+            "classification": classification,
+            "app_context": "countertop",
+            "detected_finish": _visual_reference_label(row) or (row.get("material_type") or "Detected material"),
+            "likely_family": _likely_family_label(row),
+            "allowed_categories": allowed,
+            "allowed_libraries": [_LIBRARY_LABELS.get(c, c) for c in allowed],
+            "excluded_libraries": [_LIBRARY_LABELS.get(c, c) for c in excluded],
+            "ranking_weights": _RANKING_WEIGHTS.get(allowed[0], _RANKING_WEIGHTS["_default"]),
+            "object_aware": True,
+        }
+    if object_type in _BACKSPLASH_OBJECTS:
+        allowed = ["Tiles", "Stone", "Laminates"]
+        excluded = sorted(set(CATEGORY_SETS.keys()) - set(allowed))
+        return {
+            "classification": classification,
+            "app_context": "backsplash",
+            "detected_finish": _visual_reference_label(row) or (row.get("material_type") or "Detected material"),
+            "likely_family": _likely_family_label(row),
+            "allowed_categories": allowed,
+            "allowed_libraries": [_LIBRARY_LABELS.get(c, c) for c in allowed],
+            "excluded_libraries": [_LIBRARY_LABELS.get(c, c) for c in excluded],
+            "ranking_weights": _RANKING_WEIGHTS.get(allowed[0], _RANKING_WEIGHTS["_default"]),
+            "object_aware": True,
+        }
+    if object_type in _SOFA_OBJECTS or object_type in _UPHOLSTERED_FURNITURE:
+        allowed = ["Fabric"]
+        excluded = sorted(set(CATEGORY_SETS.keys()) - set(allowed))
+        return {
+            "classification": classification,
+            "app_context": "upholstery",
+            "detected_finish": _visual_reference_label(row) or (row.get("material_type") or "Detected material"),
+            "likely_family": _likely_family_label(row),
+            "allowed_categories": allowed,
+            "allowed_libraries": [_LIBRARY_LABELS.get(c, c) for c in allowed],
+            "excluded_libraries": [_LIBRARY_LABELS.get(c, c) for c in excluded],
+            "ranking_weights": _RANKING_WEIGHTS.get(allowed[0], _RANKING_WEIGHTS["_default"]),
+            "object_aware": True,
+        }
+    if object_type in _HARD_WALL_OBJECTS:
+        allowed = ["Laminates", "Veneers", "Tiles", "Stone"]
+        excluded = sorted(set(CATEGORY_SETS.keys()) - set(allowed))
+        return {
+            "classification": classification,
+            "app_context": "feature wall",
+            "detected_finish": _visual_reference_label(row) or (row.get("material_type") or "Detected material"),
+            "likely_family": _likely_family_label(row),
+            "allowed_categories": allowed,
+            "allowed_libraries": [_LIBRARY_LABELS.get(c, c) for c in allowed],
+            "excluded_libraries": [_LIBRARY_LABELS.get(c, c) for c in excluded],
+            "ranking_weights": _RANKING_WEIGHTS.get(allowed[0], _RANKING_WEIGHTS["_default"]),
+            "object_aware": True,
+        }
 
     # 1. Application context (drives everything else).
     app_ctx = _application_context(row)
@@ -2601,8 +2748,34 @@ async def analyze_region(project_id: str, payload: RegionAnalyzePayload,
         }
     try:
         await _check_and_increment_quota(user["id"])
-        result = await run_real_analysis(project_id, user["id"], crop,
-                                         region=user.get("preferred_region", DEFAULT_REGION))
+        # Sprint 6 — object-aware region analysis. When the caller
+        # provided the FULL reference image + selected bbox, we ask the
+        # LLM to first identify the OBJECT at that region then classify
+        # its material. This is the fix for "blue kitchen cabinet
+        # becomes wall paint" — an isolated crop of flat blue was
+        # collapsing to Paint because the model had no object cue.
+        full_b64 = payload.full_image_b64
+        if full_b64 and full_b64.startswith("data:"):
+            full_b64 = full_b64.split(",", 1)[-1]
+        bbox = payload.bbox if isinstance(payload.bbox, list) and len(payload.bbox) == 4 else None
+        if full_b64 and bbox:
+            result = await run_object_aware_region_analysis(
+                project_id, user["id"], full_b64, crop, bbox,
+                region=user.get("preferred_region", DEFAULT_REGION),
+            )
+        else:
+            result = await run_real_analysis(
+                project_id, user["id"], crop,
+                region=user.get("preferred_region", DEFAULT_REGION),
+            )
+        # Sprint 6 — attach the perceptual fingerprint of the SELECTED
+        # crop to each row so the ranker can do exact-match loopback
+        # against published swatches.
+        from visual_hash import compute_visual_hashes
+        crop_hashes = compute_visual_hashes(crop)
+        for r in result.get("rows") or []:
+            if crop_hashes and not r.get("visual_hashes"):
+                r["visual_hashes"] = crop_hashes
         _enrich_rows_with_catalogue(result.get("rows") or [])
         result["ephemeral"] = True
         result["region_note"] = (payload.note or "").strip()[:200]
@@ -2612,6 +2785,131 @@ async def analyze_region(project_id: str, payload: RegionAnalyzePayload,
     except Exception:
         logger.exception(f"analyze-region failed project={project_id}")
         raise HTTPException(status_code=502, detail="Region analysis failed. Please try again.")
+
+
+async def run_object_aware_region_analysis(
+    project_id: str, user_id: str,
+    full_b64: str, crop_b64: str, bbox: list,
+    region: str = None,
+) -> dict:
+    """Sprint 6 — object-aware region analysis. Sends BOTH the full
+    reference image and the selected crop, plus the bbox as text, so the
+    LLM must first identify the OBJECT at that region before classifying
+    the material. Fixes the "blue kitchen cabinet becomes wall paint"
+    regression from Sprint 5."""
+    import asyncio
+    if region is None:
+        region = DEFAULT_REGION
+
+    system = (
+        "You are an EXPERT INTERIOR SPECIFICATION CONSULTANT. The user "
+        "has selected a region of their reference image and needs to "
+        "specify its material. You MUST reason in two steps:\n"
+        "  STEP 1 — OBJECT: Look at the FULL scene image (IMAGE 1). "
+        "  Identify what OBJECT the selected region belongs to. "
+        "  Choose from: kitchen cabinet, wardrobe, tv unit, vanity, "
+        "  countertop, backsplash, built-in shelf, door, sofa, chair, "
+        "  table, bed, headboard, wall, floor, ceiling, feature panel.\n"
+        "  STEP 2 — MATERIAL: THEN classify the material of that "
+        "  object's surface using the SELECTED crop (IMAGE 2). If the "
+        "  object is cabinetry (kitchen cabinet / wardrobe / tv unit / "
+        "  vanity), NEVER default to 'paint' unless the surface is "
+        "  visibly a PU-painted panel — cabinetry is almost always "
+        "  laminate, veneer or acrylic panel.\n"
+        "Reply with ONLY valid JSON, no markdown."
+    )
+
+    user_prompt = (
+        f"IMAGE 1 is the full reference scene. "
+        f"IMAGE 2 is the user's selected region at bbox "
+        f"[x={bbox[0]:.1f}%, y={bbox[1]:.1f}%, w={bbox[2]:.1f}%, h={bbox[3]:.1f}%].\n\n"
+        "Return exactly ONE row for the selected region:\n"
+        "{\n"
+        '  "summary": {"design_style": "...", "material_palette": "...", "key_finishes": "...", "sourcing_note": "..."},\n'
+        '  "rows": [{\n'
+        '    "zone": "short specification zone e.g. Kitchen base cabinet front",\n'
+        '    "group": "Wall | Floor | Ceiling | Furniture",\n'
+        '    "object_group": "Architectural Surface | Built-in Element | Furniture | Fixture",\n'
+        '    "object_type": "kitchen cabinet | wardrobe | tv unit | vanity | countertop | backsplash | built-in shelf | door | sofa | chair | table | bed | headboard | wall | floor | ceiling | feature panel",\n'
+        '    "surface_description": "which surface of the object is selected",\n'
+        '    "material_family": "one of: ' + ", ".join(MATERIAL_FAMILIES) + '",\n'
+        '    "material_type": "concise finish description",\n'
+        '    "color": "short colour",\n'
+        '    "texture": "short texture",\n'
+        '    "finish": "short finish",\n'
+        '    "design_style": "short style label",\n'
+        '    "keywords": ["3-6 lowercase tags"],\n'
+        '    "confidence": 0,\n'
+        '    "object_confidence": 0,\n'
+        '    "material_confidence": 0\n'
+        "  }]\n"
+        "}\n"
+        "RULES:\n"
+        "- confidence, object_confidence, material_confidence are INTEGERS 0-100.\n"
+        "- If object_type is any cabinetry (kitchen cabinet / wardrobe / tv unit / vanity), do NOT set material_family='wall' or return 'paint' in material_type unless the visible finish is unmistakably PU-painted.\n"
+        "- If the selected region is a built-in cabinet, prefer material_family=wood/furniture and material_type=laminate/veneer/acrylic panel.\n"
+        "- Reply with ONLY the JSON object."
+    )
+
+    last_error = ""
+    for attempt in range(LLM_ANALYSIS_MAX_RETRIES + 1):
+        try:
+            chat = LlmChat(
+                api_key=EMERGENT_LLM_KEY,
+                session_id=f"region-{project_id}-{secrets.token_hex(4)}",
+                system_message=system,
+            ).with_model(LLM_PROVIDER_ANALYSIS, LLM_MODEL_ANALYSIS)
+            msg = UserMessage(
+                text=user_prompt,
+                file_contents=[
+                    ImageContent(image_base64=full_b64),
+                    ImageContent(image_base64=crop_b64),
+                ],
+            )
+            raw = await asyncio.wait_for(
+                chat.send_message(msg),
+                timeout=LLM_ANALYSIS_TIMEOUT_S,
+            )
+            parsed = _parse_json(raw)
+            cleaned = _validate_analysis_payload(parsed)
+            raw_rows = parsed.get("rows") or []
+            for i, r in enumerate(cleaned["rows"]):
+                src = raw_rows[i] if i < len(raw_rows) else {}
+                for k in ("object_group", "object_type", "surface_description",
+                          "object_confidence", "material_confidence"):
+                    v = src.get(k)
+                    if isinstance(v, str) and v.strip():
+                        r[k] = v.strip()[:120]
+                    elif isinstance(v, (int, float)):
+                        r[k] = int(round(float(v)))
+            return {
+                "rows": cleaned["rows"],
+                "summary": cleaned["summary"],
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "version": f"real-openai-{LLM_MODEL_ANALYSIS}-region-object-aware",
+                "region": region,
+            }
+        except asyncio.TimeoutError:
+            logger.warning(f"object-aware region timeout attempt={attempt} project={project_id}")
+            if attempt < LLM_ANALYSIS_MAX_RETRIES:
+                await asyncio.sleep(0.5 * (3 ** attempt))
+                continue
+            raise HTTPException(status_code=504, detail="AI analysis timed out.")
+        except ValueError as ve:
+            last_error = f"schema: {ve}"
+            if attempt < LLM_ANALYSIS_MAX_RETRIES:
+                continue
+            raise HTTPException(status_code=502, detail=f"AI schema error: {last_error}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            last_error = f"upstream: {type(e).__name__}: {e}"
+            logger.exception(f"object-aware region upstream-fail attempt={attempt} project={project_id}")
+            if attempt < LLM_ANALYSIS_MAX_RETRIES:
+                await asyncio.sleep(0.5 * (3 ** attempt))
+                continue
+            raise HTTPException(status_code=502, detail=f"AI service error: {last_error}")
+    raise HTTPException(status_code=500, detail="Unexpected region analysis state")
 
 
 # ============================================================================
@@ -4177,6 +4475,77 @@ async def get_client_config():
 # ============================================================================
 # Startup
 # ============================================================================
+@app.on_event("startup")
+async def _sprint6_backfill_visual_hashes() -> None:
+    """Sprint 6 — compute pHash / dHash / wHash for every ke_records row
+    that has a `page_preview_b64` but no `visual_hashes`. Runs
+    idempotently on startup; skips records already hashed. Never touches
+    records with missing / degenerate crops."""
+    if db is None:  # pragma: no cover
+        return
+    from visual_hash import compute_visual_hashes
+    cursor = db.ke_records.find(
+        {"visual_hashes": {"$exists": False},
+         "page_preview_b64": {"$exists": True, "$ne": None}},
+        {"id": 1, "page_preview_b64": 1},
+    )
+    count = 0
+    async for r in cursor:
+        h = compute_visual_hashes(r.get("page_preview_b64"))
+        if not h:
+            continue
+        await db.ke_records.update_one(
+            {"id": r["id"]}, {"$set": {"visual_hashes": h}},
+        )
+        count += 1
+    if count:
+        logger.info("Sprint 6 pHash backfill: hashed %d record(s)", count)
+
+
+@app.on_event("startup")
+async def _sprint6_cleanup_junk_published_records() -> None:
+    """Sprint 6 — Sprint 3 page-level fallback produced records with
+    material_name = 'Swatch p{page}.s{swatch}' or ALL-CAPS page titles.
+    Some of these accidentally got published. Move them BACK to draft so
+    they never enter the user search index. Idempotent.
+
+    Rules for un-publish:
+      1. name matches "Swatch p<digits>.s<digits>" (Sprint 3 placeholder)
+      2. name is UPPERCASE and matches known page-title patterns
+         ("...PANELS:", "INTERIOR CEILING PANELS", "ADVANCE PANELS", etc)
+      3. is_page_level_fallback is True (Type-B whole-page record)
+    """
+    if db is None:  # pragma: no cover
+        return
+    import re
+    placeholder_re = re.compile(r"^Swatch\s+p\d+\.s\d+$")
+    junk_title_patterns = (
+        "ADVANCE PANELS", "INTERIOR CEILING PANELS", "CATALOGUE",
+        "SPECIFICATION", "PRICE LIST",
+    )
+    cleaned = 0
+    async for r in db.ke_records.find(
+        {"status": "published"},
+        {"id": 1, "material_name": 1, "is_page_level_fallback": 1},
+    ):
+        name = str(r.get("material_name") or "").strip()
+        should_unpublish = (
+            placeholder_re.match(name) is not None
+            or any(name.upper().startswith(p) for p in junk_title_patterns)
+            or r.get("is_page_level_fallback") is True
+        )
+        if should_unpublish:
+            await db.ke_records.update_one(
+                {"id": r["id"]},
+                {"$set": {"status": "draft",
+                          "needs_review": True,
+                          "sprint6_unpublished_reason": "junk-page-title-or-placeholder"}},
+            )
+            cleaned += 1
+    if cleaned:
+        logger.info("Sprint 6 junk-record cleanup: unpublished %d record(s)", cleaned)
+
+
 @app.on_event("startup")
 async def startup_event():
     # Studio ingestion: report which OCR providers are available. We now
@@ -6533,6 +6902,15 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
             conf = min(95, conf)
             final_brand = brand_hint or catalogue_brand
 
+            # Sprint 6 — visual fingerprint (pHash + dHash + wHash) computed
+            # from the ISOLATED per-swatch crop we just produced. This is
+            # the only image the hash is ever generated from — never the
+            # full page, never a lifestyle render, never a solid colour
+            # block. Used by the user-matcher for exact / near-exact
+            # loopback matching before fuzzy text ranking.
+            from visual_hash import compute_visual_hashes
+            visual_hashes = compute_visual_hashes(thumb_b64)
+
             records.append({
                 "id": str(uuid.uuid4()),
                 "upload_id": upload_id,
@@ -6557,6 +6935,7 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
                 "swatch_bbox": [round(rect.x0, 1), round(rect.y0, 1),
                                 round(rect.x1, 1), round(rect.y1, 1)],
                 "page_preview_b64": thumb_b64,
+                "visual_hashes": visual_hashes,           # Sprint 6
                 "status": "draft",
                 "needs_review": needs_review,              # Sprint 3 C
                 "needs_review_reasons": needs_review_reasons,     # Sprint 4

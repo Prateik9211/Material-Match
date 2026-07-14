@@ -58,9 +58,30 @@ export default function RegionSelector({ projectId, imgSrc, onAnalyzed, pins, fo
       ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
       const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
       const b64 = dataUrl.split(",", 2)[1] || "";
+
+      // Sprint 6 — object-aware region analysis: also send the FULL
+      // image + bbox so the LLM identifies the OBJECT first, then
+      // classifies the material. Falls back to crop-only analysis if
+      // the full-image canvas can't be encoded (e.g. tainted origin).
+      let fullB64 = null;
+      try {
+        const fullCanvas = document.createElement("canvas");
+        fullCanvas.width = img.naturalWidth;
+        fullCanvas.height = img.naturalHeight;
+        fullCanvas.getContext("2d").drawImage(img, 0, 0);
+        const fullDataUrl = fullCanvas.toDataURL("image/jpeg", 0.85);
+        fullB64 = fullDataUrl.split(",", 2)[1] || null;
+      } catch (_) {
+        // If the image is tainted (cross-origin), skip full-image
+        // context — server falls back to crop-only analysis.
+        fullB64 = null;
+      }
+
       const { data } = await api.post(`/projects/${projectId}/analyze-region`, {
         crop_b64: b64,
         note: "user-selected region",
+        full_image_b64: fullB64,
+        bbox: [rect.x, rect.y, rect.w, rect.h],
       });
       onAnalyzed({ rows: data.rows || [], summary: data.summary || {}, crop_data_url: dataUrl });
       toast.success(`Detected ${(data.rows || []).length} material${(data.rows || []).length === 1 ? "" : "s"} in your selection`);
