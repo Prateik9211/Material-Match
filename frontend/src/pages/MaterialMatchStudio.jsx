@@ -65,7 +65,7 @@ function StatusBadge({ status, records }) {
 /* ------------------------------------------------------------------ */
 /*                        Tab 1 — Upload Catalogue                    */
 /* ------------------------------------------------------------------ */
-function UploadTab({ onUploaded }) {
+function UploadTab({ onUploaded, categoryHint, onClearCategoryHint }) {
   const fileRef = useRef(null);
   const [dragOver, setDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -85,6 +85,7 @@ function UploadTab({ onUploaded }) {
     try {
       const fd = new FormData();
       fd.append("file", file);
+      if (categoryHint) fd.append("category_hint", categoryHint);
       const r = await api.post("/admin/studio/upload", fd, {
         headers: { "Content-Type": "multipart/form-data" },
       });
@@ -100,6 +101,27 @@ function UploadTab({ onUploaded }) {
 
   return (
     <div className="space-y-6" data-testid="studio-upload-tab">
+      {categoryHint && (
+        <div
+          className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 flex items-center justify-between gap-3"
+          data-testid="studio-category-hint"
+        >
+          <div className="text-sm text-blue-900">
+            <span className="font-semibold">Category hint · {categoryHint}</span>
+            <span className="ml-2 text-blue-700/80">
+              Uploads from this category page will pre-tag the catalogue. The AI still classifies each swatch on its own — the hint never overrides extracted category.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={onClearCategoryHint}
+            className="text-[11px] uppercase tracking-widest text-blue-800 hover:text-blue-900 px-2 py-0.5 rounded-full border border-blue-200 bg-white"
+            data-testid="studio-category-hint-clear"
+          >
+            Clear
+          </button>
+        </div>
+      )}
       <div
         className={`rounded-2xl border-2 border-dashed p-10 text-center transition-colors ${
           dragOver ? "border-charcoal bg-stone-panel" : "border-stone-border bg-white"
@@ -658,8 +680,23 @@ function ReviewTab({ uploads, selectedUploadId, setSelectedUploadId, onDelete })
                           <div className="text-sm font-semibold text-charcoal truncate">
                             {r.material_name}
                           </div>
+                          {r.collection_name && (
+                            <div className="text-[10px] italic text-warm-grey truncate">
+                              Collection · {r.collection_name}
+                            </div>
+                          )}
                         </div>
-                        <StatusBadge status={r.status} />
+                        <div className="flex flex-col items-end gap-1">
+                          <StatusBadge status={r.status} />
+                          {r.needs_review && (
+                            <span
+                              className="text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full border border-orange-200 bg-orange-50 text-orange-700 font-semibold"
+                              data-testid="studio-record-needs-review"
+                            >
+                              Needs review
+                            </span>
+                          )}
+                        </div>
                       </div>
                       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-warm-grey">
                         <span>
@@ -1067,7 +1104,13 @@ function LibraryTab({ uploads, onArchive }) {
 export default function MaterialMatchStudio() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const [tab, setTab] = useState("upload");
+  // Support deep-link from Material Library: /admin/studio?tab=upload&category=Stone
+  const initialTab = (typeof window !== "undefined"
+    && new URLSearchParams(window.location.search).get("tab")) || "upload";
+  const initialCategory = (typeof window !== "undefined"
+    && new URLSearchParams(window.location.search).get("category")) || "";
+  const [tab, setTab] = useState(initialTab);
+  const [categoryHint, setCategoryHint] = useState(initialCategory);
   const [uploads, setUploads] = useState([]);
   const [loadingUploads, setLoadingUploads] = useState(true);
   const [selectedUploadId, setSelectedUploadId] = useState("");
@@ -1307,6 +1350,8 @@ export default function MaterialMatchStudio() {
         {/* Tab body */}
         {tab === "upload" && (
           <UploadTab
+            categoryHint={categoryHint}
+            onClearCategoryHint={() => setCategoryHint("")}
             onUploaded={() => {
               loadUploads();
             }}

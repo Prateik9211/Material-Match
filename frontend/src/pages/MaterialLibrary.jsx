@@ -34,10 +34,18 @@ const CATEGORY_ICON = {
 
 function CategoryTile({ tile }) {
   const Icon = CATEGORY_ICON[tile.category] || Blocks;
+  const navigate = useNavigate();
+  const slug = (tile.category || "").toLowerCase();
+  const disabled = !tile.count || tile.status === "coming_soon";
   return (
-    <div
-      className="border border-stone-border-soft rounded-2xl p-5 hover:border-charcoal/30 hover:shadow-hover transition-all bg-white"
-      data-testid={`category-tile-${tile.category.toLowerCase()}`}
+    <button
+      type="button"
+      onClick={() => !disabled && navigate(`/library/${encodeURIComponent(slug)}`)}
+      disabled={disabled}
+      className={`text-left w-full border border-stone-border-soft rounded-2xl p-5 bg-white transition-all ${
+        disabled ? "opacity-70 cursor-not-allowed" : "hover:border-charcoal/50 hover:shadow-hover cursor-pointer"
+      }`}
+      data-testid={`category-tile-${slug}`}
     >
       <div className="flex items-start justify-between mb-3">
         <div className="w-10 h-10 rounded-xl bg-stone-panel grid place-items-center">
@@ -47,7 +55,7 @@ function CategoryTile({ tile }) {
       </div>
       <div className="text-overline mb-0.5">{tile.library_label || tile.category}</div>
       <div className="flex items-baseline gap-2">
-        <span className="font-display text-3xl font-bold text-charcoal" data-testid={`category-count-${tile.category.toLowerCase()}`}>{tile.count}</span>
+        <span className="font-display text-3xl font-bold text-charcoal" data-testid={`category-count-${slug}`}>{tile.count}</span>
         <span className="text-xs text-warm-grey">records</span>
       </div>
       {tile.sample_brands && tile.sample_brands.length > 0 && (
@@ -57,7 +65,12 @@ function CategoryTile({ tile }) {
           {tile.sample_brands.length > 4 && <span className="text-warm-grey/60"> …</span>}
         </div>
       )}
-    </div>
+      {!disabled && (
+        <div className="mt-3 text-[11px] uppercase tracking-widest text-warm-grey inline-flex items-center gap-1">
+          Open library <ArrowUpRight className="w-3 h-3" strokeWidth={1.75} />
+        </div>
+      )}
+    </button>
   );
 }
 

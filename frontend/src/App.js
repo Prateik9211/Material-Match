@@ -16,6 +16,7 @@ import ConceptWorkspace from "@/pages/ConceptWorkspace";
 import PublicRoom from "@/pages/PublicRoom";
 import Demo from "@/pages/Demo";
 import MaterialLibrary from "@/pages/MaterialLibrary";
+import MaterialLibraryCategory from "@/pages/MaterialLibraryCategory";
 
 function App() {
   return (
@@ -96,6 +97,14 @@ function App() {
             element={
               <ProtectedRoute>
                 <MaterialLibrary />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/library/:category"
+            element={
+              <ProtectedRoute>
+                <MaterialLibraryCategory />
               </ProtectedRoute>
             }
           />

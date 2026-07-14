@@ -5518,6 +5518,28 @@ def _pdf_page_ocr_text(page, dpi: int = 200) -> str:
         return ""
 
 
+def _looks_like_name_stub(s: str) -> bool:
+    """Lightweight name-quality check used by page-title / collection-name
+    detection. Kept small so it can also serve as a first-pass filter
+    for OCR gibberish."""
+    if not s or len(s) < 4 or len(s) > 90:
+        return False
+    if s.isnumeric():
+        return False
+    first = next((c for c in s if not c.isspace()), "")
+    if not first.isalpha():
+        return False
+    letters = sum(1 for c in s if c.isalpha())
+    if letters < 3:
+        return False
+    if letters / max(1, len(s)) < 0.45:
+        return False
+    low = s.lower()
+    if any(bad in low for bad in ("qr code", "www.", "http", "copyright", "warranty", "material match")):
+        return False
+    return True
+
+
 def _page_level_fallback_rect(page):
     """Type-B catalogue fallback: many scanned supplier PDFs render each
     page as a SINGLE full-page raster image (a scan of a physical
@@ -5817,7 +5839,13 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
     pages_ocr_attempted = 0
     pages_ocrd = 0
     page_level_fallback_count = 0
+    per_strip_vision_calls = 0
     ocr_available = _tesseract_available()
+    # Per-strip OCR budget for cloud vision. Prevents runaway costs on
+    # very-high-density pages. Per swatch call = ~$0.0004; we cap at 8
+    # per page and 250 per catalogue.
+    PER_PAGE_STRIP_CAP = 8
+    PER_CATALOGUE_STRIP_CAP = 250
     # Adaptive OCR DPI — very large PDFs use a smaller raster so we stay
     # under the container memory ceiling. 200 DPI for <=15 pages, 160
     # for 15–40 pages, 130 for 40+ pages.
@@ -5870,16 +5898,54 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
         logger.info("[studio %s] page %d — %d swatch(es); text_chars=%d ocr=%s",
                     upload_id, pi, len(swatch_rects), len(page_text), used_ocr)
 
+        # ── Page-title / collection-name detection (Sprint 3 B) ──────────
+        # The first "name-like" line of the whole-page OCR is very likely
+        # the collection title. We store it as `collection_name` PAGE
+        # METADATA on every record from this page but NEVER copy it into
+        # `material_name` — that field must belong to each individual
+        # swatch, not to the page.
+        page_lines_top = [ln.strip() for ln in page_text.splitlines()[:6] if ln.strip()]
+        page_title_candidate: str | None = None
+        for ln in page_lines_top:
+            if _looks_like_name_stub(ln):
+                page_title_candidate = ln[:120]
+                break
+
+        # Track names picked on this page to detect intra-page duplicates
+        # (Sprint 3 A1). Two swatches with the same auto-picked name is a
+        # classic symptom of "we accidentally used the page title" — we
+        # blank the later ones and mark them needs_review.
+        page_names_seen: dict[str, int] = {}
+        # Track how many per-strip vision calls we've done on this page.
+        page_strip_calls = 0
+        # A page has "multi-swatch ambiguity" if it contains >1 swatch —
+        # this unlocks per-strip vision OCR (Sprint 3 A2).
+        multi_swatch_page = len(swatch_rects) > 1
+
         for si, rect in enumerate(swatch_rects, start=1):
             # A. Local text: prefer PDF text blocks near the swatch.
             local = _nearest_text_for_rect(page, rect)
-            # B. If local text is thin AND we have a fast local OCR
-            # (tesseract), OCR the strip below the swatch for a stronger
-            # label hint. We DO NOT run per-strip vision OCR — the
-            # whole-page vision text already covers every swatch, and
-            # ~10 strips × 31 pages would 10× our vision cost per PDF.
-            if len(local) < 8 and _has_local_ocr():
-                local = _ocr_text_below_swatch(page, rect)
+            # B. Per-swatch strip OCR — Sprint 3 A2.
+            #    Enabled when the page has multiple swatches (ambiguous
+            #    label-to-swatch mapping) AND we haven't hit either the
+            #    per-page or per-catalogue cost cap. Runs against the
+            #    OCR provider chain — cheap on tesseract, ~$0.0004 per
+            #    call on GPT-4o-mini vision.
+            local_thin = len(local) < 8
+            can_local = _has_local_ocr()
+            can_vision_strip = (
+                multi_swatch_page
+                and _ocr_available()
+                and page_strip_calls < PER_PAGE_STRIP_CAP
+                and per_strip_vision_calls < PER_CATALOGUE_STRIP_CAP
+            )
+            if local_thin and (can_local or can_vision_strip):
+                strip_text = _ocr_text_below_swatch(page, rect)
+                if strip_text:
+                    local = strip_text
+                    if not can_local:
+                        page_strip_calls += 1
+                        per_strip_vision_calls += 1
             haystack = f"{local}\n{page_text}"
             haystack_l = haystack.lower()
 
@@ -5903,7 +5969,7 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
                 if letters / max(1, len(s)) < 0.55:
                     return False
                 low = s.lower()
-                if any(bad in low for bad in ("qr code", "www.", "http", "copyright", "index", "warranty")):
+                if any(bad in low for bad in ("qr code", "www.", "http", "copyright", "index", "warranty", "i'm sorry", "cannot transcribe", "can't transcribe")):
                     return False
                 return True
 
@@ -5994,22 +6060,57 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
             color_hex, thumb_b64 = _swatch_dominant_hex_and_thumb(page, rect)
 
             # H. Confidence — better when we found both a name candidate
-            # AND a code; lower when name is auto-generated.
+            # AND a code; lower when name is auto-generated / falls back.
             conf = 60
-            if name and not name.startswith("Swatch "):
+            if name and not name.startswith("Swatch ") and not name.startswith("Scanned page "):
                 conf += 20
             if material_code:
                 conf += 15
             if brand_hint:
                 conf += 5
+            # Type-B page-level fallback always needs admin review.
+            is_page_level_fallback = (
+                si == 1
+                and len(swatch_rects) == 1
+                and rect.width * rect.height >= page.rect.width * page.rect.height * 0.30
+                and page_level_fallback_count > 0
+            )
+            if is_page_level_fallback:
+                conf = min(conf, 50)
+
+            # Sprint 3 A1 — intra-page duplicate detection.
+            # If we've already emitted a swatch with this exact name on
+            # THIS page, we're almost certainly copying the collection
+            # title. Blank the name to a swatch placeholder and mark the
+            # record `needs_review` so the admin corrects it.
+            duplicate_of_page_title = False
+            if name:
+                key = name.strip().lower()
+                if key == (page_title_candidate or "").strip().lower() and page_title_candidate:
+                    duplicate_of_page_title = True
+                if key in page_names_seen:
+                    duplicate_of_page_title = True
+                page_names_seen[key] = page_names_seen.get(key, 0) + 1
+            if duplicate_of_page_title:
+                name = f"Swatch p{pi}.s{si}"
+                conf = min(conf, 45)
+
+            needs_review = (
+                conf < 65
+                or is_page_level_fallback
+                or duplicate_of_page_title
+                or name.startswith("Swatch ")
+                or name.startswith("Scanned page ")
+            )
             conf = min(95, conf)
 
             records.append({
                 "id": str(uuid.uuid4()),
                 "upload_id": upload_id,
                 "brand": brand_hint,
-                "collection": None,
-                "material_name": name,
+                "collection": page_title_candidate,
+                "collection_name": page_title_candidate,   # Sprint 3 B — page metadata
+                "material_name": name,                     # per-swatch identity
                 "material_code": material_code,
                 "category": cat_guess,
                 "material_family": family,
@@ -6025,6 +6126,8 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
                                 round(rect.x1, 1), round(rect.y1, 1)],
                 "page_preview_b64": thumb_b64,
                 "status": "draft",
+                "needs_review": needs_review,              # Sprint 3 C
+                "is_page_level_fallback": is_page_level_fallback,   # Sprint 3 D
                 "keywords": [w.lower() for w in re.findall(r"[a-zA-Z]{4,}", name)][:8],
                 "created_at": now,
                 "published_at": None,
@@ -6036,9 +6139,9 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
     # ── STAGE 5: RECORD GENERATION summary ──────────────────────────────
     logger.info(
         "[studio %s] RECORD_GENERATION — pages=%d pages_with_swatches=%d "
-        "pages_ocrd=%d page_level_fallback=%d records=%d",
+        "pages_ocrd=%d page_level_fallback=%d strip_vision_calls=%d records=%d",
         upload_id, total_pages, pages_with_swatches, pages_ocrd,
-        page_level_fallback_count, len(records),
+        page_level_fallback_count, per_strip_vision_calls, len(records),
     )
 
     if records:
@@ -6145,6 +6248,7 @@ async def _run_studio_extraction(upload_id: str, data: bytes, filename: str) -> 
 @api_router.post("/admin/studio/upload")
 async def studio_upload(
     file: UploadFile = File(...),
+    category_hint: str | None = Form(default=None),
     user: dict = Depends(require_admin),
 ):
     """MaterialMatch Studio — upload a supplier PDF. The request returns
@@ -6188,6 +6292,8 @@ async def studio_upload(
         "failure_reason": None,
         "created_at": now,
         "has_blob": True,
+        # Sprint 3 F — hint only, never overrides AI reasoning.
+        "category_hint": category_hint or None,
     }
     await db.ke_uploads.insert_one(upload_doc)
     # Fire-and-forget: the caller sees a 202-style response instantly.
@@ -6237,6 +6343,8 @@ class StudioRecordEditPayload(BaseModel):
     notes: str | None = None
     tags: list[str] | None = None
     keywords: list[str] | None = None
+    needs_review: bool | None = None
+    collection_name: str | None = None
 
 
 class StudioBulkPayload(BaseModel):
