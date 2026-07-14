@@ -218,18 +218,18 @@ export default function Analysis() {
       .map((x) => x.name)
   );
 
-  // Numbered pins overlaid on the reference image. Rows carrying a `pin`
-  // dict use their coordinates; the rest get evenly distributed placeholders
-  // so every card still has a visible image ↔ card link.
-  const imagePins = activeRows.map((r, i) => {
-    if (r?.pin && typeof r.pin.x === "number" && typeof r.pin.y === "number") {
-      return { x: r.pin.x, y: r.pin.y, label: r.zone };
-    }
-    const cols = 3;
-    const col = i % cols;
-    const rowIdx = Math.floor(i / cols);
-    return { x: 20 + col * 30, y: 20 + rowIdx * 22, label: r.zone };
-  });
+  // Sprint 5 — Only render pins the LLM actually anchored (row.pin present).
+  // If no coordinate is available, we deliberately show NO marker (better
+  // than a misleading random position). Ephemeral / region-based rows never
+  // carry pins.
+  const imagePins = activeRows
+    .map((r, i) => {
+      if (r?.pin && typeof r.pin.x === "number" && typeof r.pin.y === "number") {
+        return { x: r.pin.x, y: r.pin.y, label: r.zone, rowIndex: i };
+      }
+      return null;
+    })
+    .filter(Boolean);
 
   return (
     <div className="min-h-screen bg-paper" data-testid="analysis-page">

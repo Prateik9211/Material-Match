@@ -53,11 +53,19 @@ function CatalogueMatchRow({ match, index, onAddToShortlist, shortlisted, isPain
     >
       <div className="flex items-start gap-3">
         <div
-          className="w-14 h-14 rounded-lg shrink-0 border border-stone-border-soft shadow-inner"
+          className="w-14 h-14 rounded-lg shrink-0 border border-stone-border-soft shadow-inner overflow-hidden bg-stone-panel"
           style={{ backgroundColor: match.color_hex || "#B7ADA0" }}
           title={match.color_name || ""}
           data-testid={`catalogue-swatch-${index}`}
-        />
+        >
+          {match.swatch_crop_b64 && (
+            <img
+              src={`data:image/jpeg;base64,${match.swatch_crop_b64}`}
+              alt=""
+              className="w-full h-full object-cover"
+            />
+          )}
+        </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-baseline justify-between gap-2">
             <div className="min-w-0">
@@ -85,10 +93,36 @@ function CatalogueMatchRow({ match, index, onAddToShortlist, shortlisted, isPain
             {match.finish && <span>Finish · <span className="text-charcoal">{match.finish}</span></span>}
             {match.material_family && <span>Family · <span className="text-charcoal">{match.material_family}</span></span>}
           </div>
+          {match.match_reason && (
+            <p
+              className="mt-1.5 text-[11px] text-charcoal/80 italic leading-snug"
+              data-testid={`catalogue-match-reason-${index}`}
+            >
+              {match.match_reason}
+            </p>
+          )}
           <div className="mt-1.5 flex items-center gap-2 flex-wrap">
-            <span className="text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full bg-stone-panel text-warm-grey border border-stone-border-soft">
-              {match.source || "MaterialMatch Library"}
+            <span
+              className={`text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full border ${
+                match.source_library === "Published Library"
+                  ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                  : "bg-stone-panel text-warm-grey border-stone-border-soft"
+              }`}
+              data-testid={`catalogue-source-library-${index}`}
+            >
+              {match.source_library || match.source || "MaterialMatch Library"}
             </span>
+            {match.source_page_href && (
+              <a
+                href={match.source_page_href}
+                target="_blank"
+                rel="noreferrer"
+                className="text-[10px] text-warm-grey hover:text-charcoal underline-offset-2 hover:underline"
+                data-testid={`catalogue-view-source-${index}`}
+              >
+                View source page
+              </a>
+            )}
             <button
               type="button"
               onClick={() => setOpenBreakdown((v) => !v)}
@@ -149,10 +183,18 @@ function RecommendedCard({ match, index, onAddToShortlist, shortlisted, isPaint 
       </div>
       <div className="flex items-start gap-3">
         <div
-          className="w-20 h-20 rounded-xl shrink-0 border border-stone-border-soft shadow-inner"
+          className="w-20 h-20 rounded-xl shrink-0 border border-stone-border-soft shadow-inner overflow-hidden bg-stone-panel"
           style={{ backgroundColor: match.color_hex || "#B7ADA0" }}
           data-testid={`recommended-swatch-${index}`}
-        />
+        >
+          {match.swatch_crop_b64 && (
+            <img
+              src={`data:image/jpeg;base64,${match.swatch_crop_b64}`}
+              alt=""
+              className="w-full h-full object-cover"
+            />
+          )}
+        </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-baseline justify-between gap-2">
             <div className="min-w-0">
@@ -172,6 +214,37 @@ function RecommendedCard({ match, index, onAddToShortlist, shortlisted, isPaint 
             {hasPage && (<span>Page · <span className="font-mono text-charcoal">{match.page_number}</span></span>)}
             {match.finish && <span>Finish · <span className="text-charcoal">{match.finish}</span></span>}
             {match.material_family && <span>Family · <span className="text-charcoal">{match.material_family}</span></span>}
+          </div>
+          {match.match_reason && (
+            <p
+              className="mt-2 text-xs italic text-charcoal/80 leading-snug"
+              data-testid={`recommended-match-reason-${index}`}
+            >
+              {match.match_reason}
+            </p>
+          )}
+          <div className="mt-1.5 flex items-center gap-2 flex-wrap">
+            <span
+              className={`text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full border ${
+                match.source_library === "Published Library"
+                  ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                  : "bg-stone-panel text-warm-grey border-stone-border-soft"
+              }`}
+              data-testid={`recommended-source-library-${index}`}
+            >
+              {match.source_library || match.source || "MaterialMatch Library"}
+            </span>
+            {match.source_page_href && (
+              <a
+                href={match.source_page_href}
+                target="_blank"
+                rel="noreferrer"
+                className="text-[10px] text-warm-grey hover:text-charcoal underline-offset-2 hover:underline"
+                data-testid={`recommended-view-source-${index}`}
+              >
+                View source page
+              </a>
+            )}
           </div>
           <div className="mt-2.5" data-testid={`recommended-why-${index}`}>
             <div className="text-[10px] uppercase tracking-widest text-charcoal/70 mb-1 font-semibold">Why recommended</div>
@@ -525,6 +598,17 @@ function MaterialCard({ row, index, onAddToShortlist, shortlisted, onAddCatalogu
 export default function MaterialsFirstSection({ rows, onAddToShortlist, shortlistedNames, ephemeral, title, subtitle, onAddCatalogueToShortlist, shortlistedCatalogueIds, focusedIndex, onHoverCard }) {
   if (!rows || rows.length === 0) return null;
   const shortlisted = shortlistedNames || new Set();
+
+  // Sprint 5 — group by top-level zone group (Wall / Floor / Ceiling /
+  // Furniture). Ungrouped rows fall into "Other" and stay at the end so
+  // nothing is ever dropped silently.
+  const GROUP_ORDER = ["Wall", "Floor", "Ceiling", "Furniture", "Other"];
+  const grouped = rows.reduce((acc, r, i) => {
+    const g = GROUP_ORDER.includes(r.group) ? r.group : "Other";
+    (acc[g] = acc[g] || []).push({ row: r, index: i });
+    return acc;
+  }, {});
+
   return (
     <section data-testid="materials-section">
       <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4">
@@ -542,19 +626,34 @@ export default function MaterialsFirstSection({ rows, onAddToShortlist, shortlis
           {ephemeral ? "Ephemeral · region-only" : "Detect → Search → Compare → Decide"}
         </div>
       </div>
-      <div className="grid lg:grid-cols-2 gap-4" data-testid="materials-grid">
-        {rows.map((r, i) => (
-          <MaterialCard
-            key={r.zone || i}
-            row={r}
-            index={i}
-            onAddToShortlist={onAddToShortlist}
-            shortlisted={shortlisted.has(r.material_type || r.material_name || r.zone)}
-            onAddCatalogueToShortlist={onAddCatalogueToShortlist}
-            shortlistedCatalogueIds={shortlistedCatalogueIds}
-            focused={focusedIndex === i}
-            onHoverCard={onHoverCard}
-          />
+
+      <div className="space-y-8" data-testid="materials-grouped">
+        {GROUP_ORDER.filter((g) => grouped[g]?.length).map((groupName) => (
+          <div key={groupName} data-testid={`group-section-${groupName.toLowerCase()}`}>
+            <div className="flex items-baseline gap-3 mb-3 border-b border-stone-border-soft pb-2">
+              <h3 className="font-display text-lg font-semibold text-charcoal tracking-tight uppercase">
+                {groupName}
+              </h3>
+              <span className="text-[11px] text-warm-grey">
+                {grouped[groupName].length} zone{grouped[groupName].length === 1 ? "" : "s"}
+              </span>
+            </div>
+            <div className="grid lg:grid-cols-2 gap-4">
+              {grouped[groupName].map(({ row: r, index: i }) => (
+                <MaterialCard
+                  key={r.zone || i}
+                  row={r}
+                  index={i}
+                  onAddToShortlist={onAddToShortlist}
+                  shortlisted={shortlisted.has(r.material_type || r.material_name || r.zone)}
+                  onAddCatalogueToShortlist={onAddCatalogueToShortlist}
+                  shortlistedCatalogueIds={shortlistedCatalogueIds}
+                  focused={focusedIndex === i}
+                  onHoverCard={onHoverCard}
+                />
+              ))}
+            </div>
+          </div>
         ))}
       </div>
     </section>

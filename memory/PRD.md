@@ -472,6 +472,88 @@ is FROZEN for competition submission. No further changes to `_classify_region`,
 Enhancement work moves to backlog only.
 
 
+
+## Sprint 5 — User-side Material Intelligence Engine (2026-07-14) ✅
+
+Rebuilds the reference-image → catalogue-match user flow so it finally
+CONSUMES the cleaned Published Library produced by the frozen Sprint 4
+ingestion pipeline. The ingestion architecture is untouched.
+
+### Phase A — Data integration fixes (critical blockers)
+- **Singular ↔ Plural category bridge** (`_normalize_category` + `_CATEGORY_ALIAS`)
+  — Studio records store `category="Laminate/Paint/Veneer/Tile"` (singular from
+  the Sprint 4 `_CATEGORY_KEYWORDS`); the seed uses `"Laminates/Paints/…"`
+  (plural). Before this fix, every real Sprint 4 record was dropped by the
+  hard category filter. Post-fix: `allowed=["Laminates"]` also matches Studio
+  `category="Laminate"`.
+- **`_studio_record_to_search_item` now preserves** `page_preview_b64`
+  (the isolated swatch crop), `swatch_bbox`, `upload_id`, `collection_name`,
+  `region_class`, and `record_confidence`. The user-facing match card can
+  finally display the isolated swatch (never the full page).
+- End-to-end verified: `Merino · Golden Teak Grain` (Sprint 4 record) surfaces
+  at 71% for a wardrobe/teak reference zone with `has_swatch_crop=True`,
+  `source_library="Published Library"`, and a working
+  `source_page_href=/api/admin/studio/uploads/…/page/5`.
+
+### Phase B — Zone anchoring & top-level grouping
+- LLM prompt now requires `group ∈ {Wall, Floor, Ceiling, Furniture}` per row
+  and asks for an optional `pin{x,y}` (percentage centre of the material).
+- `_validate_analysis_payload` coerces both fields (`_infer_zone_group` falls
+  back from zone-name keywords when the LLM omits the group; `_coerce_pin`
+  accepts 0..1 unit or 0..100 percent and rejects invalid values).
+- **Frontend: placeholder 3-column grid removed.** Pins render ONLY when the
+  LLM anchored the region. No coordinate → no marker (never a random one).
+- `MaterialsFirstSection` groups material cards under `WALL / FLOOR / CEILING
+  / FURNITURE` headings; empty groups don't render.
+
+### Phase C — Trim / dedup / reason / gloss cap
+- User-side `top_k` lowered from 8 → **4** (Studio review workflow keeps 8).
+- Deduplication by (`material_code`, normalized name, `color_hex`) — no more
+  duplicate rows.
+- `_compose_match_reason` generates a specific one-line reason from the
+  similarity breakdown (colour tone / texture / finish / pattern) — never
+  vague phrases like "similar material".
+- Glossy / reflective finish detection (`_row_is_glossy`) soft-caps
+  `match_percent` at 85. `debug.gloss_cap_applied` records when it triggered.
+
+### Phase D — Result-card upgrade
+- `RecommendedCard` + `CatalogueMatchRow` render `<img src=swatch_crop_b64>`
+  when available; fall back to `color_hex` block otherwise.
+- `match_reason` shown below the code / page line.
+- `Published Library` badge (emerald) vs `Seeded Library` (neutral) so admins
+  can see at a glance which source powered each match.
+- `View source page` link opens the parent catalogue PDF page.
+
+### Phase E — Debug instrumentation
+Every match now carries a `debug` packet (not shown to users but always
+returned) with `record_id`, `source_library`, `source_catalogue`,
+`source_page`, `ranking_score`, `final_score_after_gloss_cap`,
+`gloss_cap_applied`, `category_filter_matched`, and per-attribute
+`reason_components` (colour / texture / finish / visual / family_match).
+Simplifies QA and future ranking-model iteration.
+
+### Tests
+- `tests/test_sprint5_user_pipeline.py` — 29 tests covering: singular/plural
+  bridge, search-item field preservation, category hard-filter, output shape,
+  top-4 trim, dedup, glossy cap, group coercion, pin coercion (percent + unit
+  scales), zone→group inference. All 29 pass.
+- Frozen suites still green: Sprint 3 + Sprint 4 + Sprint 4 generalization +
+  Studio bulk edit + v2 analysis + Studio pipeline. **63/66 pass** (3 skipped,
+  pre-existing).
+
+### End-to-end demo (2026-07-14)
+Reference zone `Wardrobe front panel` (Furniture) → Brain →
+`allowed_categories=["Laminates","Veneers"]` → Published Library search →
+`Merino · Golden Teak Grain` (71%, code L-8912) → isolated swatch crop
+displayed → `Warm golden teak tone and gloss finish closely match wardrobe
+front panel.` → `View source page` opens `/api/admin/studio/uploads/…/page/5`.
+
+### What we deliberately did NOT do
+Kept the frozen Sprint 4 ingestion architecture (region intelligence,
+category verification, OCR provider chain, review workflow) UNTOUCHED. No
+vendor portal, Redis, mood boards, or navigation redesign. All future
+enhancements move to backlog.
+
 - **Live regression on the preview URL**: 25 MB / 31-page image-only PDF uploaded → HTTP 200 in 1.2 s; background OCR completed in ~3 min → 53 clean records extracted (BEIGE, BLUISH GREY, ROMANTIC PINK, MISTY GREY, GOTHIC GREY, RICH LIGHT GREY GRANITE, LAKE BLUE, …); parent status transitioned `processing → review → published` correctly.
 
 - Save/star favorite matches

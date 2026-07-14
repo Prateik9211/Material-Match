@@ -806,7 +806,8 @@ PROCUREMENT_DIFFICULTY = ["Easy", "Medium", "Difficult"]
 
 ANALYSIS_USER_PROMPT = (
     "Analyse this interior reference image like a specification consultant. "
-    "Return SURFACE-level rows, not object rows. Aim for 4–8 rows.\n\n"
+    "Return SURFACE-level rows, not object rows. Aim for 3–6 meaningful rows "
+    "(fewer is better than filler).\n\n"
     "Return ONLY this JSON shape:\n"
     "{\n"
     '  "summary": {\n'
@@ -818,6 +819,9 @@ ANALYSIS_USER_PROMPT = (
     '  "rows": [\n'
     "    {\n"
     '      "zone": "SPECIFICATION zone — e.g. Headboard Feature Panel, Wall Paint, Bedroom Flooring, Ceiling Finish, Sofa Upholstery Fabric",\n'
+    '      "group": "MUST be one of: Wall, Floor, Ceiling, Furniture. Never invent other groups.",\n'
+    '      "pin": {"x": 42, "y": 61},'
+    "  // OPTIONAL — approximate centre of the material area as percentages of the image (x in 0..100, y in 0..100). Omit the field entirely if you cannot pin the region confidently. Never fabricate coordinates.\n"
     '      "material_family": "one of: ' + ", ".join(MATERIAL_FAMILIES) + '",\n'
     '      "material_type": "concise finish/product description, e.g. Fluted walnut laminate or veneer panel",\n'
     '      "color": "short descriptive colour, e.g. Warm walnut brown",\n'
@@ -832,6 +836,13 @@ ANALYSIS_USER_PROMPT = (
     "}\n\n"
     "Rules:\n"
     "- confidence is an INTEGER 0–100 (NOT a float 0–1).\n"
+    "- group is REQUIRED — pick the closest of Wall, Floor, Ceiling or Furniture. "
+    "  Wall covers wall paint, feature walls, wall paneling and wall cladding. "
+    "  Floor covers all flooring materials. "
+    "  Ceiling covers ceiling paint and ceiling panels. "
+    "  Furniture covers sofa upholstery, cabinetry, tables, wardrobes, chairs, beds, feature panels.\n"
+    "- pin is OPTIONAL; only include it when you can point to the material region. "
+    "  Do not invent coordinates — an omitted pin is better than a wrong pin.\n"
     "- procurement_difficulty reflects how easy the material is to source in "
     "an urban Indian design context (Easy = mainstream dealers / e-commerce; "
     "Medium = need specific brand or fabricator; Difficult = imported / bespoke).\n"
@@ -839,7 +850,9 @@ ANALYSIS_USER_PROMPT = (
     "- Prefer SURFACE zones ('Headboard Panel', 'Feature Wall', 'Sofa Upholstery') "
     "over object zones ('Bed', 'Sofa'). Only fall back to object zones if no "
     "specific surface is visible.\n"
-    "- Return 4 to 8 rows. Skip ambiguous / occluded surfaces.\n"
+    "- Return 3 to 6 rows — fewer credible zones beat many mediocre ones. "
+    "Skip ambiguous / occluded surfaces. Do not report people, plants, artwork, "
+    "electronics, shadows or tiny decorative objects as materials.\n"
     "- Reply with ONLY the JSON object."
 )
 
@@ -902,6 +915,48 @@ def _clean_summary(value) -> dict:
     }
 
 
+# Sprint 5 — Wall / Floor / Ceiling / Furniture top-level grouping.
+_ZONE_GROUPS = ("Wall", "Floor", "Ceiling", "Furniture")
+
+# Best-effort mapping from raw zone / application text → top-level group when
+# the LLM omits the group field. Uses the same _application_context vocab.
+_ZONE_TO_GROUP_HINTS: dict[str, tuple[str, ...]] = {
+    "Wall":     ("wall", "backsplash", "feature", "paneling", "cladding",
+                 "wainscot", "headboard wall", "accent wall"),
+    "Floor":    ("floor", "flooring", "rug", "carpet"),
+    "Ceiling":  ("ceiling", "cove", "soffit"),
+    "Furniture":("sofa", "chair", "table", "wardrobe", "cabinet", "bed",
+                 "shelf", "console", "cushion", "upholstery", "joinery",
+                 "kitchen island", "countertop", "counter top", "bedding",
+                 "curtain", "lighting", "pendant", "chandelier", "hardware"),
+}
+
+
+def _infer_zone_group(zone: str, material_family: str = "") -> str | None:
+    text = f"{zone} {material_family}".lower()
+    for grp, keywords in _ZONE_TO_GROUP_HINTS.items():
+        if any(k in text for k in keywords):
+            return grp
+    return None
+
+
+def _coerce_pin(value) -> dict | None:
+    """Coerce an LLM `pin` field into `{x, y}` in 0..100 percent, or None."""
+    if not isinstance(value, dict):
+        return None
+    try:
+        x = float(value.get("x"))
+        y = float(value.get("y"))
+    except (TypeError, ValueError):
+        return None
+    # Accept 0..1 (unit) too, upscale to 0..100.
+    if 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0 and (x > 0 or y > 0):
+        x, y = x * 100, y * 100
+    if not (0 <= x <= 100 and 0 <= y <= 100):
+        return None
+    return {"x": round(x, 1), "y": round(y, 1)}
+
+
 def _validate_analysis_payload(data) -> dict:
     """Strictly validate the LLM payload. Raises ValueError on any deviation.
     Returns {'rows': [...], 'summary': {...}} — summary is optional (may be empty).
@@ -943,8 +998,20 @@ def _validate_analysis_payload(data) -> dict:
         proc = r.get("procurement_difficulty")
         proc_val = proc if proc in PROCUREMENT_DIFFICULTY else None
 
+        # Sprint 5 — top-level group (Wall / Floor / Ceiling / Furniture).
+        raw_group = str(r.get("group") or "").strip().title()
+        group = raw_group if raw_group in _ZONE_GROUPS else _infer_zone_group(
+            r["zone"], family,
+        )
+
+        # Sprint 5 — optional pin {x, y} in image %. Absent when the LLM
+        # cannot pin the region confidently. Never fabricated.
+        pin = _coerce_pin(r.get("pin"))
+
         cleaned.append({
             "zone": r["zone"].strip(),
+            "group": group,                              # Sprint 5
+            "pin": pin,                                  # Sprint 5
             "material_family": family,
             "material_type": r["material_type"].strip(),
             "color": r["color"].strip(),
@@ -1353,37 +1420,165 @@ def _score_catalogue_item(row: dict, item: dict, weights: dict | None = None) ->
     }
 
 
+# Sprint 5 — bridge Sprint 4 Studio records (singular category names like
+# "Laminate", "Paint", "Veneer", "Tile") to the seeded library convention
+# (plural: "Laminates", "Paints", "Veneers", "Tiles"). Without this bridge
+# the user-side matcher's category hard-filter drops every real Sprint 4
+# record on the floor.
+_CATEGORY_ALIAS = {
+    "Laminate": "Laminates", "Laminates": "Laminates",
+    "Veneer": "Veneers",     "Veneers": "Veneers",
+    "Tile": "Tiles",         "Tiles": "Tiles",
+    "Paint": "Paints",       "Paints": "Paints",
+    "Stone": "Stone",
+    "Fabric": "Fabric",
+    "Lighting": "Lighting",
+    "Hardware": "Hardware",
+    "Furniture": "Furniture",
+}
+
+
+def _normalize_category(cat: str | None) -> str | None:
+    if not cat:
+        return None
+    return _CATEGORY_ALIAS.get(cat.strip().title(), cat.strip().title())
+
+
+# Glossy / reflective finish tokens — used by Sprint 5 to soft-cap match
+# confidence because reflected highlights routinely fool colour + texture
+# similarity heuristics.
+_GLOSS_FINISH_TOKENS = (
+    "gloss", "high-gloss", "high gloss", "polished", "mirror", "reflective",
+    "metallic", "chrome", "lacquer", "shiny",
+)
+
+
+def _row_is_glossy(row: dict) -> bool:
+    text = " ".join(str(row.get(k) or "") for k in
+                    ("finish", "material_type", "texture", "keywords")).lower()
+    return any(tok in text for tok in _GLOSS_FINISH_TOKENS)
+
+
+def _compose_match_reason(row: dict, item: dict, s: dict) -> str:
+    """Human-readable one-line explanation of the match. Sprint 5 —
+    references SPECIFIC colour, texture, finish and pattern evidence, never
+    vague phrases like "similar material" or "close colour"."""
+    bits: list[str] = []
+    # Colour tone descriptor from the row.
+    tone = str(row.get("color") or "").strip()
+    if tone and s["color"] >= 70:
+        bits.append(f"{tone.lower()} tone")
+    elif tone:
+        bits.append(f"{tone.lower()} colour family")
+    # Texture / grain.
+    tex = str(row.get("texture") or "").strip()
+    if tex and s["texture"] >= 50:
+        bits.append(f"{tex.lower()} texture")
+    # Finish.
+    fin = str(row.get("finish") or "").strip()
+    if fin and s["finish"] >= 50:
+        bits.append(f"{fin.lower()} finish")
+    # Item-side descriptor for pattern / grain when available.
+    item_tex = str(item.get("texture") or "").strip()
+    if item_tex and not tex:
+        bits.append(f"{item_tex.lower()} pattern")
+    # Compose.
+    if not bits:
+        return (
+            f"Ranked on colour ({s['color']}%), texture ({s['texture']}%) "
+            f"and finish ({s['finish']}%) similarity."
+        )
+    zone_ref = str(row.get("zone") or "the selected region").strip()
+    return (
+        f"{', '.join(bits[:-1]) + ' and ' + bits[-1] if len(bits) > 1 else bits[0]} "
+        f"closely match {zone_ref.lower()}."
+    ).capitalize()
+
+
 def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 62,
                               allowed_categories: list | None = None,
                               weights: dict | None = None) -> list:
     """Return top_k catalogue matches with similarity breakdown.
 
-    Sprint 8.2 — quality tightened: min_overall raised to 62 and the
-    family_match bypass removed so low-scoring items can no longer slip
-    through just because they share a broad family. When no item clears the
-    bar we return `[]` and the UI shows "No high-confidence catalogue match
-    found."""
+    Sprint 5 — user-side matching now consumes real Published Library records
+    correctly:
+      • Category filter accepts singular OR plural names (bridge to Sprint 4).
+      • Result payload includes `swatch_crop_b64` (per-swatch image), the
+        source `upload_id`, `source_page_href` (for View Source), a
+        Human-readable `match_reason`, a `source_library` tag ("Published
+        Library" vs "Seeded Library") and a debug packet.
+      • Deduplicates near-identical records by (material_code | normalized
+        name | swatch hex).
+      • Sub-strong matches (< min_overall) are dropped. Weak-tie matches are
+        capped at top_k."""
     scored = []
-    allow = set(allowed_categories) if allowed_categories is not None else None
-    if allow is not None and not allow:
-        return []
-    # Studio (uploaded PDF) records are searched first — they represent
-    # user-owned real catalogue data and take priority over the seeded fallback.
+    # Normalise the allow-list once. Both singular and plural forms are
+    # accepted at the item side, so a filter for "Laminates" matches a
+    # Studio record with category="Laminate" and vice-versa.
+    allow_norm: set | None = None
+    if allowed_categories is not None:
+        allow_norm = set(_normalize_category(c) or "" for c in allowed_categories)
+        allow_norm.discard("")
+        if not allow_norm:
+            return []
+    # Studio (uploaded PDF) records first — real user data outranks seed.
     all_items = list(_STUDIO_INDEXED_RECORDS) + list(SEEDED_CATALOGUE)
+    glossy = _row_is_glossy(row)
     for item in all_items:
-        if allow is not None and item.get("category") not in allow:
-            continue
+        item_cat_norm = _normalize_category(item.get("category"))
+        category_filter_applied = None
+        if allow_norm is not None:
+            if item_cat_norm not in allow_norm:
+                continue
+            category_filter_applied = item_cat_norm
         s = _score_catalogue_item(row, item, weights=weights)
         if s["overall"] < min_overall:
             continue
-        scored.append((s, item))
+        scored.append((s, item, category_filter_applied))
     scored.sort(key=lambda t: t[0]["overall"], reverse=True)
-    top = scored[:top_k]
+
+    # Dedup — keep the strongest candidate per unique material_code / name / hex.
+    seen: set = set()
+    dedup: list = []
+    for s, item, cat_filter in scored:
+        key = (
+            (item.get("material_code") or "").strip().lower() or None,
+            str(item.get("material_name") or "").strip().lower(),
+            (item.get("color_hex") or "").lower(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup.append((s, item, cat_filter))
+        if len(dedup) >= top_k:
+            break
+
     out = []
-    for s, item in top:
+    for s, item, cat_filter in dedup:
         code = item.get("material_code")
         page = item.get("page_number")
-        out.append({
+        # Sprint 5 — soft cap when the source row is a glossy/reflective
+        # surface. Highlights and reflections routinely inflate colour
+        # similarity on hard, shiny materials.
+        match_pct = s["overall"]
+        gloss_capped = False
+        if glossy and match_pct > 85:
+            match_pct = 85
+            gloss_capped = True
+
+        is_studio = bool(item.get("upload_id"))
+        source_library = (
+            "Seeded Library" if item.get("demo_seed") else
+            "Published Library" if is_studio else
+            "Seeded Library"
+        )
+        source_page_href = None
+        if is_studio and page:
+            source_page_href = f"/api/admin/studio/uploads/{item['upload_id']}/page/{page}"
+
+        match_reason = _compose_match_reason(row, item, s)
+
+        result = {
             "id": item["id"],
             "brand": item["brand"],
             "catalogue": item["catalogue"],
@@ -1398,15 +1593,41 @@ def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 62,
             "color_name": item.get("color_name"),
             "color_hex": item.get("color_hex"),
             "texture": item.get("texture"),
-            "source": item.get("source") or "MaterialMatch Library",
-            "match_percent": s["overall"],
+            "source": item.get("source") or source_library,
+            "source_library": source_library,             # Sprint 5
+            "match_percent": match_pct,
+            "match_reason": match_reason,                  # Sprint 5
+            "swatch_crop_b64": item.get("swatch_crop_b64"),# Sprint 5 (may be None for seed)
+            "upload_id": item.get("upload_id"),            # Sprint 5
+            "source_page_href": source_page_href,         # Sprint 5
+            "has_swatch_crop": bool(item.get("swatch_crop_b64")),
             "similarity": {
                 "visual": s["visual"],
                 "color": s["color"],
                 "finish": s["finish"],
                 "texture": s["texture"],
             },
-        })
+            # Sprint 5 — debug packet (not user-facing but always returned
+            # so QA / logging can trace exactly why each match was picked).
+            "debug": {
+                "record_id": item["id"],
+                "source_library": source_library,
+                "source_catalogue": item.get("catalogue"),
+                "source_page": page,
+                "ranking_score": s["overall"],
+                "final_score_after_gloss_cap": match_pct,
+                "gloss_cap_applied": gloss_capped,
+                "category_filter_matched": cat_filter,
+                "reason_components": {
+                    "color": s["color"],
+                    "texture": s["texture"],
+                    "finish": s["finish"],
+                    "visual": s["visual"],
+                    "family_match": s.get("family_match"),
+                },
+            },
+        }
+        out.append(result)
     return out
 
 
@@ -1480,10 +1701,11 @@ def _alternative_systems_for(row: dict) -> list:
     return merged[:8]
 
 
-def _enrich_rows_with_catalogue(rows: list, top_k: int = 8) -> None:
+def _enrich_rows_with_catalogue(rows: list, top_k: int = 4) -> None:
     """Mutates each row in-place. Sprint 4 — every row is now routed through
     the MaterialMatch Brain, whose decision packet drives category-restricted
-    search and per-category ranking."""
+    search and per-category ranking. Sprint 5 — default top_k lowered to 4:
+    the user sees a small set of strong candidates, never 8 mediocre ones."""
     if not rows:
         return
     for row in rows:
@@ -1522,11 +1744,14 @@ _STUDIO_INDEXED_RECORDS: list[dict] = []
 
 
 def _studio_record_to_search_item(rec: dict) -> dict:
-    """Normalise a Studio record to the shape `_score_catalogue_item` expects."""
+    """Normalise a Studio record to the shape `_score_catalogue_item` expects.
+    Sprint 5 — preserves the per-swatch crop (`page_preview_b64`), bounding
+    box, upload id and collection name so the user-side matcher can display
+    the isolated swatch (never the full page) and link back to the source."""
     return {
         "id": rec["id"],
         "brand": rec.get("brand") or "Uploaded catalogue",
-        "catalogue": rec.get("collection") or "Uploaded PDF",
+        "catalogue": rec.get("collection_name") or rec.get("collection") or "Uploaded PDF",
         "material_name": rec.get("material_name") or "Extracted material",
         "material_code": rec.get("material_code"),
         "material_family": rec.get("material_family") or rec.get("category") or "",
@@ -1537,7 +1762,15 @@ def _studio_record_to_search_item(rec: dict) -> dict:
         "texture": rec.get("texture") or "",
         "page_number": rec.get("page_number"),
         "keywords": rec.get("keywords", []),
-        "source": rec.get("source") or "Uploaded PDF",
+        "source": rec.get("source") or ("Seeded Library" if rec.get("demo_seed") else "Published Library"),
+        # Sprint 5 — data required by the user-facing result card:
+        "swatch_crop_b64": rec.get("page_preview_b64"),    # isolated swatch image
+        "swatch_bbox": rec.get("swatch_bbox"),
+        "upload_id": rec.get("upload_id"),
+        "collection_name": rec.get("collection_name"),
+        "region_class": rec.get("region_class"),
+        "record_confidence": rec.get("confidence"),
+        "demo_seed": bool(rec.get("demo_seed")),
     }
 
 
