@@ -672,3 +672,72 @@ Enrichment pipeline output:
 - Parallel LLM calls (asyncio.gather) for faster analysis on big catalogues
 - Server-side PDF generation (ReportLab) for higher fidelity prints
 - Multi-tenant brand customization
+
+---
+
+## Sprint 7 — MaterialMatch Intelligence Rewrite (Describe-Embed-Rerank) — DONE 2026-07-15
+
+### What changed (approved by user after full architecture audit)
+The heuristic matching core (token-Jaccard fuzzy scorer, pHash ranking boosts,
+gloss caps, per-category weight tables) was REPLACED by a modular intelligence
+pipeline. Architecture (Studio, OCR, DB, UI, auth) untouched.
+
+Pipeline: Brain category gate -> pHash EXACT loopback shortcut (Hamming<=6 on
+pHash only + avg_rgb color guard; conf=100, skips GPT-4o) -> hybrid retrieval
+(0.65 x BGE-small cosine over canonical DNA descriptions + 0.35 x deterministic
+attribute similarity; conf capped 88) -> lazy GPT-4o visual re-rank (ONLY on
+user-selected regions, max 8 candidates, one call; accepted candidates own the
+final confidence, rejected are dropped) -> honest empty state
+(match_state={no_confident_match, ai_description}) when all rejected.
+
+### New modular package `/app/backend/intelligence/`
+- dna.py — Visual DNA schema + gpt-4o-mini swatch enrichment + canonical text
+- embeddings.py — model-agnostic provider (default local fastembed BGE-small,
+  384-d, zero recurring cost; EMBEDDING_PROVIDER env to swap)
+- retrieval.py — attribute similarity + hybrid retrieve()
+- rerank.py — GPT-4o visual rerank (RERANK_PROVIDER/RERANK_MODEL/
+  RERANK_MAX_CANDIDATES env)
+- confidence.py — calibration (retrieval cap 88, rerank owns 0-100, exact=100)
+- pipeline.py — orchestrator
+
+### server.py changes
+- `_find_catalogue_matches` rewritten (same signature/response shape; new debug:
+  pipeline_stage, embedding_similarity, attribute_similarity, retrieval_score,
+  rerank_score, rerank_verdict; new top-level: visually_verified, visual_dna)
+- `_apply_visual_rerank` awaited per-row inside analyze-region
+- `_visual_dna_backfill` — idempotent; enriches published records missing
+  visual_dna (vision on swatch crop, metadata fallback); fills blank
+  finish/texture/color_name/pattern; kicked at startup + after every publish
+- `_build_seed_dna_index` — in-memory DNA+embeddings for 177 seeded records
+- visual_hash.py now stores avg_rgb (color guard); sprint6 backfill upgraded
+- DELETED: _score_catalogue_item, _compose_match_reason, _row_is_glossy
+- Object-aware region prompt now also emits pattern + gloss_level
+
+### Data
+All 238 published records enriched with visual_dna + dna_embedding (one-time
+backfill, ~$0.4). New publishes auto-enrich in background.
+
+### Cost per user action (approved)
+- Selected region: ~\$0.015-0.025 (analysis mini + embed + one GPT-4o rerank)
+- Full analysis: retrieval-only per zone (no rerank), ~\$0.005
+- Exact loopback: no GPT-4o spend
+
+### Frontend
+- MaterialsFirstSection: "Visually verified"/"Exact match" badge on
+  RecommendedCard (`visually-verified-badge-{i}`); honest empty state shows
+  AI description (`ai-material-description-{i}`)
+
+### Testing (iteration_17.json — 100% backend, 100% frontend)
+- T1 ADVANCE loopback PASS (exact record #1 @100, GPT-4o skipped)
+- T2 blue kitchen cabinet PASS (object=kitchen cabinet, family=furniture,
+  searched Laminates/Veneers never Paints, honest empty when library has no
+  blue laminate)
+- 116+ backend tests green incl. new tests/test_sprint7_intelligence.py (30)
+  and tests/test_sprint7_acceptance_extra.py (3, by testing agent)
+- Known pre-existing legacy failures unrelated: backend_test.py,
+  test_region_india.py, test_mock_analyze.py (stale mock-v1 assert)
+
+### Deferred / backlog additions
+- On-demand rerank endpoint for full-analysis zones (user expands a zone)
+- Migrate @app.on_event to lifespan handlers (deprecation warnings)
+- visual_hash getdata() Pillow-14 deprecation (cosmetic)
