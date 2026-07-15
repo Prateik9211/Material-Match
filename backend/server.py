@@ -1743,7 +1743,15 @@ async def _apply_visual_rerank(row: dict, crop_b64: str) -> None:
     user's selected crop. Mutates the row in place: accepted candidates get
     the re-rank confidence, rejected ones are dropped. Skipped entirely on
     an exact pHash loopback hit (already pixel-verified — no LLM spend).
-    Fails open: if the re-rank call errors, retrieval results stand."""
+    Fails open: if the re-rank call errors, retrieval results stand.
+
+    Sprint 8 — candidates without any swatch image are routed AROUND the
+    rerank (visual comparison is impossible so a text-only 'judge on
+    description alone' verdict is unreliable). Those candidates keep
+    their retrieval confidence and are surfaced as 'compatible' at a
+    small confidence penalty so the designer can still shortlist them
+    for physical sampling. Common case: paint chip records that store
+    only colour metadata, not an isolated swatch image."""
     from intelligence.rerank import visual_rerank, RERANK_MAX_CANDIDATES, RERANK_MODEL
     from intelligence.confidence import reranked_confidence
     matches = row.get("catalogue_matches") or []
@@ -1760,30 +1768,64 @@ async def _apply_visual_rerank(row: dict, crop_b64: str) -> None:
     if not EMERGENT_LLM_KEY:
         row["rerank"] = {"ran": False, "skipped": "no_llm_key"}
         return
+
+    def _has_image(m: dict) -> bool:
+        return bool(m.get("swatch_crop_b64") or m.get("page_preview_b64"))
+
     shortlist = matches[:RERANK_MAX_CANDIDATES]
-    results = await visual_rerank(crop_b64, [{"item": m} for m in shortlist],
-                                  qctx, EMERGENT_LLM_KEY)
-    if results is None:
-        row["rerank"] = {"ran": False, "skipped": "rerank_failed"}
-        return
-    by_idx = {r["candidate"]: r for r in results}
-    accepted = []
-    for i, m in enumerate(shortlist):
-        r = by_idx.get(i)
-        if not r:
-            continue
-        m["debug"]["rerank_score"] = r["score"]
-        m["debug"]["rerank_verdict"] = r["verdict"]
-        if r["verdict"] == "accept":
-            m["match_percent"] = reranked_confidence(r["score"])
-            m["match_reason"] = f"Visually verified — {r['reason']}"
-            m["visually_verified"] = True
-            accepted.append(m)
+    visual_shortlist = [m for m in shortlist if _has_image(m)]
+    text_only_shortlist = [m for m in shortlist if not _has_image(m)]
+
+    accepted: list[dict] = []
+    if visual_shortlist:
+        results = await visual_rerank(
+            crop_b64, [{"item": m} for m in visual_shortlist],
+            qctx, EMERGENT_LLM_KEY,
+        )
+        if results is None:
+            row["rerank"] = {"ran": False, "skipped": "rerank_failed"}
+            # Fail open — keep original retrieval order, including text-only.
+            row["catalogue_matches"] = shortlist
+            row["match_buckets"] = _bucket_matches(shortlist)
+            return
+        by_idx = {r["candidate"]: r for r in results}
+        for i, m in enumerate(visual_shortlist):
+            r = by_idx.get(i)
+            if not r:
+                continue
+            m["debug"]["rerank_score"] = r["score"]
+            m["debug"]["rerank_verdict"] = r["verdict"]
+            if r["verdict"] == "accept":
+                m["match_percent"] = reranked_confidence(r["score"])
+                m["match_reason"] = f"Visually verified — {r['reason']}"
+                m["visually_verified"] = True
+                accepted.append(m)
+
+    # Text-only candidates (no swatch image) can't be visually verified,
+    # but they made the retrieval bar — surface them as 'compatible
+    # shortlist' with an honest penalty so the designer can still request
+    # physical samples. This is critical for paint records where the
+    # catalogue often lacks an isolated swatch image.
+    for m in text_only_shortlist:
+        m["debug"]["rerank_score"] = None
+        m["debug"]["rerank_verdict"] = "text_only"
+        # Penalise 15 pts so text-only never outranks visually-verified.
+        m["match_percent"] = max(0, int(m.get("match_percent", 0)) - 15)
+        m["match_reason"] = (
+            "Colour/description compatible — catalogue swatch image "
+            "not available for full visual verification. Order a physical "
+            "sample before finalising."
+        )
+        m["visually_verified"] = False
+        accepted.append(m)
+
     accepted.sort(key=lambda m: m["match_percent"], reverse=True)
     row["catalogue_matches"] = accepted
     row["match_buckets"] = _bucket_matches(accepted)
-    row["rerank"] = {"ran": True, "model": RERANK_MODEL,
-                     "evaluated": len(shortlist), "accepted": len(accepted)}
+    row["rerank"] = {"ran": bool(visual_shortlist), "model": RERANK_MODEL,
+                     "evaluated": len(visual_shortlist),
+                     "accepted": sum(1 for m in accepted if m.get("visually_verified")),
+                     "text_only_passthrough": len(text_only_shortlist)}
     if not accepted:
         row["match_state"] = {
             "no_confident_match": True,
@@ -2339,14 +2381,65 @@ def materialmatch_brain(row: dict) -> dict:
     _SOFA_OBJECTS = {"sofa", "settee", "couch"}
     _UPHOLSTERED_FURNITURE = {"chair", "bed", "headboard"}
     _HARD_WALL_OBJECTS = {"feature panel", "wall panel"}
+    # Sprint 8 — architectural painted surfaces. When the object-aware
+    # classifier says the region is a plain wall / ceiling / false ceiling
+    # trim, we route by canonical DNA family. Paint → Paints, wood-clad
+    # → Laminates/Veneers, wallpaper → Wallpaper. This bypasses the
+    # `_application_context` heuristic that was mis-classifying "Wall
+    # beside the bed" as "furniture body" because of the word "bed".
+    _ARCH_PAINTED_SURFACES = {"wall", "ceiling", "false_ceiling", "false ceiling"}
 
     is_pu_painted = "pu" in mtype_l or "puf" in mtype_l or "painted" in mtype_l
+
+    if object_type in _ARCH_PAINTED_SURFACES:
+        from intelligence.family import to_canonical
+        canon = to_canonical(fam)
+        if canon == "Paint":
+            allowed = ["Paints"]
+        elif canon in {"Laminate", "Veneer", "Wood"}:
+            allowed = ["Laminates", "Veneers", "Wallpaper"]
+        elif canon == "Wallpaper":
+            allowed = ["Wallpaper", "Paints"]
+        elif canon == "Tile":
+            allowed = ["Tiles", "Stone"]
+        elif canon == "Stone":
+            allowed = ["Stone", "Tiles"]
+        else:
+            # Unknown / Other — default to Paints for wall/ceiling but
+            # keep Laminates as a fallback in case it's a plain wood panel.
+            allowed = ["Paints", "Laminates"]
+        excluded = sorted(set(CATEGORY_SETS.keys()) - set(allowed))
+        return {
+            "classification": classification,
+            "app_context": "ceiling" if "ceiling" in object_type else "wall paint",
+            "detected_finish": _visual_reference_label(row) or (row.get("material_type") or "Detected material"),
+            "likely_family": _likely_family_label(row),
+            "allowed_categories": allowed,
+            "allowed_libraries": [_LIBRARY_LABELS.get(c, c) for c in allowed],
+            "excluded_libraries": [_LIBRARY_LABELS.get(c, c) for c in excluded],
+            "ranking_weights": _RANKING_WEIGHTS.get(allowed[0], _RANKING_WEIGHTS["_default"]),
+            "object_aware": True,
+        }
 
     if object_type in _CABINETRY_OBJECTS:
         # Cabinetry is almost always laminate / veneer / acrylic panel.
         # Only allow Paints when the analyser explicitly identified a
         # PU-painted finish (the material_type / finish will say so).
-        allowed = ["Laminates", "Veneers"] + (["Paints"] if is_pu_painted else [])
+        # Sprint 8 — cane-look wardrobe inserts. The catalogue stocks
+        # "LINEN JUTE" as BOTH Laminate (EJ-8026) and Fabric (VT-8026),
+        # and cane-print wallpapers are increasingly used on cabinetry.
+        # When vision-DNA classifies the panel as Fabric or Wallpaper
+        # (both plausible for a woven-texture crop), we broaden the pool
+        # so the semantically-correct catalogue entry can surface.
+        from intelligence.family import to_canonical
+        canon_fam = to_canonical(fam)
+        allowed = ["Laminates", "Veneers"]
+        if canon_fam == "Fabric":
+            allowed.append("Fabric")
+        if canon_fam == "Wallpaper":
+            allowed.append("Wallpaper")
+        if is_pu_painted:
+            allowed.append("Paints")
         detected_finish = _visual_reference_label(row) or (row.get("material_type") or "Detected material")
         likely_family = _likely_family_label(row)
         excluded = sorted(set(CATEGORY_SETS.keys()) - set(allowed))
@@ -2898,19 +2991,28 @@ async def run_object_aware_region_analysis(
 
     system = (
         "You are an EXPERT INTERIOR SPECIFICATION CONSULTANT. The user "
-        "has selected a region of their reference image and needs to "
+        "has selected a specific region of their reference image and needs to "
         "specify its material. You MUST reason in two steps:\n"
-        "  STEP 1 — OBJECT: Look at the FULL scene image (IMAGE 1). "
-        "  Identify what OBJECT the selected region belongs to. "
-        "  Choose from: kitchen cabinet, wardrobe, tv unit, vanity, "
-        "  countertop, backsplash, built-in shelf, door, sofa, chair, "
-        "  table, bed, headboard, wall, floor, ceiling, feature panel.\n"
+        "  STEP 1 — OBJECT: The SELECTED CROP (IMAGE 2) is authoritative. "
+        "  Look carefully at what surface it actually shows. Use IMAGE 1 "
+        "  only as spatial context — never override the crop with scene "
+        "  guesses. If IMAGE 2 is a plain flat uniform surface with no "
+        "  visible hardware or joinery, it is almost always wall, ceiling "
+        "  or false-ceiling — NOT a wardrobe / vanity / cabinet just "
+        "  because those exist elsewhere in the scene. If IMAGE 2 clearly "
+        "  shows door edges, drawers, handles, hinges or panel joints, it "
+        "  is cabinetry. Choose object_type from: kitchen cabinet, "
+        "  wardrobe, tv unit, vanity, countertop, backsplash, "
+        "  built-in shelf, door, sofa, chair, table, bed, headboard, "
+        "  wall, floor, ceiling, false ceiling, feature panel.\n"
         "  STEP 2 — MATERIAL: THEN classify the material of that "
         "  object's surface using the SELECTED crop (IMAGE 2). If the "
         "  object is cabinetry (kitchen cabinet / wardrobe / tv unit / "
         "  vanity), NEVER default to 'paint' unless the surface is "
         "  visibly a PU-painted panel — cabinetry is almost always "
-        "  laminate, veneer or acrylic panel.\n"
+        "  laminate, veneer or acrylic panel. If the object is wall or "
+        "  ceiling and the crop shows a plain flat surface with no wood "
+        "  grain / no stone veining / no tile grout, family = Paint.\n"
         "Reply with ONLY valid JSON, no markdown."
     )
 
@@ -2925,7 +3027,7 @@ async def run_object_aware_region_analysis(
         '    "zone": "short specification zone e.g. Kitchen base cabinet front",\n'
         '    "group": "Wall | Floor | Ceiling | Furniture",\n'
         '    "object_group": "Architectural Surface | Built-in Element | Furniture | Fixture",\n'
-        '    "object_type": "kitchen cabinet | wardrobe | tv unit | vanity | countertop | backsplash | built-in shelf | door | sofa | chair | table | bed | headboard | wall | floor | ceiling | feature panel",\n'
+        '    "object_type": "kitchen cabinet | wardrobe | tv unit | vanity | countertop | backsplash | built-in shelf | door | sofa | chair | table | bed | headboard | wall | floor | ceiling | false ceiling | feature panel",\n'
         '    "surface_description": "which surface of the object is selected",\n'
         '    "material_family": "one of: ' + ", ".join(MATERIAL_FAMILIES) + '",\n'
         '    "material_type": "concise finish description",\n'

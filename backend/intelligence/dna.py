@@ -28,13 +28,18 @@ SWATCH_DNA_SYSTEM = (
     "of real interiors. Reply with ONLY valid JSON, no markdown."
 )
 
-SWATCH_DNA_PROMPT = """Known metadata (may be incomplete or wrong — trust the IMAGE over the text):
+SWATCH_DNA_PROMPT = """Known metadata (may be incomplete or wrong — trust the IMAGE over the text, BUT respect the object context):
 {metadata}
+
+Family selection rules:
+- If the swatch/region is on a HARD SURFACE OBJECT (wardrobe, cabinet, tv unit, wall panel, floor, headboard back, ceiling trim) the material family is almost always Laminate, Veneer, Wood, Tile, Stone or Wallpaper — NOT Fabric — even if the pattern looks woven, cane or textile-like (cane-look laminates are common).
+- If the region is a plain wall / ceiling / drywall / plaster / gypsum surface, family = Paint.
+- Choose "Other" ONLY when the image genuinely does not fit any listed family; never as a lazy default.
 
 Return exactly this JSON:
 {{
   "material_family": "one of: Laminate | Veneer | Tile | Paint | Stone | Fabric | Wood | Metal | Wallpaper | Other",
-  "surface_type": "specific surface e.g. 'wood-grain decorative laminate', 'polished marble slab'",
+  "surface_type": "specific surface e.g. 'wood-grain decorative laminate', 'polished marble slab', 'cane-look laminate panel'",
   "primary_color": {{"name": "short colour name", "hex": "#RRGGBB"}},
   "secondary_colors": [{{"name": "...", "hex": "#RRGGBB"}}],
   "color_temperature": "warm | cool | neutral",
@@ -199,7 +204,7 @@ async def generate_swatch_dna(swatch_b64: str, metadata: dict, api_key: str,
             api_key=api_key,
             session_id=f"dna-{secrets.token_hex(4)}",
             system_message=SWATCH_DNA_SYSTEM,
-        ).with_model(provider, model)
+        ).with_model(provider, model).with_params(temperature=0)
         msg = UserMessage(
             text=SWATCH_DNA_PROMPT.format(metadata=meta_lines),
             file_contents=[ImageContent(image_base64=swatch_b64)],

@@ -28,9 +28,12 @@ RERANK_SYSTEM = (
     "swatches. Judge, per swatch, whether it is plausibly the SAME product "
     "as the surface in IMAGE 1. Account for perspective, lighting, shadows "
     "and gloss reflections in the photograph — a swatch can match even if "
-    "the photo looks darker or warmer. Judge colour, grain/pattern, texture "
-    "and finish. Be strict: 'similar vibe' is NOT a match. Reply with ONLY "
-    "valid JSON, no markdown."
+    "the photo looks darker or warmer. If the crop shows more than one "
+    "material (e.g. a floor plus a bed leg, or a wall plus a wooden trim), "
+    "judge each candidate against the DOMINANT surface in the crop — don't "
+    "reject just because other objects are also visible. Judge colour, "
+    "grain/pattern, texture and finish. Be strict: 'similar vibe' is NOT a "
+    "match. Reply with ONLY valid JSON, no markdown."
 )
 
 
@@ -55,7 +58,9 @@ def _rerank_prompt(query_context: str, candidates: list[dict], image_map: list[i
             f"{dna.get('canonical_description') or ''}"
         )
     return (
-        f"The designer selected this surface: {query_context}\n\n"
+        f"The designer selected this surface (AUTHORITATIVE description "
+        f"of the target material — TRUST this identity when the photograph "
+        f"shows additional context around the material): {query_context}\n\n"
         + "\n".join(lines)
         + "\n\nReturn JSON:\n"
         '{"results": [{"candidate": <index>, "score": 0-100, '
@@ -64,6 +69,9 @@ def _rerank_prompt(query_context: str, candidates: list[dict], image_map: list[i
         "RULES:\n"
         "- score >= 75 means you believe it is the same or a near-identical product.\n"
         "- verdict=accept ONLY when score >= 60 AND the material type is compatible.\n"
+        "- Match each candidate against the DESCRIBED surface, NOT the entire scene. "
+        "Ignore background walls, adjacent objects, floor edges, ceiling paint and other "
+        "materials that appear alongside the target surface in the photograph.\n"
         "- If NO candidate matches, reject all of them. Never force a match.\n"
         "- Include EVERY candidate index exactly once."
     )
@@ -124,7 +132,7 @@ async def visual_rerank(crop_b64: str, candidates: list[dict], query_context: st
             api_key=api_key,
             session_id=f"rerank-{secrets.token_hex(4)}",
             system_message=RERANK_SYSTEM,
-        ).with_model(RERANK_PROVIDER, RERANK_MODEL)
+        ).with_model(RERANK_PROVIDER, RERANK_MODEL).with_params(temperature=0)
         msg = UserMessage(
             text=_rerank_prompt(query_context, candidates, image_map),
             file_contents=images,
@@ -135,6 +143,16 @@ async def visual_rerank(crop_b64: str, candidates: list[dict], query_context: st
             logger.info("rerank: model=%s candidates=%d accepted=%d",
                         RERANK_MODEL, len(candidates),
                         sum(1 for p in parsed if p["verdict"] == "accept"))
+            # Sprint 8 — debug: log each verdict + score + reason so we can
+            # trace why real-photo rerank rejects visually-obvious matches.
+            for p in parsed:
+                c = candidates[p["candidate"]]
+                it = c["item"]
+                logger.info(
+                    "rerank verdict: %s score=%d name=%r brand=%r reason=%r",
+                    p["verdict"], p["score"],
+                    it.get("material_name"), it.get("brand"), p["reason"],
+                )
         return parsed
     except Exception as e:
         logger.warning("rerank: failed (%s: %s) — keeping retrieval order",
