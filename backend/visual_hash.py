@@ -71,10 +71,15 @@ def compute_visual_hashes(b64: str) -> dict | None:
         return None
     try:
         import imagehash
+        small = img.resize((16, 16))
+        px = list(small.getdata())
+        n = len(px)
+        avg_rgb = [round(sum(p[i] for p in px) / n) for i in range(3)]
         return {
             "phash": str(imagehash.phash(img, hash_size=8)),
             "dhash": str(imagehash.dhash(img, hash_size=8)),
             "whash": str(imagehash.whash(img)),
+            "avg_rgb": avg_rgb,   # Sprint 7 — colour guard for exact loopback
             "width": w,
             "height": h,
         }

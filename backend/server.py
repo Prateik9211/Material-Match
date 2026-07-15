@@ -1347,86 +1347,6 @@ _FAMILY_ALIAS = {
 }
 
 
-def _score_catalogue_item(row: dict, item: dict, weights: dict | None = None) -> dict:
-    """Return breakdown {overall, visual, color, finish, texture, family}.
-
-    Sprint 4 — `weights` selects the Brain's category-specific ranking
-    profile (paint = colour-heavy, tile/stone = pattern-heavy, fabric =
-    texture-heavy). Falls back to a balanced default."""
-    w = weights or _RANKING_WEIGHTS["_default"]
-    fam_row = str(row.get("material_family") or "").lower()
-    fam_item = str(item.get("material_family") or "")
-    # Sprint 8.2 — when the AI-provided family is one we recognise in the
-    # alias table we score family alignment 100 / 20. When it isn't (e.g. AI
-    # returned an application word like "wall"), fall back to a neutral 60 so
-    # a correctly-categorised item isn't unfairly penalised on a semantic
-    # miss — the Brain's category filter has already vetted category fit.
-    if fam_row in _FAMILY_ALIAS:
-        family_match = fam_item in _FAMILY_ALIAS.get(fam_row, {fam_item})
-        family_score = 100 if family_match else 20
-    else:
-        # Unrecognised family label (e.g. AI returned "wall" instead of
-        # "Paint"). Score neutrally-high so a correctly-categorised item
-        # can still reach the "best" tier (≥ 80) on strong colour + keyword
-        # evidence — but don't award full 100.
-        family_match = False
-        family_score = 75
-
-    # Keyword Jaccard visual similarity.
-    row_tokens = (_tokenize(row.get("material_type")) | _tokenize(row.get("color"))
-                  | _tokenize(row.get("texture")) | _tokenize(row.get("finish"))
-                  | _tokenize(row.get("keywords")))
-    item_tokens = (_tokenize(item.get("material_name")) | _tokenize(item.get("color_name"))
-                   | _tokenize(item.get("texture")) | _tokenize(item.get("finish"))
-                   | _tokenize(item.get("keywords")))
-    if row_tokens and item_tokens:
-        j = len(row_tokens & item_tokens) / max(1, len(row_tokens | item_tokens))
-    else:
-        j = 0.0
-    visual = int(round(j * 100))
-
-    # Colour similarity.
-    row_hex = _resolve_hex(row)
-    item_hex = item.get("color_hex") or "#B7ADA0"
-    color = _color_similarity(row_hex, item_hex)
-
-    # Finish similarity — token overlap. When one side has no finish data at
-    # all we award a minor 25 baseline (Sprint 8.2: down from 40 to stop empty
-    # metadata inflating scores past the min_overall gate).
-    row_finish = _tokenize(row.get("finish"))
-    item_finish = _tokenize(item.get("finish"))
-    if row_finish and item_finish:
-        finish = int(round(100 * len(row_finish & item_finish) / max(1, len(row_finish | item_finish))))
-    else:
-        finish = 25
-
-    # Texture / grain similarity — same rule as finish.
-    row_texture = _tokenize(row.get("texture"))
-    item_texture = _tokenize(item.get("texture"))
-    if row_texture and item_texture:
-        texture = int(round(100 * len(row_texture & item_texture) / max(1, len(row_texture | item_texture))))
-    else:
-        texture = 25
-
-    # Weighted composite from Brain profile. Cap at 97 — we never claim exact certainty.
-    overall = (
-        family_score * w.get("family", 0.20)
-        + visual * w.get("visual", 0.25)
-        + color * w.get("color", 0.25)
-        + finish * w.get("finish", 0.15)
-        + texture * w.get("texture", 0.15)
-    )
-    overall = min(97, int(round(overall)))
-    return {
-        "overall": overall,
-        "visual": visual,
-        "color": color,
-        "finish": finish,
-        "texture": texture,
-        "family_match": family_match,
-    }
-
-
 # Sprint 5 — bridge Sprint 4 Studio records (singular category names like
 # "Laminate", "Paint", "Veneer", "Tile") to the seeded library convention
 # (plural: "Laminates", "Paints", "Veneers", "Tiles"). Without this bridge
@@ -1451,79 +1371,22 @@ def _normalize_category(cat: str | None) -> str | None:
     return _CATEGORY_ALIAS.get(cat.strip().title(), cat.strip().title())
 
 
-# Glossy / reflective finish tokens — used by Sprint 5 to soft-cap match
-# confidence because reflected highlights routinely fool colour + texture
-# similarity heuristics.
-_GLOSS_FINISH_TOKENS = (
-    "gloss", "high-gloss", "high gloss", "polished", "mirror", "reflective",
-    "metallic", "chrome", "lacquer", "shiny",
-)
-
-
-def _row_is_glossy(row: dict) -> bool:
-    text = " ".join(str(row.get(k) or "") for k in
-                    ("finish", "material_type", "texture", "keywords")).lower()
-    return any(tok in text for tok in _GLOSS_FINISH_TOKENS)
-
-
-def _compose_match_reason(row: dict, item: dict, s: dict) -> str:
-    """Human-readable one-line explanation of the match. Sprint 5 —
-    references SPECIFIC colour, texture, finish and pattern evidence, never
-    vague phrases like "similar material" or "close colour"."""
-    bits: list[str] = []
-    # Colour tone descriptor from the row.
-    tone = str(row.get("color") or "").strip()
-    if tone and s["color"] >= 70:
-        bits.append(f"{tone.lower()} tone")
-    elif tone:
-        bits.append(f"{tone.lower()} colour family")
-    # Texture / grain.
-    tex = str(row.get("texture") or "").strip()
-    if tex and s["texture"] >= 50:
-        bits.append(f"{tex.lower()} texture")
-    # Finish.
-    fin = str(row.get("finish") or "").strip()
-    if fin and s["finish"] >= 50:
-        bits.append(f"{fin.lower()} finish")
-    # Item-side descriptor for pattern / grain when available.
-    item_tex = str(item.get("texture") or "").strip()
-    if item_tex and not tex:
-        bits.append(f"{item_tex.lower()} pattern")
-    # Compose.
-    if not bits:
-        return (
-            f"Ranked on colour ({s['color']}%), texture ({s['texture']}%) "
-            f"and finish ({s['finish']}%) similarity."
-        )
-    zone_ref = str(row.get("zone") or "the selected region").strip()
-    return (
-        f"{', '.join(bits[:-1]) + ' and ' + bits[-1] if len(bits) > 1 else bits[0]} "
-        f"closely match {zone_ref.lower()}."
-    ).capitalize()
-
-
 def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 62,
                               allowed_categories: list | None = None,
                               weights: dict | None = None) -> list:
-    """Return top_k catalogue matches with similarity breakdown.
+    """Sprint 7 — Describe-Embed-Rerank retrieval stage.
 
-    Sprint 6 — perceptual-first matching. When the reference row carries
-    a `visual_hashes` packet (computed from the user's selected crop or
-    reference image), we FIRST look for exact / near-exact loopback
-    matches against every published swatch in the compatible category.
-    An `exact` verdict (Hamming ≤ 6) is promoted to match_percent ≥ 92
-    and marked `exact_visual_match=True`. `near` (≤12) adds a +15 boost.
-    Perceptually incompatible categories are STILL rejected — a Kajaria
-    tile that visually resembles the reference will not surface for a
-    kitchen cabinet row (the object-aware category gate wins).
+    Pipeline: Brain category gate (hard filter) → pHash exact-loopback
+    shortcut (pixel identity only, Hamming ≤ 6) → hybrid embedding +
+    attribute retrieval over Visual DNA. Confidence here is retrieval-only
+    (capped at 88) — the GPT-4o visual re-rank upgrades / rejects these
+    candidates lazily when the user selects a region.
 
-    Sprint 5 — user-side matching consumes real Published Library records
-    correctly (singular↔plural bridge, swatch crop preservation, debug
-    packet). See Sprint 5 tests for the earlier acceptance criteria."""
-    from visual_hash import visual_distance, similarity_from_distance
-    scored = []
-    # Normalise the allow-list once. Both singular and plural forms are
-    # accepted at the item side.
+    `weights` is accepted for call-site compatibility but unused: ranking
+    is owned by the intelligence package, not per-category weight tables."""
+    from intelligence.dna import dna_from_query_row
+    from intelligence.pipeline import retrieve_matches
+
     allow_norm: set | None = None
     if allowed_categories is not None:
         allow_norm = set(_normalize_category(c) or "" for c in allowed_categories)
@@ -1532,47 +1395,29 @@ def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 62,
             return []
     # Studio (uploaded PDF) records first — real user data outranks seed.
     all_items = list(_STUDIO_INDEXED_RECORDS) + list(SEEDED_CATALOGUE)
-    glossy = _row_is_glossy(row)
-    ref_hashes = row.get("visual_hashes")  # Sprint 6 — may be None
-    for item in all_items:
-        item_cat_norm = _normalize_category(item.get("category"))
-        category_filter_applied = None
-        if allow_norm is not None:
-            if item_cat_norm not in allow_norm:
-                continue
-            category_filter_applied = item_cat_norm
-        s = _score_catalogue_item(row, item, weights=weights)
-        # Sprint 6 — perceptual layer. Compute BEFORE the overall score
-        # gate so an exact visual match survives even when text metadata
-        # is sparse.
-        vdist = visual_distance(ref_hashes, item.get("visual_hashes"))
-        visual_verdict = vdist["verdict"]
-        # Promote / boost based on verdict. Applied *inside* the category
-        # gate — an incompatible tile that looks similar STILL doesn't
-        # surface for a cabinet row.
-        promoted = False
-        overall = s["overall"]
-        if ref_hashes and item.get("visual_hashes"):
-            if visual_verdict == "exact":
-                overall = max(overall, 92)
-                promoted = True
-            elif visual_verdict == "near":
-                overall = min(97, overall + 15)
-            elif visual_verdict == "loose":
-                overall = min(97, overall + 5)
-        s = {**s, "overall": overall,
-             "visual_hamming": vdist["best"],
-             "visual_verdict": visual_verdict,
-             "exact_visual_match": promoted}
-        if overall < min_overall and not promoted:
-            continue
-        scored.append((s, item, category_filter_applied))
-    scored.sort(key=lambda t: t[0]["overall"], reverse=True)
+    if allow_norm is not None:
+        items = [it for it in all_items
+                 if _normalize_category(it.get("category")) in allow_norm]
+    else:
+        items = all_items
 
-    # Dedup — keep the strongest candidate per unique material_code / name / hex.
+    query_dna = row.get("visual_dna")
+    if not query_dna:
+        query_dna = dna_from_query_row({**row, "color_hex": _resolve_hex(row)})
+    row["visual_dna"] = query_dna
+    if SEEDED_CATALOGUE and not SEEDED_CATALOGUE[0].get("dna_embedding"):
+        _build_seed_dna_index()  # lazy warm-up (startup normally does this)
+    result = retrieve_matches(query_dna, row.get("visual_hashes"), items, top_k=max(top_k * 2, 8))
+    row["retrieval_meta"] = result["meta"]
+
+    out = []
     seen: set = set()
-    dedup: list = []
-    for s, item, cat_filter in scored:
+    for cand in result["candidates"]:
+        conf = cand["confidence"]
+        exact = cand["exact_visual_match"]
+        if conf < min_overall and not exact:
+            continue
+        item = cand["item"]
         key = (
             (item.get("material_code") or "").strip().lower() or None,
             str(item.get("material_name") or "").strip().lower(),
@@ -1581,24 +1426,9 @@ def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 62,
         if key in seen:
             continue
         seen.add(key)
-        dedup.append((s, item, cat_filter))
-        if len(dedup) >= top_k:
-            break
 
-    out = []
-    for s, item, cat_filter in dedup:
         code = item.get("material_code")
         page = item.get("page_number")
-        # Sprint 5 — soft cap when the source row is a glossy/reflective
-        # surface. Highlights and reflections routinely inflate colour
-        # similarity on hard, shiny materials. Sprint 6 — never cap an
-        # exact visual match.
-        match_pct = s["overall"]
-        gloss_capped = False
-        if glossy and match_pct > 85 and not s.get("exact_visual_match"):
-            match_pct = 85
-            gloss_capped = True
-
         is_studio = bool(item.get("upload_id"))
         source_library = (
             "Seeded Library" if item.get("demo_seed") else
@@ -1609,22 +1439,10 @@ def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 62,
         if is_studio and page:
             source_page_href = f"/api/admin/studio/uploads/{item['upload_id']}/page/{page}"
 
-        match_reason = _compose_match_reason(row, item, s)
-        # Sprint 6 — override the reason for exact / near visual matches
-        # so the user sees WHY we picked this record.
-        if s.get("exact_visual_match"):
-            match_reason = (
-                f"Exact visual match with catalogue swatch "
-                f"(Hamming distance {s['visual_hamming']}) — "
-                f"{item.get('material_name')} in {item.get('catalogue')}."
-            )
-        elif s.get("visual_verdict") == "near":
-            match_reason = (
-                f"Near-identical visual match (Hamming {s['visual_hamming']}). "
-                + match_reason
-            )
-
-        result = {
+        attr = cand.get("attribute_similarity") or {}
+        emb = cand.get("embedding_similarity")
+        sim_visual = 100 if exact else (int(round(emb * 100)) if emb is not None else 50)
+        out.append({
             "id": item["id"],
             "brand": item["brand"],
             "catalogue": item["catalogue"],
@@ -1641,41 +1459,39 @@ def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 62,
             "texture": item.get("texture"),
             "source": item.get("source") or source_library,
             "source_library": source_library,
-            "match_percent": match_pct,
-            "match_reason": match_reason,
+            "match_percent": conf,
+            "match_reason": cand["reason"],
             "swatch_crop_b64": item.get("swatch_crop_b64"),
             "upload_id": item.get("upload_id"),
             "source_page_href": source_page_href,
             "has_swatch_crop": bool(item.get("swatch_crop_b64")),
-            "exact_visual_match": bool(s.get("exact_visual_match")),  # Sprint 6
+            "exact_visual_match": exact,
+            "visually_verified": exact,   # rerank flips this for accepted candidates
+            "visual_dna": item.get("visual_dna"),
             "similarity": {
-                "visual": s["visual"],
-                "color": s["color"],
-                "finish": s["finish"],
-                "texture": s["texture"],
+                "visual": sim_visual,
+                "color": 100 if exact else int(round((attr.get("color") or 0.5) * 100)),
+                "finish": 100 if exact else int(round((attr.get("finish") or 0.5) * 100)),
+                "texture": 100 if exact else int(round((attr.get("texture") or 0.5) * 100)),
             },
             "debug": {
                 "record_id": item["id"],
                 "source_library": source_library,
                 "source_catalogue": item.get("catalogue"),
                 "source_page": page,
-                "ranking_score": s["overall"],
-                "final_score_after_gloss_cap": match_pct,
-                "gloss_cap_applied": gloss_capped,
-                "category_filter_matched": cat_filter,
-                "visual_hamming": s.get("visual_hamming"),          # Sprint 6
-                "visual_verdict": s.get("visual_verdict"),         # Sprint 6
-                "exact_visual_match": bool(s.get("exact_visual_match")),
-                "reason_components": {
-                    "color": s["color"],
-                    "texture": s["texture"],
-                    "finish": s["finish"],
-                    "visual": s["visual"],
-                    "family_match": s.get("family_match"),
-                },
+                "pipeline_stage": cand["stage"],
+                "embedding_similarity": round(emb, 4) if emb is not None else None,
+                "attribute_similarity": {k: round(v, 3) for k, v in attr.items()} if attr else None,
+                "retrieval_score": round(cand["retrieval_score"], 4),
+                "retrieval_confidence": conf,
+                "visual_hamming": cand.get("hamming"),
+                "exact_visual_match": exact,
+                "rerank_score": None,
+                "rerank_verdict": None,
             },
-        }
-        out.append(result)
+        })
+        if len(out) >= top_k:
+            break
     return out
 
 
@@ -1820,6 +1636,8 @@ def _studio_record_to_search_item(rec: dict) -> dict:
         "record_confidence": rec.get("confidence"),
         "demo_seed": bool(rec.get("demo_seed")),
         "visual_hashes": rec.get("visual_hashes"),         # Sprint 6
+        "visual_dna": rec.get("visual_dna"),               # Sprint 7
+        "dna_embedding": rec.get("dna_embedding"),         # Sprint 7
     }
 
 
@@ -1835,6 +1653,167 @@ async def _refresh_studio_index() -> None:
         logger.info("Studio index refreshed: %d records", len(_STUDIO_INDEXED_RECORDS))
     except Exception:
         logger.exception("studio index refresh failed")
+
+
+# ---------------------------------------------------------------------------
+# Sprint 7 — Visual DNA enrichment (Describe-Embed-Rerank intelligence layer)
+VISUAL_DNA_PROVIDER = os.environ.get("VISUAL_DNA_PROVIDER", "openai")
+VISUAL_DNA_MODEL = os.environ.get("VISUAL_DNA_MODEL", "gpt-4o-mini")
+_DNA_BACKFILL_LOCK = None  # created lazily inside the running event loop
+
+
+async def _apply_visual_rerank(row: dict, crop_b64: str) -> None:
+    """Stage 5 — visual re-rank of a row's retrieved matches against the
+    user's selected crop. Mutates the row in place: accepted candidates get
+    the re-rank confidence, rejected ones are dropped. Skipped entirely on
+    an exact pHash loopback hit (already pixel-verified — no LLM spend).
+    Fails open: if the re-rank call errors, retrieval results stand."""
+    from intelligence.rerank import visual_rerank, RERANK_MAX_CANDIDATES, RERANK_MODEL
+    from intelligence.confidence import reranked_confidence
+    matches = row.get("catalogue_matches") or []
+    qdna = row.get("visual_dna") or {}
+    qctx = qdna.get("canonical_description") or row.get("material_type") or "selected surface"
+    if not matches:
+        row["match_state"] = {"no_confident_match": True,
+                              "ai_description": qctx,
+                              "reason": "No library candidate cleared the retrieval bar."}
+        return
+    if matches[0].get("exact_visual_match"):
+        row["rerank"] = {"ran": False, "skipped": "exact_loopback"}
+        return
+    if not EMERGENT_LLM_KEY:
+        row["rerank"] = {"ran": False, "skipped": "no_llm_key"}
+        return
+    shortlist = matches[:RERANK_MAX_CANDIDATES]
+    results = await visual_rerank(crop_b64, [{"item": m} for m in shortlist],
+                                  qctx, EMERGENT_LLM_KEY)
+    if results is None:
+        row["rerank"] = {"ran": False, "skipped": "rerank_failed"}
+        return
+    by_idx = {r["candidate"]: r for r in results}
+    accepted = []
+    for i, m in enumerate(shortlist):
+        r = by_idx.get(i)
+        if not r:
+            continue
+        m["debug"]["rerank_score"] = r["score"]
+        m["debug"]["rerank_verdict"] = r["verdict"]
+        if r["verdict"] == "accept":
+            m["match_percent"] = reranked_confidence(r["score"])
+            m["match_reason"] = f"Visually verified — {r['reason']}"
+            m["visually_verified"] = True
+            accepted.append(m)
+    accepted.sort(key=lambda m: m["match_percent"], reverse=True)
+    row["catalogue_matches"] = accepted
+    row["match_buckets"] = _bucket_matches(accepted)
+    row["rerank"] = {"ran": True, "model": RERANK_MODEL,
+                     "evaluated": len(shortlist), "accepted": len(accepted)}
+    if not accepted:
+        row["match_state"] = {
+            "no_confident_match": True,
+            "ai_description": qctx,
+            "reason": "Visual verification rejected every library candidate.",
+        }
+
+
+def _record_dna_metadata(rec: dict) -> dict:
+    return {
+        "brand": rec.get("brand"), "name": rec.get("material_name"),
+        "code": rec.get("material_code"), "category": rec.get("category"),
+        "collection": rec.get("collection_name") or rec.get("collection"),
+        "color": rec.get("color_name") or rec.get("color_hex"),
+        "finish": rec.get("finish"), "texture": rec.get("texture"),
+        "keywords": rec.get("keywords"),
+    }
+
+
+async def _visual_dna_backfill() -> None:
+    """Enrich every published record missing `visual_dna`: vision call on
+    the isolated swatch crop when one exists, metadata-only DNA otherwise.
+    Also fills empty display metadata (finish / texture / color_name) from
+    the DNA. Idempotent — safe to kick after every publish."""
+    import asyncio
+    from intelligence.dna import (generate_swatch_dna, dna_from_record,
+                                  embedding_text)
+    from intelligence.embeddings import get_embedder
+    global _DNA_BACKFILL_LOCK
+    if _DNA_BACKFILL_LOCK is None:
+        _DNA_BACKFILL_LOCK = asyncio.Lock()
+    if _DNA_BACKFILL_LOCK.locked():
+        return
+    async with _DNA_BACKFILL_LOCK:
+        docs = await db.ke_records.find(
+            {"status": "published", "visual_dna": {"$exists": False}}
+        ).to_list(3000)
+        if not docs:
+            return
+        logger.info("visual_dna backfill: %d record(s) to enrich", len(docs))
+        embedder = get_embedder()
+        sem = asyncio.Semaphore(3)
+        enriched = 0
+
+        async def enrich(d: dict):
+            nonlocal enriched
+            async with sem:
+                dna = None
+                swatch = d.get("page_preview_b64")
+                if swatch and EMERGENT_LLM_KEY:
+                    dna = await generate_swatch_dna(
+                        swatch, _record_dna_metadata(d), EMERGENT_LLM_KEY,
+                        VISUAL_DNA_PROVIDER, VISUAL_DNA_MODEL,
+                    )
+                if not dna:
+                    dna = dna_from_record(d)
+                vec = await asyncio.to_thread(
+                    lambda: embedder.embed([embedding_text(dna)])[0]
+                )
+                update = {"visual_dna": dna, "dna_embedding": vec}
+                # Fill blank display metadata from the DNA (never overwrite).
+                pc = dna.get("primary_color") or {}
+                if not d.get("finish") and dna.get("finish"):
+                    update["finish"] = dna["finish"].title()
+                if not d.get("texture") and dna.get("texture"):
+                    update["texture"] = dna["texture"].capitalize()
+                if not d.get("color_name") and pc.get("name"):
+                    update["color_name"] = pc["name"].capitalize()
+                if not d.get("pattern") and dna.get("pattern"):
+                    update["pattern"] = dna["pattern"].capitalize()
+                await db.ke_records.update_one({"id": d["id"]}, {"$set": update})
+                enriched += 1
+
+        results = await asyncio.gather(*(enrich(d) for d in docs), return_exceptions=True)
+        errors = [r for r in results if isinstance(r, Exception)]
+        if errors:
+            logger.warning("visual_dna backfill: %d failure(s), first: %s",
+                           len(errors), errors[0])
+        logger.info("visual_dna backfill: enriched %d/%d record(s)", enriched, len(docs))
+        await _refresh_studio_index()
+
+
+def _build_seed_dna_index() -> int:
+    """Compute metadata-only Visual DNA + embeddings for the in-memory
+    seeded library (~1s for a few hundred rows). Idempotent, sync."""
+    from intelligence.dna import dna_from_record, embedding_text
+    from intelligence.embeddings import get_embedder
+    pending = [it for it in SEEDED_CATALOGUE if not it.get("dna_embedding")]
+    if not pending:
+        return 0
+    embedder = get_embedder()
+    texts = []
+    for it in pending:
+        it["visual_dna"] = dna_from_record(it)
+        texts.append(embedding_text(it["visual_dna"]))
+    vecs = embedder.embed(texts)
+    for it, v in zip(pending, vecs):
+        it["dna_embedding"] = v
+    return len(pending)
+
+
+async def _seed_catalogue_dna() -> None:
+    import asyncio
+    n = await asyncio.to_thread(_build_seed_dna_index)
+    if n:
+        logger.info("seed DNA index: embedded %d seeded record(s)", n)
 
 
 async def _recompute_upload_status(upload_id: str) -> str | None:
@@ -2777,6 +2756,15 @@ async def analyze_region(project_id: str, payload: RegionAnalyzePayload,
             if crop_hashes and not r.get("visual_hashes"):
                 r["visual_hashes"] = crop_hashes
         _enrich_rows_with_catalogue(result.get("rows") or [])
+        # Sprint 7 — visual re-rank (Describe-Embed-Rerank stage 5). The
+        # user explicitly selected this region, so we spend ONE GPT-4o
+        # call comparing the crop against the retrieved shortlist.
+        # Skipped automatically on exact pHash loopback hits.
+        for r in result.get("rows") or []:
+            try:
+                await _apply_visual_rerank(r, crop)
+            except Exception:
+                logger.exception("visual rerank failed — keeping retrieval results")
         result["ephemeral"] = True
         result["region_note"] = (payload.note or "").strip()[:200]
         return result
@@ -2837,6 +2825,8 @@ async def run_object_aware_region_analysis(
         '    "color": "short colour",\n'
         '    "texture": "short texture",\n'
         '    "finish": "short finish",\n'
+        '    "pattern": "short pattern description e.g. linear woodgrain / veining / plain solid",\n'
+        '    "gloss_level": "low | medium | high",\n'
         '    "design_style": "short style label",\n'
         '    "keywords": ["3-6 lowercase tags"],\n'
         '    "confidence": 0,\n'
@@ -4485,7 +4475,10 @@ async def _sprint6_backfill_visual_hashes() -> None:
         return
     from visual_hash import compute_visual_hashes
     cursor = db.ke_records.find(
-        {"visual_hashes": {"$exists": False},
+        {"$or": [
+            {"visual_hashes": {"$exists": False}},
+            {"visual_hashes.avg_rgb": {"$exists": False}},  # Sprint 7 upgrade
+         ],
          "page_preview_b64": {"$exists": True, "$ne": None}},
         {"id": 1, "page_preview_b64": 1},
     )
@@ -4662,6 +4655,16 @@ async def startup_event():
         await _refresh_studio_index()
     except Exception:
         logger.exception("Studio index warm-up failed")
+
+    # Sprint 7 — intelligence layer warm-up. Seed DNA embeddings are cheap
+    # (local, ~1s); the published-record backfill runs as a background task
+    # (vision calls, idempotent, resumes across restarts).
+    import asyncio as _aio
+    try:
+        await _seed_catalogue_dna()
+    except Exception:
+        logger.exception("Seed DNA index failed")
+    _aio.create_task(_visual_dna_backfill())
 
 
 async def _seed_demo_project() -> None:
@@ -7248,6 +7251,9 @@ async def studio_bulk_records(
     for uid in parents:
         await _recompute_upload_status(uid)
     await _refresh_studio_index()
+    if payload.action == "publish":
+        import asyncio
+        asyncio.create_task(_visual_dna_backfill())
     return {"action": payload.action, "affected": count}
 
 
@@ -7283,6 +7289,8 @@ async def studio_approve(payload: StudioApprovePayload, user: dict = Depends(req
     for uid in parents:
         await _recompute_upload_status(uid)
     await _refresh_studio_index()
+    import asyncio
+    asyncio.create_task(_visual_dna_backfill())
     return {"approved": result.modified_count}
 
 
@@ -7314,6 +7322,8 @@ async def studio_publish_all(upload_id: str, user: dict = Depends(require_admin)
     )
     await _recompute_upload_status(upload_id)
     await _refresh_studio_index()
+    import asyncio
+    asyncio.create_task(_visual_dna_backfill())
     return {"approved": result.modified_count, "upload_id": upload_id}
 
 

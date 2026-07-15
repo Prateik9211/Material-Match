@@ -1,0 +1,129 @@
+"""Candidate generation — hard filters + hybrid vector/attribute scoring.
+
+Model-agnostic: consumes pre-computed embedding vectors, never calls an
+LLM. Attribute similarity is a deterministic complement to the embedding
+so a hex-perfect colour match or exact family agreement still counts when
+descriptions are phrased differently.
+"""
+from __future__ import annotations
+
+from .embeddings import cosine
+
+EMBED_WEIGHT = 0.65
+ATTR_WEIGHT = 0.35
+
+_FAMILY_EQUIV = {
+    "laminate": {"laminate", "laminates", "wood", "veneer"},
+    "veneer": {"veneer", "veneers", "wood", "laminate"},
+    "wood": {"wood", "laminate", "veneer", "flooring", "furniture"},
+    "tile": {"tile", "tiles", "stone", "flooring"},
+    "stone": {"stone", "tile", "tiles", "flooring"},
+    "paint": {"paint", "paints", "wall"},
+    "wall": {"wall", "paint", "paints", "wallpaper"},
+    "fabric": {"fabric", "textile", "upholstery"},
+    "textile": {"textile", "fabric", "upholstery"},
+    "upholstery": {"upholstery", "fabric", "textile"},
+    "metal": {"metal", "hardware"},
+    "flooring": {"flooring", "wood", "tile", "tiles", "stone"},
+    "furniture": {"furniture", "wood", "laminate", "veneer"},
+    "wallpaper": {"wallpaper", "wall"},
+}
+
+
+def _tokens(s: str) -> set:
+    return {t for t in str(s or "").lower().replace(",", " ").replace("-", " ").split() if len(t) > 2}
+
+
+def _hex_to_rgb(h: str):
+    h = (h or "").lstrip("#")
+    if len(h) != 6:
+        return None
+    try:
+        return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+    except ValueError:
+        return None
+
+
+def _color_sim(hex_a: str, hex_b: str) -> float | None:
+    ra, rb = _hex_to_rgb(hex_a), _hex_to_rgb(hex_b)
+    if ra is None or rb is None:
+        return None
+    # Weighted RGB distance (approximates perceptual distance cheaply).
+    dr, dg, db = ra[0] - rb[0], ra[1] - rb[1], ra[2] - rb[2]
+    dist = (2 * dr * dr + 4 * dg * dg + 3 * db * db) ** 0.5  # max ~765
+    return max(0.0, 1.0 - dist / 500.0)
+
+
+def _token_sim(a: str, b: str) -> float | None:
+    ta, tb = _tokens(a), _tokens(b)
+    if not ta or not tb:
+        return None
+    return len(ta & tb) / len(ta | tb)
+
+
+def attribute_similarity(qdna: dict, cdna: dict) -> dict:
+    """Deterministic field-wise similarity between two Visual DNA dicts.
+    Missing data scores neutral (0.5) — absence of evidence is not
+    evidence of mismatch. Returns per-field 0..1 plus weighted overall."""
+    qfam = str(qdna.get("material_family") or "").lower()
+    cfam = str(cdna.get("material_family") or "").lower()
+    if qfam and cfam:
+        family = 1.0 if (cfam in _FAMILY_EQUIV.get(qfam, {qfam})) else 0.3
+    else:
+        family = 0.6
+
+    qhex = (qdna.get("primary_color") or {}).get("hex")
+    chex = (cdna.get("primary_color") or {}).get("hex")
+    color = _color_sim(qhex, chex)
+    if color is None:
+        color = _token_sim((qdna.get("primary_color") or {}).get("name"),
+                           (cdna.get("primary_color") or {}).get("name"))
+    if color is None:
+        color = 0.5
+
+    texture = _token_sim(qdna.get("texture"), cdna.get("texture"))
+    texture = 0.5 if texture is None else texture
+    pattern = _token_sim(qdna.get("pattern"), cdna.get("pattern"))
+    pattern = 0.5 if pattern is None else pattern
+    finish = _token_sim(qdna.get("finish"), cdna.get("finish"))
+    if finish is None:
+        finish = 0.5
+    qg, cg = qdna.get("gloss_level"), cdna.get("gloss_level")
+    if qg and cg:
+        finish = (finish + (1.0 if qg == cg else 0.3)) / 2
+
+    overall = (0.25 * family + 0.35 * color + 0.15 * texture
+               + 0.10 * pattern + 0.15 * finish)
+    return {"family": family, "color": color, "texture": texture,
+            "pattern": pattern, "finish": finish, "overall": overall}
+
+
+def retrieve(query_dna: dict, query_vec: list[float], items: list[dict],
+             top_k: int = 8) -> list[dict]:
+    """Score every item carrying `visual_dna` (+ optional `dna_embedding`)
+    against the query. Returns top_k candidates sorted by hybrid score.
+
+    Each result: {item, embedding_similarity, attribute_similarity (dict),
+    retrieval_score}. Items without DNA are skipped — they are invisible to
+    the matcher until enriched (honest by design)."""
+    scored = []
+    for item in items:
+        cdna = item.get("visual_dna")
+        if not cdna:
+            continue
+        attr = attribute_similarity(query_dna, cdna)
+        vec = item.get("dna_embedding")
+        if query_vec and vec:
+            emb = cosine(query_vec, vec)
+            score = EMBED_WEIGHT * emb + ATTR_WEIGHT * attr["overall"]
+        else:
+            emb = None
+            score = attr["overall"]
+        scored.append({
+            "item": item,
+            "embedding_similarity": emb,
+            "attribute_similarity": attr,
+            "retrieval_score": score,
+        })
+    scored.sort(key=lambda c: c["retrieval_score"], reverse=True)
+    return scored[:top_k]

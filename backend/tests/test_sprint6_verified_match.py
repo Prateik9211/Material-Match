@@ -141,6 +141,8 @@ class TestPHashCalibration:
 def _mk_studio_item(**over):
     from server import _studio_record_to_search_item
     from visual_hash import compute_visual_hashes
+    from intelligence.dna import dna_from_record, embedding_text
+    from intelligence.embeddings import get_embedder
     b64 = over.pop("crop_b64", _make_flat_swatch_b64((180, 138, 85)))
     base = {
         "id": "test-aurum",
@@ -162,7 +164,11 @@ def _mk_studio_item(**over):
         "visual_hashes": compute_visual_hashes(b64),
     }
     base.update(over)
-    return _studio_record_to_search_item(base)
+    item = _studio_record_to_search_item(base)
+    # Sprint 7 — mirror the Visual DNA enrichment real published records get.
+    item["visual_dna"] = dna_from_record(base)
+    item["dna_embedding"] = get_embedder().embed([embedding_text(item["visual_dna"])])[0]
+    return item
 
 
 class TestExactVisualMatchPromotes:
@@ -198,7 +204,7 @@ class TestExactVisualMatchPromotes:
         )
         assert top["exact_visual_match"] is True
         assert top["match_percent"] >= 92
-        assert top["debug"]["visual_verdict"] == "exact"
+        assert top["debug"]["pipeline_stage"] == "exact_loopback"
         assert "Exact visual match" in top["match_reason"]
 
     def test_incompatible_category_still_rejected_even_when_visually_identical(self):

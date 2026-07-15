@@ -180,6 +180,15 @@ function RecommendedCard({ match, index, onAddToShortlist, shortlisted, isPaint 
       <div className="flex items-center gap-1.5 mb-3">
         <Star className="w-3.5 h-3.5 text-ochre fill-ochre" strokeWidth={1.75} />
         <span className="text-[10px] uppercase tracking-widest text-ochre font-semibold">Recommended Match</span>
+        {(match.visually_verified || match.exact_visual_match) && (
+          <span
+            className="inline-flex items-center gap-1 text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 font-semibold"
+            data-testid={`visually-verified-badge-${index}`}
+          >
+            <Check className="w-2.5 h-2.5" strokeWidth={3} />
+            {match.exact_visual_match ? "Exact match" : "Visually verified"}
+          </span>
+        )}
       </div>
       <div className="flex items-start gap-3">
         <div
@@ -549,9 +558,21 @@ function MaterialCard({ row, index, onAddToShortlist, shortlisted, onAddCatalogu
           </div>
         )}
         {!recommended && (
-          <div className="rounded-xl border border-dashed border-stone-border p-3 text-xs text-warm-grey flex items-start gap-2" data-testid={`no-strong-match-${index}`}>
-            <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" strokeWidth={1.75} />
-            <span>No high-confidence catalogue match found. Try uploading a related supplier PDF to enrich this zone.</span>
+          <div className="rounded-xl border border-dashed border-stone-border p-3 text-xs text-warm-grey space-y-1.5" data-testid={`no-strong-match-${index}`}>
+            <div className="flex items-start gap-2">
+              <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" strokeWidth={1.75} />
+              <span>
+                {row.match_state?.no_confident_match
+                  ? "No confident match in your library — the AI compared this surface against your published swatches and none passed visual verification."
+                  : "No high-confidence catalogue match found. Try uploading a related supplier PDF to enrich this zone."}
+              </span>
+            </div>
+            {row.match_state?.ai_description && (
+              <div className="pl-5.5 text-[11px] text-charcoal/70" data-testid={`ai-material-description-${index}`}>
+                <span className="uppercase tracking-widest text-[9px] text-warm-grey/70 font-semibold">AI saw:&nbsp;</span>
+                <span className="italic">{row.match_state.ai_description}</span>
+              </div>
+            )}
           </div>
         )}
 

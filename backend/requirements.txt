@@ -21,9 +21,11 @@ ecdsa==0.19.2
 email-validator==2.3.0
 emergentintegrations==0.1.2
 fastapi==0.110.1
+fastembed==0.8.0
 fastuuid==0.14.0
 filelock==3.29.0
 flake8==7.3.0
+flatbuffers==25.12.19
 frozenlist==1.8.0
 fsspec==2026.4.0
 google-ai-generativelanguage==0.6.15
@@ -55,16 +57,19 @@ jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
 librt==0.11.0
 litellm @ https://customer-assets.emergentagent.com/internal-asset/library/litellm-1.80.0-py3-none-any.whl#sha256=adf398c513273de9341f61822296c6b2145f7f2dc4a69daf3ac04829f5bde3f8
+loguru==0.7.3
 markdown-it-py==4.2.0
 MarkupSafe==3.0.3
 mccabe==0.7.0
 mdurl==0.1.2
+mmh3==5.2.1
 motor==3.3.1
 multidict==6.7.1
 mypy==2.1.0
 mypy_extensions==1.1.0
 numpy==2.4.6
 oauthlib==3.3.1
+onnxruntime==1.27.0
 openai==1.99.9
 packaging==26.2
 pandas==3.0.3
@@ -76,6 +81,7 @@ pluggy==1.6.0
 propcache==0.5.2
 proto-plus==1.28.0
 protobuf==5.29.6
+py_rust_stemmers==0.1.8
 pyasn1==0.6.3
 pyasn1_modules==0.4.2
 pycodestyle==2.14.0

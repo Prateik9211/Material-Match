@@ -28,6 +28,21 @@ sys.path.insert(0, "/app/backend")
 # Phase A — Category bridge + swatch crop preservation
 # ────────────────────────────────────────────────────────────────────────
 
+def _dna_enrich_item(item: dict, base: dict) -> dict:
+    """Mirror what _visual_dna_backfill stores on real published records so
+    the mock item is visible to the Sprint 7 retrieval engine."""
+    from intelligence.dna import dna_from_record, embedding_text
+    from intelligence.embeddings import get_embedder
+    item["visual_dna"] = dna_from_record(base)
+    item["dna_embedding"] = get_embedder().embed([embedding_text(item["visual_dna"])])[0]
+    return item
+
+
+def _ensure_seed_dna():
+    from server import _build_seed_dna_index
+    _build_seed_dna_index()
+
+
 def _mk_studio_item(**over):
     from server import _studio_record_to_search_item
     base = {
@@ -50,7 +65,7 @@ def _mk_studio_item(**over):
         "confidence": 95,
     }
     base.update(over)
-    return _studio_record_to_search_item(base)
+    return _dna_enrich_item(_studio_record_to_search_item(base), base)
 
 
 class TestCategoryAliasBridge:
@@ -117,6 +132,7 @@ class TestCategoryHardFilter:
 
     def test_studio_singular_survives_plural_allow_list(self):
         from server import _find_catalogue_matches, _STUDIO_INDEXED_RECORDS
+        _ensure_seed_dna()
         # Inject a Sprint-4-shape record temporarily.
         studio_rec = _mk_studio_item()
         _STUDIO_INDEXED_RECORDS.append(studio_rec)
@@ -145,6 +161,7 @@ class TestCategoryHardFilter:
 
     def test_incompatible_category_rejected(self):
         from server import _find_catalogue_matches
+        _ensure_seed_dna()
         # Wall paint zone — only Paints should surface (never Furniture / Fabric).
         row = {
             "zone": "Living room wall",
@@ -200,11 +217,12 @@ class TestMatchOutputShape:
         assert m["source_page_href"] and "/uploads/upload-xyz/page/5" in m["source_page_href"]
         assert m["match_reason"], "match_reason missing"
         assert "debug" in m
-        for k in ("record_id", "source_library", "ranking_score", "reason_components"):
+        for k in ("record_id", "source_library", "retrieval_score", "pipeline_stage"):
             assert k in m["debug"], f"debug packet missing {k}"
 
     def test_seeded_match_shape(self):
         from server import _find_catalogue_matches
+        _ensure_seed_dna()
         row = {
             "zone": "Wall paint",
             "material_family": "wall",
@@ -223,7 +241,7 @@ class TestMatchOutputShape:
             assert m["source_library"] in ("Seeded Library", "Published Library")
             assert isinstance(m["match_reason"], str) and m["match_reason"]
             # Every match carries a debug packet
-            assert m["debug"]["category_filter_matched"] in ("Paints", None)
+            assert m["debug"]["pipeline_stage"] in ("retrieval", "exact_loopback")
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -273,27 +291,33 @@ class TestDeduplication:
         assert sum(1 for x in m if x["material_code"] == "L-8912") == 1
 
 
-class TestGlossReflectiveCap:
-    def test_glossy_row_caps_match_percent(self):
+class TestRetrievalConfidenceCap:
+    """Sprint 7 — retrieval-only matches never claim visual certainty.
+    Confidence is capped at RETRIEVAL_CONF_CAP until the GPT-4o visual
+    re-rank verifies a candidate (or a pHash exact loopback fires)."""
+
+    def test_retrieval_only_capped(self):
         from server import _find_catalogue_matches
+        from intelligence.confidence import RETRIEVAL_CONF_CAP
+        _ensure_seed_dna()
         row = {
             "zone": "Feature wall",
             "material_family": "wall",
             "material_type": "high-gloss lacquer paint",
             "color": "Warm ivory",
             "texture": "smooth",
-            "finish": "high-gloss",       # glossy → soft cap
+            "finish": "high-gloss",
             "keywords": ["ivory", "gloss", "polished"],
         }
         matches = _find_catalogue_matches(
             row, top_k=4, allowed_categories=["Paints"], min_overall=50,
         )
         for m in matches:
-            assert m["match_percent"] <= 85, (
-                f"glossy row should cap match_percent at 85, got {m['match_percent']}"
+            assert m["match_percent"] <= RETRIEVAL_CONF_CAP, (
+                f"retrieval-only match must cap at {RETRIEVAL_CONF_CAP}, "
+                f"got {m['match_percent']}"
             )
-            if m["debug"]["gloss_cap_applied"]:
-                assert m["debug"]["ranking_score"] > 85
+            assert m["visually_verified"] is False
 
 
 # ────────────────────────────────────────────────────────────────────────
