@@ -1,0 +1,129 @@
+{
+  "iteration": "sprint8_2",
+  "image": "Unsplash 1556909212-d5b604d0c90d (kitchen)",
+  "total_zones": 7,
+  "verdicts": {
+    "HONEST_REJECT": 2,
+    "CORRECT": 3,
+    "COMPATIBLE": 2
+  },
+  "zones": [
+    {
+      "id": "z1_backsplash_subway_tile",
+      "name": "Backsplash \u2014 white subway (glossy ceramic) tile above upper shelf",
+      "expected_family": "Tile",
+      "catalogue_has_match": "maybe",
+      "verdict": "HONEST_REJECT",
+      "root_cause": "catalogue coverage (engine declined)",
+      "final_family": "Tile",
+      "top_match": null,
+      "elapsed_s": 13.6
+    },
+    {
+      "id": "z2_floating_shelf_walnut",
+      "name": "Floating shelf \u2014 warm walnut wood plank front face",
+      "expected_family": "Laminate",
+      "catalogue_has_match": true,
+      "verdict": "CORRECT",
+      "root_cause": "",
+      "final_family": "Veneer",
+      "top_match": {
+        "brand": "Advance",
+        "name": "EASTERN OAK",
+        "code": "SF-8022",
+        "family": "Laminate",
+        "match_pct": 80,
+        "visually_verified": true,
+        "reason": "Visually verified \u2014 Warm brown with linear wood grain and matte finish."
+      },
+      "elapsed_s": 12.2
+    },
+    {
+      "id": "z3_lower_cabinet_paint",
+      "name": "Lower cabinetry \u2014 white painted shaker drawer front",
+      "expected_family": "Paint",
+      "catalogue_has_match": true,
+      "verdict": "CORRECT",
+      "root_cause": "",
+      "final_family": "Paint",
+      "top_match": {
+        "brand": "Uploaded catalogue",
+        "name": "SOLID SUEDE FINISH (SF)",
+        "code": null,
+        "family": "Laminates",
+        "match_pct": 85,
+        "visually_verified": true,
+        "reason": "Visually verified \u2014 Frosty white matte matches smooth, solid white description."
+      },
+      "elapsed_s": 12.9
+    },
+    {
+      "id": "z4_countertop_white_quartz",
+      "name": "Countertop \u2014 white quartz / marble-look stone slab (island foreground)",
+      "expected_family": "Stone",
+      "catalogue_has_match": true,
+      "verdict": "CORRECT",
+      "root_cause": "",
+      "final_family": "Stone",
+      "top_match": {
+        "brand": "Advance",
+        "name": "WHITE ICE MARBLE",
+        "code": "VE-8031",
+        "family": "Stone",
+        "match_pct": 85,
+        "visually_verified": true,
+        "reason": "Visually verified \u2014 Polished white marble with subtle veining matches description."
+      },
+      "elapsed_s": 9.5
+    },
+    {
+      "id": "z5_ceiling_shiplap_paint",
+      "name": "Ceiling \u2014 white painted shiplap / beadboard (top strip)",
+      "expected_family": "Paint",
+      "catalogue_has_match": true,
+      "verdict": "COMPATIBLE",
+      "root_cause": "",
+      "final_family": "Paint",
+      "top_match": {
+        "brand": "Nerolac",
+        "name": "Excel Off White",
+        "code": null,
+        "family": "Paints",
+        "match_pct": 47,
+        "visually_verified": false,
+        "reason": "Colour/description compatible \u2014 catalogue swatch image not available for full visual verification. Order a physical sample before finalising."
+      },
+      "elapsed_s": 8.6
+    },
+    {
+      "id": "z6_wall_paint_margin",
+      "name": "Wall \u2014 off-white matte paint (top-right margin, above the door)",
+      "expected_family": "Paint",
+      "catalogue_has_match": true,
+      "verdict": "COMPATIBLE",
+      "root_cause": "",
+      "final_family": "Paint",
+      "top_match": {
+        "brand": "Nerolac",
+        "name": "Excel Off White",
+        "code": null,
+        "family": "Paints",
+        "match_pct": 65,
+        "visually_verified": false,
+        "reason": "Colour/description compatible \u2014 catalogue swatch image not available for full visual verification. Order a physical sample before finalising."
+      },
+      "elapsed_s": 15.5
+    },
+    {
+      "id": "z7_tap_chrome_gooseneck",
+      "name": "Kitchen tap \u2014 chrome / stainless gooseneck faucet",
+      "expected_family": "Metal",
+      "catalogue_has_match": false,
+      "verdict": "HONEST_REJECT",
+      "root_cause": "catalogue coverage",
+      "final_family": "Metal",
+      "top_match": null,
+      "elapsed_s": 8.2
+    }
+  ]
+}

@@ -106,15 +106,28 @@ def normalize_dna(raw: dict) -> dict:
 
 def build_canonical_text(dna: dict) -> str:
     """Compose the text that gets embedded. Deterministic, same recipe on
-    catalogue and query side — this is what makes the two domains comparable."""
+    catalogue and query side — this is what makes the two domains comparable.
+
+    Sprint 8.2 note: `material_family` (Paint / Tile / Stone / Laminate / …)
+    is ALWAYS appended when present so the embedding always has the family
+    keyword to anchor on, even when `surface_type` is a generic phrase like
+    "smooth white surface". Empirically, without this the query embedding
+    for a plain painted ceiling was too dissimilar from catalogue paint
+    records (which explicitly say "emulsion" / "paint"), and retrieval
+    dropped every paint candidate below the min_overall gate."""
     bits = []
     pc = dna.get("primary_color") or {}
     if pc.get("name"):
         bits.append(pc["name"])
-    if dna.get("surface_type"):
-        bits.append(dna["surface_type"])
-    elif dna.get("material_family"):
-        bits.append(dna["material_family"].lower())
+    fam = dna.get("material_family")
+    st = dna.get("surface_type")
+    if st:
+        bits.append(st)
+    if fam:
+        fam_l = fam.lower()
+        already = " ".join(bits).lower()
+        if fam_l not in already:
+            bits.append(fam_l)
     if dna.get("pattern") and dna["pattern"].lower() not in ("plain solid", "none", "plain"):
         bits.append(f"with {dna['pattern']}")
     if dna.get("texture"):

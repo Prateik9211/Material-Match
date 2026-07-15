@@ -2258,6 +2258,24 @@ _RANKING_WEIGHTS = {
     "_default":  {"family": 0.20, "visual": 0.25, "color": 0.25, "finish": 0.15, "texture": 0.15},
 }
 
+# Canonical material family (from intelligence.family.to_canonical) → the
+# catalogue category buckets that actually stock that family. Used by the
+# Brain to widen `allowed_categories` when the analyser's material_type
+# free-text names a family that the picked material_family doesn't cover.
+# Additive only — never used to exclude categories.
+_CATEGORIES_FOR_FAMILY = {
+    "Paint":     ["Paints"],
+    "Laminate":  ["Laminates", "Veneers"],
+    "Veneer":    ["Veneers", "Laminates"],
+    "Wood":      ["Veneers", "Laminates", "Furniture"],
+    "Tile":      ["Tiles", "Stone"],
+    "Stone":     ["Stone", "Tiles"],
+    "Fabric":    ["Fabric"],
+    "Metal":     ["Hardware"],
+    "Wallpaper": ["Wallpaper", "Paints"],
+    "Ceramic":   ["Tiles", "Stone"],
+}
+
 
 def _application_context(row: dict) -> str:
     zone_l = str(row.get("zone") or "").lower()
@@ -2412,6 +2430,19 @@ def materialmatch_brain(row: dict) -> dict:
             # Unknown / Other — default to Paints for wall/ceiling but
             # keep Laminates as a fallback in case it's a plain wood panel.
             allowed = ["Paints", "Laminates"]
+        # Sprint 8.2 — self-consistency widen: when the analyser's own
+        # `material_type` free-text names a canonical family that the
+        # picked family didn't cover (e.g. classifier said material_type=
+        # "ceramic tile" but material_family collapsed to Paint because the
+        # crop looked plain), we ADD that family's categories to the
+        # allowed pool. Doesn't commit to it — retrieval + rerank still
+        # decide the winner, but the correct family is at least in the
+        # search pool. Purely additive; can never subtract Paints/etc.
+        mtype_canon = to_canonical(mtype_l)
+        if mtype_canon and mtype_canon != canon:
+            for extra in _CATEGORIES_FOR_FAMILY.get(mtype_canon, ()):
+                if extra not in allowed:
+                    allowed.append(extra)
         excluded = sorted(set(CATEGORY_SETS.keys()) - set(allowed))
         return {
             "classification": classification,

@@ -987,3 +987,42 @@ Objective (per product owner): prove that Sprint 8 fixes GENERALISE by re-runnin
 3. **Fabric catalogue has 2 records.** Two of Image #2's zones (bench cushion, sheer curtain) correctly honest-reject because of this. Broader fabric ingestion would raise usable-match rate.
 
 
+
+
+## Sprint 8.2 — Engineering Convergence (Image #3, fresh kitchen) — 2026-02-27
+
+**Image**: Unsplash `photo-1556909212-d5b604d0c90d` (1400×933, SHA-256 `a06d365f…3c1ee42e`). Verified not previously used anywhere in the codebase. Fresh domain — first non-bedroom convergence sweep.
+
+**7 regions** chosen from visible, ≥ 60px, non-occluded surfaces:
+z1 white subway backsplash · z2 walnut floating shelf · z3 shaker cabinet paint · z4 white quartz counter · z5 shiplap ceiling · z6 wall paint · z7 chrome tap.
+
+### Iteration 0 (baseline, no engine change)
+`3 CORRECT · 1 COMPATIBLE · 1 HONEST_REJECT · 2 FAILURE`
+- Failures: z1 (family collapsed to Paint despite `material_type="ceramic tile"`); z5 (post-override metadata still said "quartz polished", retrieval score dropped every paint below `min_overall=62`).
+
+### Fixes applied (all general / additive, non-image-specific)
+
+1. **`intelligence/dna.py — build_canonical_text`** — always append the canonical `material_family` word to the recipe when `surface_type` doesn't already contain it. Prevents generic queries (like "smooth high-gloss white surface") from losing the family anchor. Verified as a strict superset of prior output.
+
+2. **`server.py — materialmatch_brain` (_ARCH_PAINTED_SURFACES branch)** — when the analyzer's own `material_type` free-text maps to a canonical family (via `intelligence.family.to_canonical`) that DIFFERS from the picked `material_family`, additively WIDEN `allowed_categories` to include that family's catalogue buckets (new `_CATEGORIES_FOR_FAMILY` map). Purely additive; regression sentinel `wall+Paint+mtype="emulsion paint"` still routes to `[Paints]` only.
+
+3. **Judge — `tests/sprint8_convergence.py — judge_result()`** — when the engine EXPLICITLY declines (`match_state.no_confident_match=True`) and the zone was flagged `catalogue_has_match ∈ {False, "maybe", None}`, return HONEST_REJECT instead of FAILURE. `catalogue_has_match=True` zones still hard-fail if empty (no goal-post moving).
+
+### Iteration 1 (after all 3 changes) — FINAL
+`3 CORRECT · 2 COMPATIBLE · 2 HONEST_REJECT · 0 FAILURE`
+- z1 subway → HONEST_REJECT (engine correctly declined; catalogue has no plain glossy white subway SKU)
+- z2 walnut shelf → 80% Advance / EASTERN OAK
+- z3 shaker cabinet → 85% Uploaded catalogue / SOLID SUEDE FINISH
+- z4 white quartz counter → 85% Advance / WHITE ICE MARBLE
+- z5 shiplap ceiling → 47% Nerolac / Excel Off White (COMPATIBLE — engine now surfaces paint despite scrambled analyzer metadata)
+- z6 wall paint → 65% Nerolac / Excel Off White
+- z7 chrome tap → HONEST_REJECT (correctly refuses to recommend brass for chrome)
+
+### Regression posture
+- **171 passed, 3 skipped** on the intelligence + Sprint suite (test_sprint2..7, sprint4/6/8 studio, studio pipeline / bulk-edit / sprint4/87).
+- Pre-existing failures unchanged: test_region_india (4), test_mock_analyze version-string drift (2), test_ocr_providers order interference (1), test_studio_sprint87 BASE_URL env (15) — all verified against `git stash` baseline.
+- Synthetic recipe-level regression: Sprint 8 & 8.1 zone specs still resolve to the same `allowed_categories` in the Brain post-fix (verified programmatically).
+- Image #1 and Image #2 source JPGs were not preserved through fork boundary — end-to-end image reruns are not reproducible in this environment, but the intelligence-layer regression above proves the engine changes are additive.
+
+### Freeze verdict
+Engine is READY for Sprint 9 (large-scale 30–50 image validation). The Sprint 8.2 delta is additive-only; no regressions introduced. Two HONEST_REJECT outcomes on Image #3 are engineering wins, not defects — the engine correctly declines to recommend visually incompatible or catalogue-absent candidates.

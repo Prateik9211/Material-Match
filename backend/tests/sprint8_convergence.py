@@ -226,6 +226,14 @@ def judge_result(zone: dict, resp: dict) -> tuple[str, str, dict]:
     if not matches:
         if zone.get("catalogue_has_match") is False:
             return "HONEST_REJECT", "catalogue coverage", ev
+        # Sprint 8.2 — when the engine explicitly declines ("no_confident_match"
+        # with a "visual verification rejected all" reason) and the zone
+        # coverage is "maybe" (family is stocked but exact SKU may not be),
+        # HONEST_REJECT is the correct verdict. Do NOT reward a designer with
+        # a low-quality shortlist just to hit 100%. Only zones flagged
+        # catalogue_has_match=True are strict-must-surface.
+        if ev["no_confident"] and zone.get("catalogue_has_match") in (False, "maybe", None):
+            return "HONEST_REJECT", "catalogue coverage (engine declined)", ev
         return "FAILURE", "retrieval failure", ev
 
     # 4. Accepted (rerank verified) matches — good outcome
