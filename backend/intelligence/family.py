@@ -96,12 +96,20 @@ def pick_final_family(classifier_family: str | None,
                       vision_family: str | None) -> tuple[str | None, str]:
     """Decide which family drives Brain routing.
 
-    Rules (approved by product owner):
+    Sprint 8.1 update — vision-DNA is now generated INDEPENDENTLY of the
+    upstream classifier (no cascading metadata bias, see
+    `_generate_query_vision_dna`), so when both signals are canonical but
+    disagree, we prefer VISION. Empirically the classifier is more prone
+    to cascading object-recognition errors ("bench cushion" -> "countertop"
+    -> Stone family) than the material-focused vision pass. When either
+    signal is generic / unusable, fall back to the sibling.
+
+    Rules:
       1. Classifier family is generic/object-based AND vision-DNA is canonical
          → use vision.  (e.g. classifier="furniture", vision="Laminate")
-      2. Both are canonical AND agree → use classifier (already correct).
-      3. Both are canonical but disagree → keep classifier (do NOT let a
-         weak DNA overwrite a valid specific classifier family).
+      2. Both are canonical AND agree → keep the family, mark 'agree'.
+      3. Both are canonical but disagree → **use vision** (independent
+         pixel-based specialist beats general-purpose classifier).
       4. Classifier canonical, vision unusable → keep classifier.
       5. Neither usable → return classifier verbatim.
 
@@ -115,7 +123,7 @@ def pick_final_family(classifier_family: str | None,
     if c_canon is not None and v_canon is not None:
         if c_canon == v_canon:
             return c_canon, "agree"
-        return c_canon, f"keep_classifier(disagree with vision '{v_canon}')"
+        return v_canon, f"override(classifier '{c_canon}' → vision '{v_canon}')"
     if c_canon is not None:
         return c_canon, "keep_classifier(no vision)"
     return classifier_family, "no_canonical"

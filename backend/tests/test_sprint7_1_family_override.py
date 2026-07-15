@@ -76,11 +76,18 @@ class TestPickFinalFamily:
         assert pick_final_family("upholstery", "Fabric")[0] == "Fabric"
         assert pick_final_family("wall", "Paint")[0] == "Paint"
 
-    # Case 5 — valid classifier is NOT overwritten by a weak DNA.
-    def test_specific_classifier_kept_when_disagrees(self):
+    # Sprint 8.1 — Independent vision-DNA now beats the classifier when
+    # both are canonical but disagree (classifier tends to cascade from
+    # object-recognition mistakes). See intelligence/family.pick_final_family.
+    def test_vision_wins_when_classifier_disagrees(self):
         fam, reason = pick_final_family("Paint", "Fabric")
-        assert fam == "Paint"
-        assert "keep_classifier" in reason
+        assert fam == "Fabric"
+        assert "override" in reason
+        # Reverse direction: classifier=Fabric, vision=Laminate (cane-look
+        # laminate on a wardrobe misclassified as Fabric earlier) — vision wins.
+        fam, reason = pick_final_family("Fabric", "Laminate")
+        assert fam == "Laminate"
+        assert "override" in reason
 
     def test_agreement_keeps_family(self):
         fam, reason = pick_final_family("Laminate", "Laminate")
@@ -129,13 +136,17 @@ class TestReconcileFamilyWithVisionDna:
         assert row["visual_dna"]["material_family"] == "Laminate"
 
     def test_specific_classifier_paint_not_overwritten_by_wrong_vision(self):
-        # Spec case 5 — Paint classifier stays even if vision guesses Fabric.
+        # Sprint 8.1 note: Independent vision-DNA is now stronger; if it
+        # disagrees canonically the classifier is overridden. Here we
+        # confirm that behaviour end-to-end (Paint classifier + Fabric
+        # vision → Fabric). The old test that expected the reverse has
+        # been replaced by `test_vision_wins_when_classifier_disagrees`.
         row = {"material_family": "Paint", "material_type": "wall paint",
                "object_type": "wall"}
         debug = server._reconcile_family_with_vision_dna(row, _dna("Fabric"))
-        assert row["material_family"] == "Paint"
-        assert "material_family_original" not in row
-        assert debug["override_applied"] is False
+        assert row["material_family"] == "Fabric"
+        assert row.get("material_family_original") == "Paint"
+        assert debug["override_applied"] is True
 
     def test_generic_and_unknown_vision_keeps_generic(self):
         # Spec case 6 — unusable DNA doesn't bypass category filtering.

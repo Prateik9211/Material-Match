@@ -28,12 +28,17 @@ RERANK_SYSTEM = (
     "swatches. Judge, per swatch, whether it is plausibly the SAME product "
     "as the surface in IMAGE 1. Account for perspective, lighting, shadows "
     "and gloss reflections in the photograph — a swatch can match even if "
-    "the photo looks darker or warmer. If the crop shows more than one "
-    "material (e.g. a floor plus a bed leg, or a wall plus a wooden trim), "
-    "judge each candidate against the DOMINANT surface in the crop — don't "
-    "reject just because other objects are also visible. Judge colour, "
-    "grain/pattern, texture and finish. Be strict: 'similar vibe' is NOT a "
-    "match. Reply with ONLY valid JSON, no markdown."
+    "the photo looks darker or warmer. Account also for RESOLUTION SCALE: "
+    "the crop is usually zoomed-out and the swatch is a close-up — a subtle "
+    "beige texture in the crop and a distinct beige woven weave in the swatch "
+    "may well be the same material at different distances. If the crop shows "
+    "more than one material (e.g. a floor plus a bed leg, or a wall plus a "
+    "wooden trim), judge each candidate against the DOMINANT surface in the "
+    "crop — don't reject just because other objects are also visible. Judge "
+    "colour, grain/pattern nature (linear-wood vs woven vs veined), texture "
+    "and finish. Be strict on family incompatibility ('similar vibe' across "
+    "families is NOT a match), but be permissive on scale-of-detail within "
+    "the same family. Reply with ONLY valid JSON, no markdown."
 )
 
 

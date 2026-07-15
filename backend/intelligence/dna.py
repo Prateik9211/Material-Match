@@ -28,13 +28,31 @@ SWATCH_DNA_SYSTEM = (
     "of real interiors. Reply with ONLY valid JSON, no markdown."
 )
 
-SWATCH_DNA_PROMPT = """Known metadata (may be incomplete or wrong — trust the IMAGE over the text, BUT respect the object context):
+SWATCH_DNA_PROMPT = """Known metadata from the upstream classifier (MAY be wrong — treat as a weak hint, NEVER as authoritative):
 {metadata}
 
-Family selection rules:
-- If the swatch/region is on a HARD SURFACE OBJECT (wardrobe, cabinet, tv unit, wall panel, floor, headboard back, ceiling trim) the material family is almost always Laminate, Veneer, Wood, Tile, Stone or Wallpaper — NOT Fabric — even if the pattern looks woven, cane or textile-like (cane-look laminates are common).
-- If the region is a plain wall / ceiling / drywall / plaster / gypsum surface, family = Paint.
-- Choose "Other" ONLY when the image genuinely does not fit any listed family; never as a lazy default.
+Family selection is driven by VISUAL EVIDENCE in the image, not by the metadata.
+
+Primary rules (image-first):
+- Plain uniform surface with NO grain, NO pattern, NO texture, NO veining, NO grout, NO weave → **Paint**, regardless of what the classifier said the object was.
+- Visible wood grain (linear or figured) + rigid flat surface → **Laminate** or **Veneer** (**Wood** only if clearly solid timber).
+- Woven / knitted / textile texture on a soft, draped or cushioned surface (cushion, sofa seat, curtain, rug, throw) → **Fabric**.
+- Woven / cane / rattan pattern on a rigid hard surface (wardrobe door, wall panel, cabinet front) → **Laminate** (cane-look laminates are common — NOT Fabric).
+- Stone veining and polished / satin shine + rigid surface → **Stone**.
+- Small repeating tiles with visible grout joints → **Tile**.
+- Metallic sheen + no wood grain / no fabric weave → **Metal**.
+- Drywall / plaster / gypsum / POP surface → **Paint**.
+
+Metadata should influence family ONLY when visual evidence is genuinely ambiguous. If the classifier's object_type contradicts what the image plainly shows, TRUST THE IMAGE.
+
+IMPORTANT — pattern defaults for wood families: when material_family is Laminate, Veneer or Wood, DEFAULT the `pattern` field to a wood-grain description (e.g. "linear wood grain", "figured wood grain") unless the surface is UNAMBIGUOUSLY plain solid (a smooth uniform colour panel with zero grain even at high magnification, e.g. an acrylic solid-colour cabinet front). A small crop of a warm-brown wooden beam / plank / door should still report a wood-grain pattern even when fine grain is not resolvable at the crop's pixel resolution. This is critical so the retrieval embedding retrieves wood-grain catalogue candidates, not solid-colour panels.
+
+Choose "Other" ONLY when the image genuinely does not fit any listed family; never as a lazy default.
+
+CANONICAL DESCRIPTION rules (critical for embedding retrieval):
+- Describe ONLY the surface material — its colour, grain/pattern, texture and finish.
+- Do NOT mention object SHAPE (arches, cutouts, curves, edges, legs), object FUNCTION (bench, headboard, wardrobe) or STYLE labels (modern, minimalist, contemporary). These pollute the material embedding.
+- Focus on words a laminate/tile/fabric supplier would use in a spec sheet.
 
 Return exactly this JSON:
 {{
@@ -49,7 +67,7 @@ Return exactly this JSON:
   "finish": "matte | satin | gloss | textured | brushed | polished",
   "gloss_level": "low | medium | high",
   "typical_applications": ["2-4 surfaces this is typically used on, e.g. 'kitchen cabinet front', 'feature wall'"],
-  "canonical_description": "ONE sentence, <=40 words, describing colour, pattern, texture and finish as a designer would."
+  "canonical_description": "ONE sentence, <=40 words, describing colour, pattern, texture and finish as a spec sheet would — NEVER mention object shape, cutouts, edges, legs, function or style."
 }}"""
 
 

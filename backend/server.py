@@ -1668,21 +1668,25 @@ async def _generate_query_vision_dna(crop_b64: str, row: dict) -> dict | None:
     side was building DNA from text attributes only while the catalogue side
     had rich vision-DNA — retrieval was comparing apples to oranges.
 
+    Sprint 8.1 — vision-DNA is given the upstream classifier hints (colour,
+    finish, object_type) as WEAK metadata but the SWATCH_DNA_PROMPT
+    instructs the vision model to trust pixel evidence over metadata when
+    the two conflict. Empirically, dropping metadata entirely made colour
+    perception drift ("light grey" for warm oak); dropping only the
+    `classifier_material_family` was too aggressive too. The vision model
+    behaves best when it can see the classifier's guess AND is explicitly
+    told it may correct it.
+
     Returns a normalized DNA dict on success, None on any failure so the
     caller can fall back to the text-derived DNA. Never raises."""
     if not crop_b64 or not EMERGENT_LLM_KEY:
         return None
     try:
         from intelligence.dna import generate_swatch_dna
-        # The classifier already produced rough attributes — pass them as
-        # metadata so the vision model can trust or correct them per its
-        # SWATCH_DNA_PROMPT contract.
         metadata = {
-            "classifier_material_family": row.get("material_family") or "",
-            "classifier_material_type": row.get("material_type") or "",
-            "object_type": row.get("object_type") or row.get("zone") or "",
             "detected_color": row.get("color") or "",
             "detected_finish": row.get("finish") or "",
+            "object_type_hint": row.get("object_type") or "",
         }
         return await generate_swatch_dna(
             crop_b64, metadata, EMERGENT_LLM_KEY,
@@ -2456,7 +2460,22 @@ def materialmatch_brain(row: dict) -> dict:
             "object_aware": True,
         }
     if object_type in _COUNTERTOP_OBJECTS:
-        allowed = ["Stone", "Tiles", "Laminates"]
+        # Sprint 8.1 — respect the canonical vision-DNA family when it
+        # contradicts the classifier's "countertop" object guess. A bench
+        # cushion mislabelled as countertop should still route to Fabric,
+        # not Stone. Genuine countertops keep the Stone/Tiles/Laminates
+        # default.
+        from intelligence.family import to_canonical
+        canon_fam = to_canonical(fam)
+        base = ["Stone", "Tiles", "Laminates"]
+        if canon_fam == "Fabric":
+            allowed = ["Fabric"] + base
+        elif canon_fam == "Paint":
+            allowed = ["Paints"] + base
+        elif canon_fam in {"Wood", "Veneer"}:
+            allowed = ["Laminates", "Veneers", "Stone", "Tiles"]
+        else:
+            allowed = base
         excluded = sorted(set(CATEGORY_SETS.keys()) - set(allowed))
         return {
             "classification": classification,
@@ -3001,10 +3020,15 @@ async def run_object_aware_region_analysis(
         "  or false-ceiling — NOT a wardrobe / vanity / cabinet just "
         "  because those exist elsewhere in the scene. If IMAGE 2 clearly "
         "  shows door edges, drawers, handles, hinges or panel joints, it "
-        "  is cabinetry. Choose object_type from: kitchen cabinet, "
-        "  wardrobe, tv unit, vanity, countertop, backsplash, "
-        "  built-in shelf, door, sofa, chair, table, bed, headboard, "
-        "  wall, floor, ceiling, false ceiling, feature panel.\n"
+        "  is cabinetry. A soft cushioned horizontal surface with visible "
+        "  pillows, throws, upholstery seams or bolsters is a BENCH / "
+        "  OTTOMAN / SOFA SEAT — NOT a countertop, even when the crop "
+        "  itself looks flat and uniform. A translucent hanging fabric "
+        "  covering a window is a CURTAIN, not a wall. Choose object_type "
+        "  from: kitchen cabinet, wardrobe, tv unit, vanity, countertop, "
+        "  backsplash, built-in shelf, door, sofa, chair, bench, ottoman, "
+        "  table, bed, headboard, cushion, wall, floor, ceiling, "
+        "  false ceiling, feature panel, curtain, rug.\n"
         "  STEP 2 — MATERIAL: THEN classify the material of that "
         "  object's surface using the SELECTED crop (IMAGE 2). If the "
         "  object is cabinetry (kitchen cabinet / wardrobe / tv unit / "
@@ -3012,7 +3036,10 @@ async def run_object_aware_region_analysis(
         "  visibly a PU-painted panel — cabinetry is almost always "
         "  laminate, veneer or acrylic panel. If the object is wall or "
         "  ceiling and the crop shows a plain flat surface with no wood "
-        "  grain / no stone veining / no tile grout, family = Paint.\n"
+        "  grain / no stone veining / no tile grout, family = Paint. If "
+        "  the object is a sofa / chair / bench / ottoman / cushion / "
+        "  curtain / rug, the material is almost always Fabric — never "
+        "  Stone, Tile or Metal — even when the surface looks flat.\n"
         "Reply with ONLY valid JSON, no markdown."
     )
 
@@ -3027,7 +3054,7 @@ async def run_object_aware_region_analysis(
         '    "zone": "short specification zone e.g. Kitchen base cabinet front",\n'
         '    "group": "Wall | Floor | Ceiling | Furniture",\n'
         '    "object_group": "Architectural Surface | Built-in Element | Furniture | Fixture",\n'
-        '    "object_type": "kitchen cabinet | wardrobe | tv unit | vanity | countertop | backsplash | built-in shelf | door | sofa | chair | table | bed | headboard | wall | floor | ceiling | false ceiling | feature panel",\n'
+        '    "object_type": "kitchen cabinet | wardrobe | tv unit | vanity | countertop | backsplash | built-in shelf | door | sofa | chair | bench | ottoman | table | bed | headboard | cushion | wall | floor | ceiling | false ceiling | feature panel | curtain | rug",\n'
         '    "surface_description": "which surface of the object is selected",\n'
         '    "material_family": "one of: ' + ", ".join(MATERIAL_FAMILIES) + '",\n'
         '    "material_type": "concise finish description",\n'
@@ -3057,7 +3084,7 @@ async def run_object_aware_region_analysis(
                 api_key=EMERGENT_LLM_KEY,
                 session_id=f"region-{project_id}-{secrets.token_hex(4)}",
                 system_message=system,
-            ).with_model(LLM_PROVIDER_ANALYSIS, LLM_MODEL_ANALYSIS)
+            ).with_model(LLM_PROVIDER_ANALYSIS, LLM_MODEL_ANALYSIS).with_params(temperature=0)
             msg = UserMessage(
                 text=user_prompt,
                 file_contents=[

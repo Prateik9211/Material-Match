@@ -44,14 +44,59 @@ def _hex_to_rgb(h: str):
         return None
 
 
+def _rgb_to_hsv(r: int, g: int, b: int) -> tuple[float, float, float]:
+    """Cheap RGB→HSV conversion (H in degrees 0..360, S/V in 0..1)."""
+    rf, gf, bf = r / 255.0, g / 255.0, b / 255.0
+    mx, mn = max(rf, gf, bf), min(rf, gf, bf)
+    diff = mx - mn
+    if diff == 0:
+        h = 0.0
+    elif mx == rf:
+        h = (60 * ((gf - bf) / diff) + 360) % 360
+    elif mx == gf:
+        h = (60 * ((bf - rf) / diff) + 120) % 360
+    else:
+        h = (60 * ((rf - gf) / diff) + 240) % 360
+    s = 0.0 if mx == 0 else diff / mx
+    return h, s, mx
+
+
 def _color_sim(hex_a: str, hex_b: str) -> float | None:
+    """Perceptual-ish colour similarity that respects HUE.
+
+    Prior Sprint 7/8 implementation used weighted-RGB Euclidean distance —
+    that treats a warm beige (#F1DDC3) as very close to a neutral light
+    grey (#D3D3D3) because both channels are high, which broke retrieval
+    for "cool grey oak floor" queries (warm-beige laminates outranked cool
+    grey ones). We now also penalise HUE and SATURATION differences so
+    beige vs grey no longer collapse.
+    """
     ra, rb = _hex_to_rgb(hex_a), _hex_to_rgb(hex_b)
     if ra is None or rb is None:
         return None
-    # Weighted RGB distance (approximates perceptual distance cheaply).
     dr, dg, db = ra[0] - rb[0], ra[1] - rb[1], ra[2] - rb[2]
-    dist = (2 * dr * dr + 4 * dg * dg + 3 * db * db) ** 0.5  # max ~765
-    return max(0.0, 1.0 - dist / 500.0)
+    # 1) Weighted RGB distance (lightness / overall closeness).
+    rgb_dist = (2 * dr * dr + 4 * dg * dg + 3 * db * db) ** 0.5  # max ~765
+    rgb_sim = max(0.0, 1.0 - rgb_dist / 500.0)
+    # 2) Hue + saturation penalty. Hue only matters when BOTH colours are
+    #    at least mildly saturated — for two near-greys hue is meaningless.
+    ha, sa, _ = _rgb_to_hsv(*ra)
+    hb, sb, _ = _rgb_to_hsv(*rb)
+    sat_min = min(sa, sb)
+    # Circular hue distance in degrees, normalised 0..1.
+    dh = min(abs(ha - hb), 360 - abs(ha - hb)) / 180.0
+    ds = abs(sa - sb)
+    # When one colour is essentially achromatic (sat < 0.10) and the other
+    # is saturated (>= 0.20), that's a clear warm/cool mismatch — force
+    # a hard penalty regardless of RGB distance.
+    if (sa < 0.10 and sb >= 0.20) or (sb < 0.10 and sa >= 0.20):
+        hue_sim = 0.35
+    elif sat_min < 0.06:
+        hue_sim = 1.0 - ds     # both near-grey — only saturation matters
+    else:
+        hue_sim = max(0.0, 1.0 - (0.7 * dh + 0.3 * ds))
+    # Blend — RGB carries lightness, hue carries chromatic identity.
+    return max(0.0, min(1.0, 0.6 * rgb_sim + 0.4 * hue_sim))
 
 
 def _token_sim(a: str, b: str) -> float | None:
