@@ -1662,6 +1662,82 @@ VISUAL_DNA_MODEL = os.environ.get("VISUAL_DNA_MODEL", "gpt-4o-mini")
 _DNA_BACKFILL_LOCK = None  # created lazily inside the running event loop
 
 
+async def _generate_query_vision_dna(crop_b64: str, row: dict) -> dict | None:
+    """Run the same vision-DNA pass we use on catalogue swatches, but on the
+    user's selected crop. This closes the Sprint 7 asymmetry where the query
+    side was building DNA from text attributes only while the catalogue side
+    had rich vision-DNA — retrieval was comparing apples to oranges.
+
+    Returns a normalized DNA dict on success, None on any failure so the
+    caller can fall back to the text-derived DNA. Never raises."""
+    if not crop_b64 or not EMERGENT_LLM_KEY:
+        return None
+    try:
+        from intelligence.dna import generate_swatch_dna
+        # The classifier already produced rough attributes — pass them as
+        # metadata so the vision model can trust or correct them per its
+        # SWATCH_DNA_PROMPT contract.
+        metadata = {
+            "classifier_material_family": row.get("material_family") or "",
+            "classifier_material_type": row.get("material_type") or "",
+            "object_type": row.get("object_type") or row.get("zone") or "",
+            "detected_color": row.get("color") or "",
+            "detected_finish": row.get("finish") or "",
+        }
+        return await generate_swatch_dna(
+            crop_b64, metadata, EMERGENT_LLM_KEY,
+            VISUAL_DNA_PROVIDER, VISUAL_DNA_MODEL,
+        )
+    except Exception as e:
+        logger.warning("query vision-DNA generation failed (%s: %s)",
+                       type(e).__name__, e)
+        return None
+
+
+def _reconcile_family_with_vision_dna(row: dict, vision_dna: dict) -> dict:
+    """Merge the analyser row's family with the vision-DNA family per the
+    approved override rules (see intelligence/family.pick_final_family).
+
+    Mutates the row in place:
+      - `visual_dna`             attached (query side, symmetric with catalogue)
+      - `material_family_original` preserved for debugging / UI
+      - `material_family`        overwritten only when the rules trigger
+      - `family_routing`         debug packet (original, vision, final, reason)
+
+    Returns the debug packet.
+    """
+    from intelligence.family import pick_final_family, to_canonical
+
+    orig_family = row.get("material_family")
+    vision_family = (vision_dna or {}).get("material_family")
+    final_family, reason = pick_final_family(orig_family, vision_family)
+    debug = {
+        "classifier_family": orig_family,
+        "vision_family": vision_family,
+        "final_family": final_family,
+        "override_applied": bool(final_family and final_family != orig_family),
+        "reason": reason,
+    }
+    row["visual_dna"] = vision_dna
+    row["family_routing"] = debug
+    if debug["override_applied"]:
+        row["material_family_original"] = orig_family
+        # Family used for Brain routing / catalogue filter. Canonical DNA
+        # family names line up with catalogue metadata (Laminate / Paint / …).
+        row["material_family"] = final_family
+        # Rebuild classification & Brain packet so the override actually
+        # reaches _find_catalogue_matches downstream.
+        row["classification"] = _classify_row(row)
+        row.pop("brain", None)
+    logger.info(
+        "region DNA reconcile: classifier=%r vision=%r final=%r reason=%s "
+        "override=%s object_type=%r",
+        orig_family, vision_family, final_family, reason,
+        debug["override_applied"], row.get("object_type"),
+    )
+    return debug
+
+
 async def _apply_visual_rerank(row: dict, crop_b64: str) -> None:
     """Stage 5 — visual re-rank of a row's retrieved matches against the
     user's selected crop. Mutates the row in place: accepted candidates get
@@ -2315,7 +2391,20 @@ def materialmatch_brain(row: dict) -> dict:
             "object_aware": True,
         }
     if object_type in _SOFA_OBJECTS or object_type in _UPHOLSTERED_FURNITURE:
-        allowed = ["Fabric"]
+        # Sprint 7.1 — headboards / beds / chairs can be upholstered fabric
+        # OR wood / laminate slat panels. Use the canonical DNA family (set
+        # via _reconcile_family_with_vision_dna) as the tie-breaker so a
+        # wood-slat headboard doesn't get routed to Fabric-only.
+        from intelligence.family import to_canonical
+        canon = to_canonical(fam)
+        if object_type in _SOFA_OBJECTS or canon == "Fabric":
+            allowed = ["Fabric"]
+        elif canon in {"Laminate", "Veneer", "Wood"}:
+            allowed = ["Laminates", "Veneers", "Fabric"]
+        elif canon == "Metal":
+            allowed = ["Hardware", "Fabric"]
+        else:
+            allowed = ["Fabric"]
         excluded = sorted(set(CATEGORY_SETS.keys()) - set(allowed))
         return {
             "classification": classification,
@@ -2755,6 +2844,24 @@ async def analyze_region(project_id: str, payload: RegionAnalyzePayload,
         for r in result.get("rows") or []:
             if crop_hashes and not r.get("visual_hashes"):
                 r["visual_hashes"] = crop_hashes
+        # Sprint 7 — symmetric query-side vision-DNA. The catalogue side
+        # was already vision-described at publish time; this closes the
+        # asymmetry by running the same describe pass on the user's crop
+        # BEFORE retrieval. Also applies the approved family-override
+        # rules so generic classifier labels (furniture / flooring / wall)
+        # get replaced by canonical DNA families when appropriate.
+        for r in result.get("rows") or []:
+            vision_dna = await _generate_query_vision_dna(crop, r)
+            if vision_dna:
+                _reconcile_family_with_vision_dna(r, vision_dna)
+            else:
+                r.setdefault("family_routing", {
+                    "classifier_family": r.get("material_family"),
+                    "vision_family": None,
+                    "final_family": r.get("material_family"),
+                    "override_applied": False,
+                    "reason": "vision_dna_unavailable_fallback_to_text",
+                })
         _enrich_rows_with_catalogue(result.get("rows") or [])
         # Sprint 7 — visual re-rank (Describe-Embed-Rerank stage 5). The
         # user explicitly selected this region, so we spend ONE GPT-4o

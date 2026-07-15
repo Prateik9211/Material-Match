@@ -741,3 +741,58 @@ backfill, ~$0.4). New publishes auto-enrich in background.
 - On-demand rerank endpoint for full-analysis zones (user expands a zone)
 - Migrate @app.on_event to lifespan handlers (deprecation warnings)
 - visual_hash getdata() Pillow-14 deprecation (cosmetic)
+
+
+## Sprint 7.1 — Query-side Vision-DNA + Family Override (2026-07-15)
+
+### Problem discovered by real-world validation
+Live E2E validation against a real Indian bedroom photo (site_0) + 172 published catalogue records showed 4 of 5 zones returned "honest reject" including obvious wood-grain matches. Retrieval was working in isolation (scores 0.85+) but the endpoint was producing bad DNA.
+
+### Root cause
+Sprint 7 stores rich vision-DNA on every catalogue record but on the query side `/analyze-region` was building DNA from **text attributes only** (never running `generate_swatch_dna` on the user crop). Two symptoms:
+1. Weak query DNA → retrieval scored poorly on real-photo colours the classifier called "light gray" that were actually warm oak.
+2. The classifier returns object-based `material_family` values (`furniture`, `flooring`, `wall`, `upholstery`) which are routing labels, not material families → Brain gate over-filters.
+
+### Fix (surgical)
+- New module `intelligence/family.py` — canonical family normalization (`Laminate/Paint/Fabric/Tile/Stone/Wood/Metal/Veneer/Wallpaper/Ceramic`) + `pick_final_family(classifier, vision)` implementing the approved override rules.
+- New `_generate_query_vision_dna(crop_b64, row)` in `server.py` — runs the same `generate_swatch_dna` used on catalogue swatches, on the user crop, feeding classifier attributes in as `metadata` hints.
+- New `_reconcile_family_with_vision_dna(row, dna)` — merges the two, mutates row in place with `visual_dna`, `family_routing` debug packet, and (only when rules trigger) `material_family` override with the original preserved as `material_family_original`.
+- Brain's `_UPHOLSTERED_FURNITURE` branch now honours the canonical DNA family: a headboard with DNA=Laminate expands to `["Laminates", "Veneers", "Fabric"]` instead of Fabric-only. Sofas still hard-gated to Fabric.
+- `analyze_region` endpoint calls `_generate_query_vision_dna` + `_reconcile_family_with_vision_dna` before `_enrich_rows_with_catalogue`. Fails open — vision-DNA errors fall back to the existing text-derived DNA and a `family_routing.reason = vision_dna_unavailable_fallback_to_text` breadcrumb is emitted.
+- Object type (`object_type`) is preserved separately — a wardrobe stays `object_type="wardrobe"` while `material_family` becomes `Laminate`.
+
+### Validation (same 5 zones, same catalogue, same thresholds)
+| Zone | Object | Classifier fam | Vision fam | Final fam | Before | After |
+|---|---|---|---|---|---|---|
+| 1. Dark walnut wardrobe | bed | furniture | Laminate | **Laminate** (override) | REJECT | ELYSIAN WOOD @ 65% ✅ compatible |
+| 2. Light oak floor | floor | flooring | Laminate | **Laminate** (override) | REJECT | PERSIAN TEAK @ **85%** ✅ PASS |
+| 3. Cream fabric headboard | headboard | furniture | Fabric | **Fabric** (override) | REJECT | REJECT (catalogue has 2 fabrics, wrong texture) |
+| 4. White wall/ceiling | wardrobe* | furniture | Laminate | Laminate | Warm Ivory @ 80% (wrong family) | REJECT (rerank rejected) |
+| 5. Wood-slat headboard | headboard | wood | Veneer | Wood (kept) | REJECT | Warm Oak Laminate @ 65%, LIGHT NEFIS WALNUT @ 60% ✅ compatible |
+
+* Zone 4 — the object-aware LLM (Sprint 6) misidentifies the ceiling crop as "wardrobe" because it sees the full scene. Separate classifier bug, out of scope for this fix.
+
+**Pass rate at strict ≥70% confidence bar: 1/5 → improvement in match surfacing on 3 additional zones (65-85% range) that were previously honest-rejected.**
+
+### Metrics
+- Additional latency: **+4.1s median per selected region** (extra `gpt-4o-mini` vision call).
+- Cost impact: **~+\$0.001 per region** (one extra vision-mini call ~500 in + 300 out tokens).
+- Additional API surface: none — `analyze-region` payload unchanged; only response gains `family_routing` and `material_family_original` breadcrumbs.
+
+### Files changed (Sprint 7.1)
+- `/app/backend/intelligence/family.py` — new (98 LOC)
+- `/app/backend/server.py` — +80 LOC (`_generate_query_vision_dna`, `_reconcile_family_with_vision_dna`, headboard Brain branch update, analyze_region hook)
+- `/app/backend/tests/test_sprint7_1_family_override.py` — new (47 tests)
+- `/app/backend/tests/validation_real_world.py` — new (5-zone real-world harness)
+- `/app/backend/tests/validation_diagnostic.py` — new (retrieval-stage inspector)
+
+### Testing (2026-07-15)
+- 47/47 new regression tests pass (`test_sprint7_1_family_override.py`)
+- 32/32 pre-existing Sprint 7 tests still pass (no regressions)
+- Real-world validation: 5-zone harness executed against 172 live catalogue records; results serialised to `/tmp/validation/results.json`.
+
+### Remaining failure modes
+1. **Object-aware misclassification** — the classifier LLM can label a ceiling crop as "wardrobe" when the full scene contains a wardrobe (Zone 4). Fix requires refining `run_object_aware_region_analysis` prompt to prioritise bbox context over scene context.
+2. **Rerank calibration** — GPT-4o rerank is intentionally strict: gives 60–70 for "compatible material, not identical SKU". Real-world matches often land in this band; the UI already buckets 65–79 as "possible" but the user's 70% acceptance bar treats these as failures. Consider a separate `compatible_match_percent` field or a slightly relaxed rerank prompt.
+3. **Catalogue coverage** — 2 published fabrics is too few to serve most fabric zones; needs broader ingestion.
+
