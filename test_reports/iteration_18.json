@@ -1,0 +1,35 @@
+{
+  "verdict": "fixed",
+  "user_reported_bug": "After the initial SAM3 test endpoint was built and the ROBOFLOW_API_KEY was added, the end-to-end call to POST /api/admin/test-scene-segmentation returned HTTP 200 but every kept object came back with label='?', bbox=None, polygon=[], and 'material_error: object has no bbox \u2014 skipped material pass'. The response transport worked (16 raw / 13 kept above 0.55 confidence) but the parser inside intelligence/scene_segmentation.py:_parse_prompt_results was misaligned with the actual Roboflow SAM3 response schema and dropped every label, bbox and polygon on the floor. Confirmed by dumping the raw Roboflow JSON \u2014 real schema is `{prompt_results: [{echo: {text: 'cabinet', ...}, predictions: [{masks: [[[x,y],[x,y],...]], confidence: 0.75}]}]}` and my parser was looking for `pr['prompt']`, `p['polygon']`, and `{x,y}` dict points.",
+  "summary": "No relevant testing skill found. Focused backend verification passed: code review confirmed _parse_prompt_results now reads echo.text and masks contours; one live admin POST with the kitchen image returned HTTP 200 with 16 raw / 13 kept objects, real labels, real bboxes, non-empty polygons, material sub-detections, and 5 backsplash material detections. Auth gating also passed (unauth 401, non-admin 403, admin proceeds). Regression subset passed: 171 passed, 3 skipped.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/test_sam3_scene_segmentation_verification.py",
+    "/tmp/sam3_live_verification_summary.json",
+    "/tmp/sam3_live_verification_response.json"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/test_reports/test_sam3_scene_segmentation_verification.py",
+    "/app/test_reports/bug_verification_18.json",
+    "/app/test_reports/iteration_18.json"
+  ],
+  "success_rate": {
+    "backend": "100%",
+    "frontend": "N/A"
+  },
+  "seed_data_creation": "Created one temporary non-admin user via /api/auth/register for the 403 authorization check.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Use /app/test_reports/test_sam3_scene_segmentation_verification.py for focused retest. It makes exactly one live admin SAM3 endpoint call after cheap 401/403 auth checks; avoid repeated runs because Roboflow calls consume credits. Latest live evidence is in /tmp/sam3_live_verification_response.json.",
+  "rca_of_the_issue": "The previous parser expected prompt/polygon/dict-point fields that did not match Roboflow SAM3's real prompt_results schema. The fixed parser reads pr.echo.text for labels and p.masks list-of-contours with [x,y] points, restoring object labels, bboxes, polygons, and downstream material crop passes."
+}

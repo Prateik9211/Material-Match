@@ -165,50 +165,49 @@ def _polygon_bbox(polygon: list[dict[str, float]]) -> tuple[float, float, float,
 
 
 def _parse_prompt_results(payload: dict, scale_back: float) -> list[dict]:
-    """Flatten Roboflow's prompt_results into a list of detections.
+    """Flatten Roboflow SAM3's `prompt_results` into a list of detections.
 
-    `scale_back` (>= 1.0) multiplies polygon and bbox coordinates so they map
-    to the caller's ORIGINAL (pre-downscale) image space. When the image
-    wasn't downscaled, scale_back == 1.0 and coordinates pass through.
+    Real Roboflow SAM3 schema (verified against a live call):
+      {
+        "prompt_results": [
+          {
+            "prompt_index": 0,
+            "echo": {"type": "text", "text": "cabinet", "num_boxes": 0},
+            "predictions": [
+              {
+                "masks": [ [[x, y], [x, y], ...], [[x, y], ...] ],  # list of contours
+                "confidence": 0.7539,
+                "format": "polygon"
+              }, ...
+            ]
+          }, ...
+        ],
+        "time": ...
+      }
+
+    `scale_back` (>= 1.0) multiplies polygon and bbox coordinates so they
+    map to the caller's ORIGINAL (pre-downscale) image space.
     """
     detections: list[dict] = []
-    prompt_results = payload.get("prompt_results") or payload.get("predictions") or []
+    prompt_results = payload.get("prompt_results") or []
     for pr in prompt_results:
-        label = pr.get("prompt") or pr.get("class") or pr.get("text") or "?"
+        echo = pr.get("echo") or {}
+        label = echo.get("text") or pr.get("prompt") or pr.get("class") or "?"
         if isinstance(label, dict):
             label = label.get("text", "?")
-        # Each prompt may return multiple detections (e.g. two cabinets).
-        preds = (
-            pr.get("predictions")
-            or pr.get("detections")
-            or pr.get("masks")
-            or ([pr] if pr.get("polygon") or pr.get("points") else [])
-        )
+        preds = pr.get("predictions") or []
         for p in preds:
             conf = float(p.get("confidence", p.get("score", 0.0)) or 0.0)
-            poly = p.get("polygon") or p.get("points") or []
-            # Roboflow sometimes wraps polygons in a list of contours.
-            if poly and isinstance(poly[0], list):
-                # Multi-contour — pick the largest by point count for the
-                # single-mask representation; keep all contours in `polygons`.
-                all_contours = [
-                    [_scale_point(pt, scale_back) for pt in contour]
-                    for contour in poly
-                ]
-                primary = max(all_contours, key=len)
-            else:
-                primary = [_scale_point(pt, scale_back) for pt in poly]
-                all_contours = [primary] if primary else []
+            # Roboflow returns `masks`: a list of contours, each a list of
+            # [x, y] pairs.
+            contours = p.get("masks") or []
+            all_contours: list[list[dict[str, float]]] = []
+            for contour in contours:
+                if not contour:
+                    continue
+                all_contours.append([_scale_point(pt, scale_back) for pt in contour])
+            primary = max(all_contours, key=len) if all_contours else []
             bbox = _polygon_bbox(primary) if primary else None
-            # Fall back to Roboflow's own bbox when polygon missing.
-            if bbox is None and p.get("x") is not None:
-                bbox = (
-                    float(p["x"]) - float(p.get("width", 0)) / 2,
-                    float(p["y"]) - float(p.get("height", 0)) / 2,
-                    float(p.get("width", 0)),
-                    float(p.get("height", 0)),
-                )
-                bbox = tuple(v * scale_back for v in bbox)
             detections.append({
                 "label": str(label),
                 "confidence": conf,
