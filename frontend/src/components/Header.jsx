@@ -92,6 +92,15 @@ export default function Header({ variant = "app" }) {
                     <Rocket className="w-4 h-4" strokeWidth={1.5} />
                     Studio
                   </button>
+                  <button
+                    onClick={() => navigate("/admin/scene-test")}
+                    className="hidden sm:inline-flex items-center gap-2 text-sm text-neutral-700 hover:text-black px-3 py-2"
+                    data-testid="nav-admin-scene-test"
+                    title="SAM3 scene-segmentation debug tool"
+                  >
+                    <Shield className="w-4 h-4" strokeWidth={1.5} />
+                    Scene Test
+                  </button>
                 </>
               )}
 
