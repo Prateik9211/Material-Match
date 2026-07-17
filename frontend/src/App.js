@@ -17,6 +17,7 @@ import PublicRoom from "@/pages/PublicRoom";
 import Demo from "@/pages/Demo";
 import MaterialLibrary from "@/pages/MaterialLibrary";
 import MaterialLibraryCategory from "@/pages/MaterialLibraryCategory";
+import AdminSceneTest from "@/pages/AdminSceneTest";
 
 function App() {
   return (
@@ -79,6 +80,14 @@ function App() {
             element={
               <ProtectedRoute>
                 <MaterialMatchStudio />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/scene-test"
+            element={
+              <ProtectedRoute>
+                <AdminSceneTest />
               </ProtectedRoute>
             }
           />
