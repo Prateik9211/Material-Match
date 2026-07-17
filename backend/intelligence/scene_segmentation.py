@@ -314,11 +314,84 @@ def detect_objects(image: Any, vocab: Iterable[str] | None = None) -> list[dict]
     return dets
 
 
+def _max_pad_in_direction(
+    direction: str,
+    bbox: tuple[float, float, float, float],
+    others: list[tuple[float, float, float, float]],
+    W: int, H: int,
+) -> float:
+    """Maximum pixel distance we can expand `bbox` in one direction before
+    entering either the image boundary OR another object's bbox territory.
+
+    A neighbor is a "blocker" for direction `d` when it has any pixel on
+    the side of `bbox` where we're trying to expand AND its perpendicular
+    range overlaps ours. Blockers cap the padding at the gap between our
+    edge and the nearest blocker's edge. If a blocker already OVERLAPS the
+    current bbox (i.e. crosses our edge in the same direction we're
+    expanding), the max pad becomes 0 — don't fight for shared space.
+    """
+    bx, by, bw, bh = bbox
+    if direction == "up":
+        limit = by
+        for nx, ny, nw, nh in others:
+            if nx + nw <= bx or nx >= bx + bw:   # no horizontal overlap
+                continue
+            if ny >= by:                          # entirely below our top
+                continue
+            n_bottom = ny + nh
+            if n_bottom <= by:                    # sits cleanly above; gap
+                limit = min(limit, by - n_bottom)
+            else:                                 # crosses our top → 0
+                return 0.0
+        return max(0.0, limit)
+    if direction == "down":
+        bottom = by + bh
+        limit = H - bottom
+        for nx, ny, nw, nh in others:
+            if nx + nw <= bx or nx >= bx + bw:
+                continue
+            if ny + nh <= bottom:                 # entirely above our bottom
+                continue
+            if ny >= bottom:                      # sits cleanly below
+                limit = min(limit, ny - bottom)
+            else:
+                return 0.0
+        return max(0.0, limit)
+    if direction == "left":
+        limit = bx
+        for nx, ny, nw, nh in others:
+            if ny + nh <= by or ny >= by + bh:
+                continue
+            if nx >= bx:
+                continue
+            n_right = nx + nw
+            if n_right <= bx:
+                limit = min(limit, bx - n_right)
+            else:
+                return 0.0
+        return max(0.0, limit)
+    if direction == "right":
+        right = bx + bw
+        limit = W - right
+        for nx, ny, nw, nh in others:
+            if ny + nh <= by or ny >= by + bh:
+                continue
+            if nx + nw <= right:
+                continue
+            if nx >= right:
+                limit = min(limit, nx - right)
+            else:
+                return 0.0
+        return max(0.0, limit)
+    return 0.0
+
+
 def detect_materials_in_crop(
     image: Any,
     bbox: list[float] | tuple[float, float, float, float],
     material_vocab: Iterable[str],
     pad_thin_bbox: bool = True,
+    other_bboxes: Iterable[list[float] | tuple[float, float, float, float]] | None = None,
 ) -> dict:
     """Pass 2 — material segmentation within a single object crop.
 
@@ -332,6 +405,12 @@ def detect_materials_in_crop(
                        cropping so SAM3 has enough spatial context to
                        classify materials (fixes the "tile between cabinets"
                        backsplash-strip dropout).
+        other_bboxes: optional list of sibling object bboxes (from the same
+                      detect_objects call). When provided, padding is
+                      clipped so it never expands into another already-
+                      detected object's territory. Prevents cross-object
+                      material bleed (e.g. floor padding upward into
+                      cabinet space and returning "wood paneling").
 
     Returns:
         {
@@ -340,6 +419,7 @@ def detect_materials_in_crop(
                                            # AFTER any thin-bbox padding).
           "crop_size":   [w, h],           # pixel size of the crop sent.
           "bbox_padded": bool,             # True if thin-bbox padding fired.
+          "pad_applied": {up,down,left,right},  # per-side px actually padded.
           "detections":  [ ... ],          # each with LOCAL crop coords AND
                                            # `bbox_global`, `polygon_global`
                                            # mapping back to the original.
@@ -349,31 +429,62 @@ def detect_materials_in_crop(
     W, H = img.size
     x, y, w, h = [float(v) for v in bbox]
 
+    # Normalize sibling bboxes and remove any that are byte-identical to ours
+    # (defensive: caller might forget to exclude self).
+    sibs: list[tuple[float, float, float, float]] = []
+    if other_bboxes:
+        for ob in other_bboxes:
+            if not ob or len(ob) < 4:
+                continue
+            t = tuple(float(v) for v in ob[:4])
+            if t == (x, y, w, h):
+                continue
+            sibs.append(t)
+
     # ------------------------------------------------------------------
-    # Feb 2026 fix — thin-bbox padding.
-    # A thin backsplash strip (say 1400x60 on a 1400x900 image) cropped
-    # AS-IS gives SAM3 almost no vertical context; empirically the
-    # material pass returns 0 confident detections. Pad the short edge to
-    # reach TARGET_SHORT_EDGE_FRAC of the image's short edge. Preserves
-    # bbox centre; clipped to image bounds.
+    # Thin-bbox padding, now NEIGHBOR-AWARE.
+    #   1. Trigger when short edge < 15% of image short edge.
+    #   2. Target: extend short edge to reach 25% of image short edge.
+    #   3. Split the required extra 50/50 between the two sides of the
+    #      short axis, but cap each side by the max-safe-pad computed
+    #      against sibling bboxes. Unused half is redistributed to the
+    #      other side (if that side has room). If total available space
+    #      is less than target, accept the tighter crop — never bleed.
     # ------------------------------------------------------------------
     padded = False
+    pad_up = pad_down = pad_left = pad_right = 0.0
     if pad_thin_bbox:
-        THIN_THRESHOLD_FRAC = 0.15   # trigger when short edge < 15% of img short edge
-        TARGET_SHORT_EDGE_FRAC = 0.25  # pad to reach at least 25%
+        THIN_THRESHOLD_FRAC = 0.15
+        TARGET_SHORT_EDGE_FRAC = 0.25
         img_short = min(W, H)
         bbox_short = min(w, h)
         if bbox_short > 0 and bbox_short / img_short < THIN_THRESHOLD_FRAC:
             target = TARGET_SHORT_EDGE_FRAC * img_short
-            if w <= h:  # width is the short axis
+            cur_bbox = (x, y, w, h)
+            if w <= h:  # short axis is width → pad left/right
                 extra = max(0.0, target - w)
-                x -= extra / 2
-                w += extra
-            else:  # height is the short axis
+                half = extra / 2
+                max_l = _max_pad_in_direction("left", cur_bbox, sibs, W, H)
+                max_r = _max_pad_in_direction("right", cur_bbox, sibs, W, H)
+                pad_left = min(half, max_l)
+                pad_right = min(extra - pad_left, max_r)
+                # Redistribute unused left-room to right and vice versa.
+                if pad_left + pad_right < extra and pad_left < max_l:
+                    pad_left = min(max_l, extra - pad_right)
+                x -= pad_left
+                w += pad_left + pad_right
+            else:       # short axis is height → pad up/down
                 extra = max(0.0, target - h)
-                y -= extra / 2
-                h += extra
-            padded = True
+                half = extra / 2
+                max_u = _max_pad_in_direction("up", cur_bbox, sibs, W, H)
+                max_d = _max_pad_in_direction("down", cur_bbox, sibs, W, H)
+                pad_up = min(half, max_u)
+                pad_down = min(extra - pad_up, max_d)
+                if pad_up + pad_down < extra and pad_up < max_u:
+                    pad_up = min(max_u, extra - pad_down)
+                y -= pad_up
+                h += pad_up + pad_down
+            padded = (pad_up + pad_down + pad_left + pad_right) > 0
 
     x0 = max(0, int(round(x)))
     y0 = max(0, int(round(y)))
@@ -403,13 +514,18 @@ def detect_materials_in_crop(
             d["polygon_global"] = None
     logger.info(
         "SAM3 detect_materials_in_crop: crop_origin=(%d,%d) crop_size=%s "
-        "prompts=%d detections=%d padded=%s",
-        x0, y0, (x1 - x0, y1 - y0), len(list(material_vocab)), len(local), padded,
+        "prompts=%d detections=%d padded=%s pad_udlr=(%d,%d,%d,%d)",
+        x0, y0, (x1 - x0, y1 - y0), len(list(material_vocab)), len(local),
+        padded, pad_up, pad_down, pad_left, pad_right,
     )
     return {
         "crop_origin": [x0, y0],
         "crop_size": [x1 - x0, y1 - y0],
         "bbox_padded": padded,
+        "pad_applied": {
+            "up": round(pad_up), "down": round(pad_down),
+            "left": round(pad_left), "right": round(pad_right),
+        },
         "detections": local,
     }
 

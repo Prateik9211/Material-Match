@@ -7530,9 +7530,15 @@ async def admin_test_scene_segmentation(
             if obj["bbox"] is None:
                 entry["material_error"] = "object has no bbox — skipped material pass"
             else:
+                # Sibling bboxes = every OTHER kept object. Pass these to
+                # detect_materials_in_crop so thin-bbox padding never
+                # expands into another already-detected object's territory.
+                sibs = [o["bbox"] for o in objects
+                        if o is not obj and o.get("bbox")]
                 try:
                     mat = detect_materials_in_crop(
                         img, obj["bbox"], effective_mat_prompts,
+                        other_bboxes=sibs,
                     )
                     mat_filtered = filter_detections(
                         mat["detections"], min_confidence=min_confidence,
@@ -7540,6 +7546,7 @@ async def admin_test_scene_segmentation(
                     entry["crop_origin"] = mat["crop_origin"]
                     entry["crop_size"] = mat["crop_size"]
                     entry["bbox_padded"] = mat.get("bbox_padded", False)
+                    entry["pad_applied"] = mat.get("pad_applied")
                     entry["materials"] = mat_filtered
                 except Sam3Error as e:
                     entry["material_error"] = str(e)
