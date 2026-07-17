@@ -50,11 +50,15 @@ SAM3_MAX_PROMPTS = 16          # Roboflow SAM3 hosted cap.
 #   nightstand.
 # Nineteen prompts exceeds SAM3's 16-per-request cap, so `detect_objects`
 # chunks the vocab and merges results — see that function for details.
+#
+# 21-image sweep follow-up — `carpet` removed: it duplicated every `rug`
+# detection (identical concept in SAM3's text space, guaranteed double
+# count) and false-fired on bare-wood scenes. `rug` covers the concept.
 ARCHITECTURAL_VOCAB: tuple[str, ...] = (
     "wall", "ceiling", "floor", "cabinet", "countertop",
     "backsplash", "sofa", "curtain", "plant",
     "bed", "headboard", "mirror", "sink", "toilet", "bathtub",
-    "rug", "carpet", "shelf", "nightstand",
+    "rug", "shelf", "nightstand",
 )
 
 
@@ -76,7 +80,6 @@ MATERIAL_VOCAB_BY_OBJECT: dict[str, tuple[str, ...] | None] = {
     "curtain":   ("fabric upholstery",),
     "sofa":      ("fabric upholstery", "wood paneling", "metal fixture"),
     "rug":       ("fabric upholstery",),
-    "carpet":    ("fabric upholstery",),
     "bed":       ("fabric upholstery", "wood paneling"),
     "headboard": ("fabric upholstery", "wood paneling"),
     # cabinet / wall / ceiling / floor / countertop / backsplash / shelf /
@@ -534,17 +537,37 @@ def filter_detections(
     detections: list[dict],
     min_confidence: float = 0.55,
     iou_dedup: float = 0.70,
+    min_area_frac: float = 0.0,
+    image_w: int | None = None,
+    image_h: int | None = None,
 ) -> list[dict]:
     """Drop sub-threshold detections and same-class near-duplicates.
 
     Rules (deliberately simple — no NMS across classes, no mask IoU, no
     box-in-box logic):
       1. Drop confidence < min_confidence.
-      2. For each class, keep the highest-confidence detection first;
+      2. Drop bbox_area / (image_w * image_h) < min_area_frac  when the
+         image size is provided and min_area_frac > 0. Kills tiny
+         decorative slat / pendant / cubby-edge clutter that survives the
+         confidence gate. 21-image sweep found ~5-11 spurious `shelf`
+         detections per image at 0.05-0.4% area — 0.005 (=0.5%) removes
+         them without touching legitimate small objects like mirrors.
+      3. For each class, keep the highest-confidence detection first;
          drop any lower-confidence detection of the SAME class whose
          bounding-box IoU exceeds `iou_dedup`.
     """
     kept = [d for d in detections if float(d.get("confidence", 0)) >= min_confidence]
+    if min_area_frac > 0 and image_w and image_h:
+        img_area = float(image_w) * float(image_h)
+        area_gated: list[dict] = []
+        for d in kept:
+            b = d.get("bbox") or None
+            if not b or img_area <= 0:
+                area_gated.append(d)
+                continue
+            if (float(b[2]) * float(b[3])) / img_area >= min_area_frac:
+                area_gated.append(d)
+        kept = area_gated
     kept.sort(key=lambda d: float(d.get("confidence", 0)), reverse=True)
     out: list[dict] = []
     for d in kept:
