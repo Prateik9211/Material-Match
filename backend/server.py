@@ -7428,6 +7428,117 @@ async def studio_upload_records(upload_id: str, user: dict = Depends(require_adm
     return {"upload_id": upload_id, "records": [_clean_record(d) for d in docs]}
 
 
+# ---------------------------------------------------------------------------
+# SAM3 scene-segmentation VALIDATION endpoint (admin-only).
+#
+# Two-pass test harness: pass 1 detects architectural objects on the whole
+# image; pass 2 crops to each detected object and re-runs SAM3 with a
+# material-concept vocabulary. Returns the full nested JSON so we can
+# manually inspect on a handful of images before wiring anything to the
+# user-facing flow. NOT connected to the live analyze-region pipeline.
+# Requires ROBOFLOW_API_KEY in the backend environment.
+# ---------------------------------------------------------------------------
+_DEFAULT_MATERIAL_VOCAB = (
+    "painted wall", "wood paneling", "tile", "stone slab", "wallpaper",
+    "laminate panel", "fabric upholstery", "metal fixture", "glass panel",
+)
+
+
+@api_router.post("/admin/test-scene-segmentation")
+async def admin_test_scene_segmentation(
+    file: UploadFile = File(...),
+    min_confidence: float = Form(default=0.55),
+    material_vocab: str | None = Form(default=None),
+    object_vocab: str | None = Form(default=None),
+    user: dict = Depends(require_admin),
+):
+    """VALIDATION ONLY. Runs SAM3 in two passes on the uploaded image and
+    returns raw nested JSON (no persistence, no downstream side effects).
+
+    Form fields:
+      file:            image file (jpg / png / webp).
+      min_confidence:  optional float (default 0.55) applied by
+                       `filter_detections`.
+      object_vocab:    optional comma-separated architectural prompts,
+                       overrides the built-in ARCHITECTURAL_VOCAB.
+      material_vocab:  optional comma-separated material prompts,
+                       overrides the built-in list.
+    """
+    from intelligence.scene_segmentation import (
+        ARCHITECTURAL_VOCAB, Sam3Error, detect_materials_in_crop,
+        detect_objects, filter_detections,
+    )
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(raw) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Image too large (max 15 MB)")
+
+    def _parse_vocab(s: str | None, fallback: tuple[str, ...]) -> list[str]:
+        if not s:
+            return list(fallback)
+        items = [t.strip() for t in s.split(",") if t.strip()]
+        return items or list(fallback)
+
+    obj_prompts = _parse_vocab(object_vocab, ARCHITECTURAL_VOCAB)
+    mat_prompts = _parse_vocab(material_vocab, _DEFAULT_MATERIAL_VOCAB)
+
+    try:
+        from PIL import Image
+        img = Image.open(io.BytesIO(raw)).convert("RGB")
+        W, H = img.size
+
+        # Pass 1 — object detection.
+        obj_raw = detect_objects(img, vocab=obj_prompts)
+        objects = filter_detections(obj_raw, min_confidence=min_confidence)
+
+        # Pass 2 — per-object material segmentation.
+        object_results = []
+        for obj in objects:
+            entry = {
+                "label": obj["label"],
+                "confidence": obj["confidence"],
+                "bbox": obj["bbox"],
+                "polygon": obj.get("polygon"),
+                "materials": [],
+                "material_error": None,
+            }
+            if obj["bbox"] is None:
+                entry["material_error"] = "object has no bbox — skipped material pass"
+            else:
+                try:
+                    mat = detect_materials_in_crop(img, obj["bbox"], mat_prompts)
+                    mat_filtered = filter_detections(
+                        mat["detections"], min_confidence=min_confidence,
+                    )
+                    entry["crop_origin"] = mat["crop_origin"]
+                    entry["crop_size"] = mat["crop_size"]
+                    entry["materials"] = mat_filtered
+                except Sam3Error as e:
+                    entry["material_error"] = str(e)
+            object_results.append(entry)
+
+        return {
+            "image_size": {"width": W, "height": H},
+            "object_vocab": obj_prompts,
+            "material_vocab": mat_prompts,
+            "min_confidence": min_confidence,
+            "objects_raw_count": len(obj_raw),
+            "objects_kept_count": len(objects),
+            "objects": object_results,
+        }
+    except Sam3Error as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("admin scene-segmentation test failed")
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {e}")
+
+
+
+
 
 class StudioRecordEditPayload(BaseModel):
     brand: str | None = None
