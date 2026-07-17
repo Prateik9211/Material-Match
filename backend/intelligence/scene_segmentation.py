@@ -42,12 +42,47 @@ SAM3_MAX_LONGEST_EDGE = 1024   # Roboflow SAM3 hosted cap (1024x1024).
 SAM3_MAX_BYTES = 2 * 1024 * 1024  # Roboflow SAM3 hosted cap (2 MB).
 SAM3_MAX_PROMPTS = 16          # Roboflow SAM3 hosted cap.
 
-# Fixed architectural vocabulary for pass 1. Small on purpose — easy to
-# extend as we learn what the model responds well to on real interiors.
+# Architectural-object vocabulary for pass 1.
+#
+# Feb 2026 expansion — added the objects the founder confirmed as missing
+# during manual /admin/scene-test runs:
+#   bed, headboard, mirror, sink, toilet, bathtub, rug, carpet, shelf,
+#   nightstand.
+# Nineteen prompts exceeds SAM3's 16-per-request cap, so `detect_objects`
+# chunks the vocab and merges results — see that function for details.
 ARCHITECTURAL_VOCAB: tuple[str, ...] = (
     "wall", "ceiling", "floor", "cabinet", "countertop",
     "backsplash", "sofa", "curtain", "plant",
+    "bed", "headboard", "mirror", "sink", "toilet", "bathtub",
+    "rug", "carpet", "shelf", "nightstand",
 )
+
+
+# Object-label → material vocabulary override.
+#
+# Feb 2026 fix — the flat DEFAULT_MATERIAL_VOCAB in the endpoint was applied
+# to EVERY detected object, which forced things like "plant" and "mirror"
+# through prompts like "painted wall / wood paneling / tile", yielding
+# nonsense sub-detections. This map narrows Stage-B to a sensible subset
+# per object type; value `None` means "skip Stage-B entirely for this
+# object type". Objects not present in the map fall through to the caller's
+# default vocab (`_DEFAULT_MATERIAL_VOCAB` in server.py).
+MATERIAL_VOCAB_BY_OBJECT: dict[str, tuple[str, ...] | None] = {
+    "plant":     None,
+    "mirror":    ("glass panel", "metal fixture"),
+    "sink":      ("metal fixture", "stone slab", "tile"),
+    "toilet":    ("metal fixture", "glass panel"),
+    "bathtub":   ("stone slab", "tile", "metal fixture"),
+    "curtain":   ("fabric upholstery",),
+    "sofa":      ("fabric upholstery", "wood paneling", "metal fixture"),
+    "rug":       ("fabric upholstery",),
+    "carpet":    ("fabric upholstery",),
+    "bed":       ("fabric upholstery", "wood paneling"),
+    "headboard": ("fabric upholstery", "wood paneling"),
+    # cabinet / wall / ceiling / floor / countertop / backsplash / shelf /
+    # nightstand are NOT in the map — they fall through to the full
+    # material-surface vocabulary from the caller.
+}
 
 
 class Sam3Error(RuntimeError):
@@ -256,15 +291,26 @@ def detect_objects(image: Any, vocab: Iterable[str] | None = None) -> list[dict]
         List of {label, bbox=[x,y,w,h], polygon=[{x,y}...],
                  polygons=[[{x,y}...], ...], confidence} in ORIGINAL image
         coordinates.
+
+    Notes:
+        Roboflow SAM3 caps at 16 prompts per request. When `vocab` exceeds
+        that we chunk into ≤16-prompt requests against the SAME encoded
+        image and concatenate results. The image bytes are re-uploaded per
+        chunk (Roboflow serverless has no session reuse) — cost = ceil(N/16)
+        SAM3 calls.
     """
     prompts = list(vocab) if vocab is not None else list(ARCHITECTURAL_VOCAB)
     img = _to_pil(image)
     b64, sent_size, scale = _prepare_payload_image(img)
-    payload = _post_sam3(b64, prompts)
     scale_back = 1.0 / scale if scale else 1.0
-    dets = _parse_prompt_results(payload, scale_back)
-    logger.info("SAM3 detect_objects: prompts=%d detections=%d sent_size=%s",
-                len(prompts), len(dets), sent_size)
+    dets: list[dict] = []
+    for i in range(0, len(prompts), SAM3_MAX_PROMPTS):
+        chunk = prompts[i:i + SAM3_MAX_PROMPTS]
+        payload = _post_sam3(b64, chunk)
+        dets.extend(_parse_prompt_results(payload, scale_back))
+    logger.info("SAM3 detect_objects: prompts=%d chunks=%d detections=%d sent_size=%s",
+                len(prompts), (len(prompts) + SAM3_MAX_PROMPTS - 1) // SAM3_MAX_PROMPTS,
+                len(dets), sent_size)
     return dets
 
 
@@ -272,6 +318,7 @@ def detect_materials_in_crop(
     image: Any,
     bbox: list[float] | tuple[float, float, float, float],
     material_vocab: Iterable[str],
+    pad_thin_bbox: bool = True,
 ) -> dict:
     """Pass 2 — material segmentation within a single object crop.
 
@@ -280,11 +327,19 @@ def detect_materials_in_crop(
         bbox: [x, y, w, h] on the original image (from pass 1).
         material_vocab: prompt list e.g. ["painted wall", "wood paneling",
                         "tile"] — max 16.
+        pad_thin_bbox: when True (default), a bbox whose SHORT edge is <15%
+                       of the image's short edge is padded outward before
+                       cropping so SAM3 has enough spatial context to
+                       classify materials (fixes the "tile between cabinets"
+                       backsplash-strip dropout).
 
     Returns:
         {
           "crop_origin": [x, y],           # pixel offset in original image
-          "crop_size":   [w, h],           # pixel size of the crop sent
+                                           # (of the ACTUAL crop sent, i.e.
+                                           # AFTER any thin-bbox padding).
+          "crop_size":   [w, h],           # pixel size of the crop sent.
+          "bbox_padded": bool,             # True if thin-bbox padding fired.
           "detections":  [ ... ],          # each with LOCAL crop coords AND
                                            # `bbox_global`, `polygon_global`
                                            # mapping back to the original.
@@ -293,6 +348,33 @@ def detect_materials_in_crop(
     img = _to_pil(image)
     W, H = img.size
     x, y, w, h = [float(v) for v in bbox]
+
+    # ------------------------------------------------------------------
+    # Feb 2026 fix — thin-bbox padding.
+    # A thin backsplash strip (say 1400x60 on a 1400x900 image) cropped
+    # AS-IS gives SAM3 almost no vertical context; empirically the
+    # material pass returns 0 confident detections. Pad the short edge to
+    # reach TARGET_SHORT_EDGE_FRAC of the image's short edge. Preserves
+    # bbox centre; clipped to image bounds.
+    # ------------------------------------------------------------------
+    padded = False
+    if pad_thin_bbox:
+        THIN_THRESHOLD_FRAC = 0.15   # trigger when short edge < 15% of img short edge
+        TARGET_SHORT_EDGE_FRAC = 0.25  # pad to reach at least 25%
+        img_short = min(W, H)
+        bbox_short = min(w, h)
+        if bbox_short > 0 and bbox_short / img_short < THIN_THRESHOLD_FRAC:
+            target = TARGET_SHORT_EDGE_FRAC * img_short
+            if w <= h:  # width is the short axis
+                extra = max(0.0, target - w)
+                x -= extra / 2
+                w += extra
+            else:  # height is the short axis
+                extra = max(0.0, target - h)
+                y -= extra / 2
+                h += extra
+            padded = True
+
     x0 = max(0, int(round(x)))
     y0 = max(0, int(round(y)))
     x1 = min(W, int(round(x + w)))
@@ -321,12 +403,13 @@ def detect_materials_in_crop(
             d["polygon_global"] = None
     logger.info(
         "SAM3 detect_materials_in_crop: crop_origin=(%d,%d) crop_size=%s "
-        "prompts=%d detections=%d",
-        x0, y0, (x1 - x0, y1 - y0), len(list(material_vocab)), len(local),
+        "prompts=%d detections=%d padded=%s",
+        x0, y0, (x1 - x0, y1 - y0), len(list(material_vocab)), len(local), padded,
     )
     return {
         "crop_origin": [x0, y0],
         "crop_size": [x1 - x0, y1 - y0],
+        "bbox_padded": padded,
         "detections": local,
     }
 

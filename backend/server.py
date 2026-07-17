@@ -7465,8 +7465,8 @@ async def admin_test_scene_segmentation(
                        overrides the built-in list.
     """
     from intelligence.scene_segmentation import (
-        ARCHITECTURAL_VOCAB, Sam3Error, detect_materials_in_crop,
-        detect_objects, filter_detections,
+        ARCHITECTURAL_VOCAB, MATERIAL_VOCAB_BY_OBJECT, Sam3Error,
+        detect_materials_in_crop, detect_objects, filter_detections,
     )
 
     raw = await file.read()
@@ -7483,6 +7483,9 @@ async def admin_test_scene_segmentation(
 
     obj_prompts = _parse_vocab(object_vocab, ARCHITECTURAL_VOCAB)
     mat_prompts = _parse_vocab(material_vocab, _DEFAULT_MATERIAL_VOCAB)
+    # When the caller explicitly overrides material_vocab, respect it —
+    # they're deliberately testing. Otherwise use the object-aware map.
+    use_object_aware_vocab = not (material_vocab and material_vocab.strip())
 
     try:
         from PIL import Image
@@ -7504,16 +7507,39 @@ async def admin_test_scene_segmentation(
                 "materials": [],
                 "material_error": None,
             }
+            # Object-aware material vocab (Fix 2). When the caller hasn't
+            # overridden material_vocab, look up an object-specific subset.
+            # A value of `None` in MATERIAL_VOCAB_BY_OBJECT means skip the
+            # material pass entirely (e.g. plant / mirror-glass — a
+            # generic material sub-detection doesn't add signal).
+            obj_label_l = str(obj.get("label") or "").lower().strip()
+            if use_object_aware_vocab and obj_label_l in MATERIAL_VOCAB_BY_OBJECT:
+                mapped = MATERIAL_VOCAB_BY_OBJECT[obj_label_l]
+                if mapped is None:
+                    entry["material_error"] = (
+                        f"material pass skipped — no meaningful material "
+                        f"vocab for object type '{obj_label_l}'"
+                    )
+                    entry["material_vocab_used"] = []
+                    object_results.append(entry)
+                    continue
+                effective_mat_prompts = list(mapped)
+            else:
+                effective_mat_prompts = mat_prompts
+            entry["material_vocab_used"] = effective_mat_prompts
             if obj["bbox"] is None:
                 entry["material_error"] = "object has no bbox — skipped material pass"
             else:
                 try:
-                    mat = detect_materials_in_crop(img, obj["bbox"], mat_prompts)
+                    mat = detect_materials_in_crop(
+                        img, obj["bbox"], effective_mat_prompts,
+                    )
                     mat_filtered = filter_detections(
                         mat["detections"], min_confidence=min_confidence,
                     )
                     entry["crop_origin"] = mat["crop_origin"]
                     entry["crop_size"] = mat["crop_size"]
+                    entry["bbox_padded"] = mat.get("bbox_padded", False)
                     entry["materials"] = mat_filtered
                 except Sam3Error as e:
                     entry["material_error"] = str(e)
