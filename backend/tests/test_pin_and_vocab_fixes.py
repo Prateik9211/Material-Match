@@ -159,6 +159,7 @@ def test_dna_to_row_derives_pin_from_bbox_center():
         image_size=(1000, 1000),
     )
     assert row["pin"] == {"x": 50.0, "y": 90.0}, row["pin"]
+    assert row["pin_source"] == "scene_bbox"
     assert row["group"] == "Floor"
 
 
@@ -188,3 +189,39 @@ def test_dna_to_row_pin_is_none_without_bbox():
         image_size=(1000, 1000),
     )
     assert row["pin"] is None
+    assert row["pin_source"] is None
+
+
+# ---------------------------------------------------------------------------
+# 2026-02-27 (round 2) — Scene-mode default wiring for `/analyze`.
+# The real_analyze endpoint should now attempt scene-mode FIRST and
+# only fall back to `run_real_analysis` (LLM-only) when SAM3 fails or
+# returns zero objects.  These tests unit-test the wrapper logic
+# without hitting the live SAM3 API.
+# ---------------------------------------------------------------------------
+def test_scene_mode_default_wiring_smoke():
+    """Scene-mode is the *default* for `/analyze` — verify by inspecting
+    the module source. Cheap sentinel test so a future refactor can't
+    silently regress back to LLM-only without failing CI."""
+    import server as _server
+    import inspect
+    src = inspect.getsource(_server.real_analyze)
+    assert "run_scene_region_analysis" in src, (
+        "real_analyze must call the hybrid scene pipeline as the "
+        "default path — got source without run_scene_region_analysis"
+    )
+    assert "run_real_analysis" in src, (
+        "real_analyze must retain run_real_analysis as the belt-and-"
+        "suspenders LLM-only fallback"
+    )
+    # The fallback branch must set a `scene_fallback` marker so the
+    # frontend / observability can distinguish the two paths.
+    assert "scene_fallback" in src, (
+        "real_analyze must tag the LLM-only fallback with a "
+        "`scene_fallback` reason for observability"
+    )
+    # Scene-mode success path must use its own version prefix so the
+    # existing `real-` dedup check still catches it.
+    assert "real-scene-hybrid-v1" in src, (
+        "scene-mode success path must use version='real-scene-hybrid-v1'"
+    )

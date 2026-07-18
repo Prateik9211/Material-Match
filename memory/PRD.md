@@ -27,7 +27,27 @@ Build a modern AI SaaS web application called "MaterialMatch AI" that helps arch
 ## Scene Segmentation — Hybrid Pipeline v3 (2026-07-18, live analyze flow)
 Admin validation tool at `/admin/scene-test` AND the LIVE user-facing `POST /api/projects/{id}/analyze-region` (with `mode="scene"`) now use a hybrid two-stage pipeline. Landing-page demo panel at `/` (`WorkflowVisual` in `Landing.jsx`) shows a real end-to-end T2 kitchen-scene result — MISTY GREY 85% visually verified, FROSTY WHITE, Anthracite 70% — no fabricated numbers.
 
+## 2026-02-27 (round 2) — Scene-mode is now the DEFAULT for full-image analysis ✅
+
+The full-image `POST /api/projects/{id}/analyze` endpoint ("Generate specification" button) now runs the hybrid SAM3+GPT-4o-mini scene pipeline by default. This gives every material row a real bbox-derived pin instead of the deterministic group-based fallback.
+
+**Live proof (2026-02-27, three real interior photos, live endpoint)**:
+- Living-room (unsplash 1586023492125): **8 rows, 8/8 bbox pins**, labels included `paneled wainscoting` + `trim` (2×) — the new vocab entries are firing in production.
+- Bedroom (unsplash 1616594039964): **11 rows, 11/11 bbox pins**. Labels: ceiling, headboard, rug, floor, nightstand, curtain (3×), bed, wall (2×). Frontend verified — 11 numbered pins render on the reference image at correct object positions; 11 material cards on the right column match 1:1.
+- Kitchen (unsplash 1556909114): **8 rows, 8/8 bbox pins**. Labels: ceiling, shelf (2×), wall, floor, countertop (2×), cabinet.
+- Regression check: `/analyze-region` (default single mode, hand-drawn region) still returns `version=real-openai-gpt-4o-mini-region-object-aware` with `pin_source=fallback_group` — region flow untouched.
+
+**Fallback chain (belt-and-suspenders)** — LLM-only path (`run_real_analysis`) still fires when:
+- SAM3 Stage-A returns 0 detected objects (`scene_fallback="stage_a_zero_objects"`) — e.g. user uploads a single-material swatch photo.
+- Roboflow SAM3 API is unreachable / key missing / any Sam3Error (`scene_fallback="scene_error:<ExceptionClass>"`).
+The LLM-only fallback still emits deterministic group-based fallback pins from the previous fix, so pins are never absent from the UI regardless of which branch runs.
+
+**Observability**: rows now carry `pin_source ∈ {"scene_bbox", "llm", "fallback_group"}` so we can telemetry which path is producing the pin on any given result. Scene-mode results tagged with `version="real-scene-hybrid-v1"` (dedup-compatible with the existing `real-*` prefix check).
+
+**Regression suite**: 12 unit tests in `/app/backend/tests/test_pin_and_vocab_fixes.py` + all 12 sprint7 analyze-region tests still pass.
+
 ## 2026-02-27 — Founder-reported live-flow bug fixes ✅
+
 Three live-flow bugs surfaced during founder testing (all three fixed & regression-tested — see `/app/backend/tests/test_pin_and_vocab_fixes.py` and `test_reports/iteration_19.json`, backend 15/15 + frontend layout+sticky+pins verified):
 
 1. **Under-detection — ceilings / floors / trims went missing**

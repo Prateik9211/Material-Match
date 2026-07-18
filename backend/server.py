@@ -1236,10 +1236,72 @@ async def real_analyze(project_id: str, user: dict = Depends(get_current_user)):
     started = datetime.now(timezone.utc)
     analysis = None
     try:
-        analysis = await run_real_analysis(
-            project_id, user["id"], ref_b64,
-            region=user.get("preferred_region", DEFAULT_REGION),
-        )
+        # 2026-02-27 — Scene-mode hybrid pipeline is now the DEFAULT for
+        # the "Generate specification" full-image path. SAM3 Stage-A
+        # detects architectural objects (wall / ceiling / floor / cabinet
+        # etc.), then per-object polygon-masked GPT-4o-mini classifies
+        # each material.  Every returned row has a `pin` derived from
+        # the bbox centre so the reference-image overlay has real
+        # anchors instead of the group-based fallback.
+        #
+        # Belt-and-suspenders fallback → run_real_analysis (LLM-only)
+        # kicks in when:
+        #   * SAM3 Stage-A returns 0 detected objects (e.g. the upload
+        #     is actually an isolated swatch, not a room scene)
+        #   * The Roboflow SAM3 API is unavailable, key is missing, or
+        #     any other Sam3Error is raised
+        #   * The hybrid pipeline throws unexpectedly
+        # The LLM-only path still emits deterministic group-based
+        # fallback pins so pins are never absent from the UI.
+        scene_ok = False
+        scene_fallback_reason: str | None = None
+        try:
+            scene_result, _per_object_crops = await run_scene_region_analysis(
+                project_id, user["id"], ref_b64,
+                region=user.get("preferred_region", DEFAULT_REGION),
+            )
+            if scene_result.get("rows"):
+                scene_result["version"] = "real-scene-hybrid-v1"
+                # Preserve the existing analyze-endpoint contract: keep
+                # the top-level `summary` shape and a summary_v2 stub
+                # like run_real_analysis produces, so downstream UI
+                # code doesn't have to branch.
+                scene_result.setdefault("summary_v2", None)
+                analysis = scene_result
+                scene_ok = True
+                logger.info(
+                    "[analyze %s] scene-mode DEFAULT: %d rows, stage-a=%s",
+                    project_id, len(scene_result["rows"]),
+                    scene_result.get("scene_stage_a"),
+                )
+            else:
+                scene_fallback_reason = "stage_a_zero_objects"
+        except Exception as exc:
+            # Sam3Error (missing key, network), asyncio issues, PIL
+            # decoding errors — all funnel to the LLM-only path so the
+            # user still gets a spec.
+            scene_fallback_reason = f"scene_error:{type(exc).__name__}"
+            logger.warning(
+                "[analyze %s] scene-mode failed (%s) — falling back to "
+                "LLM-only run_real_analysis. reason=%r",
+                project_id, type(exc).__name__, str(exc)[:200],
+            )
+
+        if not scene_ok:
+            analysis = await run_real_analysis(
+                project_id, user["id"], ref_b64,
+                region=user.get("preferred_region", DEFAULT_REGION),
+            )
+            if scene_fallback_reason:
+                analysis["scene_fallback"] = scene_fallback_reason
+                logger.info(
+                    "[analyze %s] LLM-only fallback used (reason=%s), "
+                    "rows=%d — pins will use deterministic group-based "
+                    "fallback for LLM-omitted coordinates.",
+                    project_id, scene_fallback_reason,
+                    len(analysis.get("rows") or []),
+                )
+
         _enrich_rows_with_catalogue(analysis.get("rows") or [])
     except HTTPException:
         day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -3135,6 +3197,7 @@ def _dna_to_row(
     # scene mode is no longer at the mercy of the LLM optionally
     # emitting a `pin` field).
     pin: dict | None = None
+    pin_source: str | None = None
     if bbox and image_size and image_size[0] and image_size[1]:
         try:
             bx, by, bw, bh = [float(v) for v in bbox]
@@ -3143,6 +3206,7 @@ def _dna_to_row(
             cy_pct = ((by + bh / 2.0) / H) * 100.0
             if 0 <= cx_pct <= 100 and 0 <= cy_pct <= 100:
                 pin = {"x": round(cx_pct, 1), "y": round(cy_pct, 1)}
+                pin_source = "scene_bbox"
         except (TypeError, ValueError):
             pin = None
 
@@ -3175,6 +3239,7 @@ def _dna_to_row(
         # Numbered pin (bbox-centre) — consumed by the RegionSelector
         # overlay on the reference image.
         "pin": pin,
+        "pin_source": pin_source,
         # Scene-mode extras — visible in the response so the UI can draw
         # the overlay without a second server round-trip.
         "scene_bbox": bbox,
