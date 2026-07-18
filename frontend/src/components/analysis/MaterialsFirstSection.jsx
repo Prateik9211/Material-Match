@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { ChevronDown, ChevronRight, MapPin, ListChecks, Check, Star, Layers, Search, Target, Sparkles, Info } from "lucide-react";
 
 const CLASSIFICATION_STYLE = {
@@ -386,6 +386,22 @@ function BrainReasoning({ brain, index }) {
 function MaterialCard({ row, index, onAddToShortlist, shortlisted, onAddCatalogueToShortlist, shortlistedCatalogueIds, focused, onHoverCard }) {
   const [showMore, setShowMore] = useState(false);
   const [showAlts, setShowAlts] = useState(false);
+  const cardRef = useRef(null);
+
+  // 2026-02-27 — Scroll into view when this card becomes the focused
+  // one via a pin hover on the reference image (the card may be off-
+  // screen in the right-column scroll area). We only scroll when the
+  // card is NOT already in the viewport, so hovering an already-visible
+  // card doesn't cause a jarring reflow.  Smooth scroll + `block:
+  // "center"` keeps the card comfortably readable after the jump.
+  useEffect(() => {
+    if (!focused || !cardRef.current) return;
+    const rect = cardRef.current.getBoundingClientRect();
+    const fullyInView = rect.top >= 0 && rect.bottom <= window.innerHeight;
+    if (!fullyInView) {
+      cardRef.current.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }, [focused]);
   const classification = row.classification || "Material Surface";
   const isPaint = (row.material_family || "").toLowerCase() === "paint"
     || (row.zone || "").toLowerCase().includes("paint");
@@ -409,8 +425,9 @@ function MaterialCard({ row, index, onAddToShortlist, shortlisted, onAddCatalogu
 
   return (
     <article
+      ref={cardRef}
       className={`bg-white border rounded-2xl overflow-hidden shadow-soft hover:shadow-hover transition-all ${
-        focused ? "border-charcoal ring-2 ring-charcoal/10" : "border-stone-border-soft"
+        focused ? "border-charcoal ring-2 ring-charcoal/15 shadow-hover" : "border-stone-border-soft"
       }`}
       data-testid={`material-card-${index}`}
       onMouseEnter={() => onHoverCard && onHoverCard(index)}

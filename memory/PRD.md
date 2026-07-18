@@ -46,6 +46,18 @@ The LLM-only fallback still emits deterministic group-based fallback pins from t
 
 **Regression suite**: 12 unit tests in `/app/backend/tests/test_pin_and_vocab_fixes.py` + all 12 sprint7 analyze-region tests still pass.
 
+## 2026-02-27 (round 3) — Hover-to-highlight ✅ (frontend-only, tiny)
+
+Small frontend polish: hovering a material card on the right column glows the matching numbered pin on the reference image, and hovering a pin on the image highlights the matching card (auto-scrolling it into view if off-screen). 90% of the plumbing was already there from the split-layout work — the components had `focusedIndex` state, `onHoverPin`, `onHoverCard`, and the pin/card styling both respected a `focused` prop. Two remaining gaps closed:
+
+1. `MaterialCard` now uses `useRef` + `useEffect` to call `scrollIntoView({block:"center", behavior:"smooth"})` when `focused` becomes true — but only when the card is not already fully in the viewport, so hovering an already-visible card doesn't cause a jarring reflow.
+2. Focused-card ring bumped from `ring-charcoal/10` → `ring-charcoal/15 shadow-hover` for a slightly more visible highlight (still subtle, matches the design system).
+
+No backend changes. No new dependencies. No new tests — verified with a DOM check in Playwright:
+- Hovering card #3 → pin-3 grows and inverts (w-8 + bg-charcoal + ring-4) while pin-0 stays small.
+- Hovering pin-7 (initially with card off-screen at scrollY=5478px) → card scrolls into view (delta -5161px), both pin-7 and card-7 receive focused styling at the same instant (verified at t=50ms).
+- Moving the mouse away → focus clears on both sides.
+
 ## 2026-02-27 — Founder-reported live-flow bug fixes ✅
 
 Three live-flow bugs surfaced during founder testing (all three fixed & regression-tested — see `/app/backend/tests/test_pin_and_vocab_fixes.py` and `test_reports/iteration_19.json`, backend 15/15 + frontend layout+sticky+pins verified):
