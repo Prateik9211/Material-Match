@@ -1,30 +1,39 @@
-"""SAM3 (Roboflow-hosted) scene segmentation — validation-only helper.
+"""Scene segmentation — hybrid SAM3 (Stage A) + GPT-4o-mini (Stage B).
 
-Two-pass strategy the product owner wants to validate on 30-40 test images:
+Two-pass strategy:
 
-  Pass 1 — `detect_objects(image)`
-      Send the whole room photo with a fixed architectural vocabulary
-      ("wall", "cabinet", "countertop", ...). SAM3 returns one segmentation
-      per prompt with polygon masks and confidence scores.
+  Stage A — `detect_objects(image)` (unchanged)
+      Send the whole room photo to Roboflow SAM3 with a fixed
+      architectural vocabulary ("wall", "cabinet", "countertop", ...).
+      SAM3 returns one segmentation per prompt with polygon masks and
+      confidence scores.
 
-  Pass 2 — `detect_materials_in_crop(image, bbox, material_vocab)`
-      Crop the original image to the object's bbox, resend to SAM3 with
-      material-concept prompts ("painted wall", "wood paneling", "tile").
-      Returns detections in the CROP's local coordinates plus the crop
-      origin so callers can map back to the original image.
+  Stage B — `classify_object_material(image, bbox, object_label)` (NEW)
+      Crop the original image to the object's bbox and run material
+      identification through the SAME production function the live
+      matcher uses: `intelligence.dna.generate_swatch_dna` (GPT-4o-mini
+      via `EMERGENT_LLM_KEY`).  This produces a full Visual DNA dict
+      (material_family, surface_type, primary_color, pattern, finish,
+      gloss_level, canonical_description, ...) instead of SAM3's
+      single-label + mask output.
 
-Post-processing — `filter_detections(detections, min_confidence)`
-      Drops sub-threshold detections and dedups masks with heavy overlap.
+      For three well-behaved object types we skip the LLM call entirely
+      because a deterministic answer is more accurate AND free:
+          mirror        → Glass panel
+          sink | faucet → Metal fixture
+          plant         → skip material (no useful material to report)
 
-Deliberately self-contained: no imports from `dna.py`, `retrieval.py`,
-`rerank.py`, `embeddings.py`, or the catalogue matching code. This is a
-validation harness, not part of the live user pipeline.
+Post-processing — `filter_detections(detections, min_confidence)` (unchanged)
+      Drops sub-threshold Stage-A detections and dedups masks with
+      heavy overlap.
 
-Requires env var `ROBOFLOW_API_KEY`. Fails fast with a clear error when
-missing so callers can surface an admin-friendly message.
+Requires:
+    ROBOFLOW_API_KEY   — Stage A (SAM3 hosted)
+    EMERGENT_LLM_KEY   — Stage B (GPT-4o-mini via emergentintegrations)
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import logging
@@ -38,22 +47,19 @@ logger = logging.getLogger(__name__)
 
 SAM3_ENDPOINT = "https://serverless.roboflow.com/sam3/concept_segment"
 SAM3_TIMEOUT_S = int(os.environ.get("SAM3_TIMEOUT_S", "60"))
-SAM3_MAX_LONGEST_EDGE = 1024   # Roboflow SAM3 hosted cap (1024x1024).
-SAM3_MAX_BYTES = 2 * 1024 * 1024  # Roboflow SAM3 hosted cap (2 MB).
-SAM3_MAX_PROMPTS = 16          # Roboflow SAM3 hosted cap.
+SAM3_MAX_LONGEST_EDGE = 1024
+SAM3_MAX_BYTES = 2 * 1024 * 1024
+SAM3_MAX_PROMPTS = 16
 
-# Architectural-object vocabulary for pass 1.
-#
-# Feb 2026 expansion — added the objects the founder confirmed as missing
-# during manual /admin/scene-test runs:
-#   bed, headboard, mirror, sink, toilet, bathtub, rug, carpet, shelf,
-#   nightstand.
-# Nineteen prompts exceeds SAM3's 16-per-request cap, so `detect_objects`
-# chunks the vocab and merges results — see that function for details.
-#
-# 21-image sweep follow-up — `carpet` removed: it duplicated every `rug`
-# detection (identical concept in SAM3's text space, guaranteed double
-# count) and false-fired on bare-wood scenes. `rug` covers the concept.
+# Stage-B (GPT-4o-mini via generate_swatch_dna) config — mirrors the live
+# matcher's defaults so the SAM3 debug tool exercises the same code path.
+VISUAL_DNA_PROVIDER = os.environ.get("VISUAL_DNA_PROVIDER", "openai")
+VISUAL_DNA_MODEL = os.environ.get("VISUAL_DNA_MODEL", "gpt-4o-mini")
+DNA_TIMEOUT_S = int(os.environ.get("VISUAL_DNA_TIMEOUT_S", "45"))
+
+# Architectural-object vocabulary for Stage A.  Nineteen prompts exceeds
+# SAM3's 16-per-request cap, so `detect_objects` chunks the vocab and
+# merges results — see that function for details.
 ARCHITECTURAL_VOCAB: tuple[str, ...] = (
     "wall", "ceiling", "floor", "cabinet", "countertop",
     "backsplash", "sofa", "curtain", "plant",
@@ -62,29 +68,41 @@ ARCHITECTURAL_VOCAB: tuple[str, ...] = (
 )
 
 
-# Object-label → material vocabulary override.
-#
-# Feb 2026 fix — the flat DEFAULT_MATERIAL_VOCAB in the endpoint was applied
-# to EVERY detected object, which forced things like "plant" and "mirror"
-# through prompts like "painted wall / wood paneling / tile", yielding
-# nonsense sub-detections. This map narrows Stage-B to a sensible subset
-# per object type; value `None` means "skip Stage-B entirely for this
-# object type". Objects not present in the map fall through to the caller's
-# default vocab (`_DEFAULT_MATERIAL_VOCAB` in server.py).
-MATERIAL_VOCAB_BY_OBJECT: dict[str, tuple[str, ...] | None] = {
-    "plant":     None,
-    "mirror":    ("glass panel", "metal fixture"),
-    "sink":      ("metal fixture", "stone slab", "tile"),
-    "toilet":    ("metal fixture", "glass panel"),
-    "bathtub":   ("stone slab", "tile", "metal fixture"),
-    "curtain":   ("fabric upholstery",),
-    "sofa":      ("fabric upholstery", "wood paneling", "metal fixture"),
-    "rug":       ("fabric upholstery",),
-    "bed":       ("fabric upholstery", "wood paneling"),
-    "headboard": ("fabric upholstery", "wood paneling"),
-    # cabinet / wall / ceiling / floor / countertop / backsplash / shelf /
-    # nightstand are NOT in the map — they fall through to the full
-    # material-surface vocabulary from the caller.
+# Deterministic shortcuts — no LLM call needed for these object types.
+#   value = the material result to return
+#   value == None → skip material entirely
+DETERMINISTIC_MATERIAL: dict[str, dict | None] = {
+    "mirror": {
+        "material_family": "Glass",
+        "surface_type": "mirror glass",
+        "primary_color": {"name": "reflective", "hex": ""},
+        "pattern": "plain solid",
+        "finish": "polished",
+        "gloss_level": "high",
+        "canonical_description": "Reflective mirror glass panel.",
+        "source": "shortcut",
+    },
+    "sink": {
+        "material_family": "Metal",
+        "surface_type": "metal fixture",
+        "primary_color": {"name": "silver", "hex": "#C0C0C0"},
+        "pattern": "plain solid",
+        "finish": "brushed",
+        "gloss_level": "medium",
+        "canonical_description": "Metal plumbing fixture, typical sink/basin surface.",
+        "source": "shortcut",
+    },
+    "faucet": {
+        "material_family": "Metal",
+        "surface_type": "metal fixture",
+        "primary_color": {"name": "silver", "hex": "#C0C0C0"},
+        "pattern": "plain solid",
+        "finish": "brushed",
+        "gloss_level": "medium",
+        "canonical_description": "Metal plumbing fixture, typical faucet/tap surface.",
+        "source": "shortcut",
+    },
+    "plant": None,
 }
 
 
@@ -94,7 +112,7 @@ class Sam3Error(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# Internal helpers (Stage A — unchanged from previous SAM3-only build)
 # ---------------------------------------------------------------------------
 def _get_api_key() -> str:
     key = os.environ.get("ROBOFLOW_API_KEY", "").strip()
@@ -113,7 +131,6 @@ def _to_pil(image: Any) -> Image.Image:
     if isinstance(image, (bytes, bytearray)):
         return Image.open(io.BytesIO(bytes(image))).convert("RGB")
     if isinstance(image, str):
-        # base64 (with or without data-URL prefix) OR filesystem path.
         if image.startswith("data:"):
             image = image.split(",", 1)[-1]
         if len(image) > 400 and not os.path.isfile(image):
@@ -126,11 +143,7 @@ def _to_pil(image: Any) -> Image.Image:
 
 
 def _prepare_payload_image(img: Image.Image) -> tuple[str, tuple[int, int], float]:
-    """Downscale to Roboflow's 1024/2MB limits, return (base64, (W,H), scale).
-
-    `scale` is (sent_edge / original_edge) — the caller multiplies detection
-    coordinates by 1/scale to map back to the original image.
-    """
+    """Downscale to Roboflow's 1024/2MB limits, return (base64, (W,H), scale)."""
     w, h = img.size
     longest = max(w, h)
     scale = 1.0
@@ -202,30 +215,18 @@ def _polygon_bbox(polygon: list[dict[str, float]]) -> tuple[float, float, float,
     return (x_min, y_min, x_max - x_min, y_max - y_min)
 
 
+def _scale_point(pt: Any, scale_back: float) -> dict[str, float]:
+    if isinstance(pt, dict):
+        return {"x": float(pt.get("x", 0)) * scale_back,
+                "y": float(pt.get("y", 0)) * scale_back}
+    if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+        return {"x": float(pt[0]) * scale_back,
+                "y": float(pt[1]) * scale_back}
+    return {"x": 0.0, "y": 0.0}
+
+
 def _parse_prompt_results(payload: dict, scale_back: float) -> list[dict]:
-    """Flatten Roboflow SAM3's `prompt_results` into a list of detections.
-
-    Real Roboflow SAM3 schema (verified against a live call):
-      {
-        "prompt_results": [
-          {
-            "prompt_index": 0,
-            "echo": {"type": "text", "text": "cabinet", "num_boxes": 0},
-            "predictions": [
-              {
-                "masks": [ [[x, y], [x, y], ...], [[x, y], ...] ],  # list of contours
-                "confidence": 0.7539,
-                "format": "polygon"
-              }, ...
-            ]
-          }, ...
-        ],
-        "time": ...
-      }
-
-    `scale_back` (>= 1.0) multiplies polygon and bbox coordinates so they
-    map to the caller's ORIGINAL (pre-downscale) image space.
-    """
+    """Flatten Roboflow SAM3's `prompt_results` into a list of detections."""
     detections: list[dict] = []
     prompt_results = payload.get("prompt_results") or []
     for pr in prompt_results:
@@ -236,8 +237,6 @@ def _parse_prompt_results(payload: dict, scale_back: float) -> list[dict]:
         preds = pr.get("predictions") or []
         for p in preds:
             conf = float(p.get("confidence", p.get("score", 0.0)) or 0.0)
-            # Roboflow returns `masks`: a list of contours, each a list of
-            # [x, y] pairs.
             contours = p.get("masks") or []
             all_contours: list[list[dict[str, float]]] = []
             for contour in contours:
@@ -256,16 +255,6 @@ def _parse_prompt_results(payload: dict, scale_back: float) -> list[dict]:
     return detections
 
 
-def _scale_point(pt: Any, scale_back: float) -> dict[str, float]:
-    if isinstance(pt, dict):
-        return {"x": float(pt.get("x", 0)) * scale_back,
-                "y": float(pt.get("y", 0)) * scale_back}
-    if isinstance(pt, (list, tuple)) and len(pt) >= 2:
-        return {"x": float(pt[0]) * scale_back,
-                "y": float(pt[1]) * scale_back}
-    return {"x": 0.0, "y": 0.0}
-
-
 def _bbox_iou(a: list[float] | tuple, b: list[float] | tuple) -> float:
     ax, ay, aw, ah = a
     bx, by, bw, bh = b
@@ -281,10 +270,10 @@ def _bbox_iou(a: list[float] | tuple, b: list[float] | tuple) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Stage A — Public API (unchanged)
 # ---------------------------------------------------------------------------
 def detect_objects(image: Any, vocab: Iterable[str] | None = None) -> list[dict]:
-    """Pass 1 — architectural-object detection.
+    """Stage A — architectural-object detection via SAM3.
 
     Args:
         image: PIL Image, raw bytes, base64 string, or filesystem path.
@@ -294,13 +283,6 @@ def detect_objects(image: Any, vocab: Iterable[str] | None = None) -> list[dict]
         List of {label, bbox=[x,y,w,h], polygon=[{x,y}...],
                  polygons=[[{x,y}...], ...], confidence} in ORIGINAL image
         coordinates.
-
-    Notes:
-        Roboflow SAM3 caps at 16 prompts per request. When `vocab` exceeds
-        that we chunk into ≤16-prompt requests against the SAME encoded
-        image and concatenate results. The image bytes are re-uploaded per
-        chunk (Roboflow serverless has no session reuse) — cost = ceil(N/16)
-        SAM3 calls.
     """
     prompts = list(vocab) if vocab is not None else list(ARCHITECTURAL_VOCAB)
     img = _to_pil(image)
@@ -317,222 +299,6 @@ def detect_objects(image: Any, vocab: Iterable[str] | None = None) -> list[dict]
     return dets
 
 
-def _max_pad_in_direction(
-    direction: str,
-    bbox: tuple[float, float, float, float],
-    others: list[tuple[float, float, float, float]],
-    W: int, H: int,
-) -> float:
-    """Maximum pixel distance we can expand `bbox` in one direction before
-    entering either the image boundary OR another object's bbox territory.
-
-    A neighbor is a "blocker" for direction `d` when it has any pixel on
-    the side of `bbox` where we're trying to expand AND its perpendicular
-    range overlaps ours. Blockers cap the padding at the gap between our
-    edge and the nearest blocker's edge. If a blocker already OVERLAPS the
-    current bbox (i.e. crosses our edge in the same direction we're
-    expanding), the max pad becomes 0 — don't fight for shared space.
-    """
-    bx, by, bw, bh = bbox
-    if direction == "up":
-        limit = by
-        for nx, ny, nw, nh in others:
-            if nx + nw <= bx or nx >= bx + bw:   # no horizontal overlap
-                continue
-            if ny >= by:                          # entirely below our top
-                continue
-            n_bottom = ny + nh
-            if n_bottom <= by:                    # sits cleanly above; gap
-                limit = min(limit, by - n_bottom)
-            else:                                 # crosses our top → 0
-                return 0.0
-        return max(0.0, limit)
-    if direction == "down":
-        bottom = by + bh
-        limit = H - bottom
-        for nx, ny, nw, nh in others:
-            if nx + nw <= bx or nx >= bx + bw:
-                continue
-            if ny + nh <= bottom:                 # entirely above our bottom
-                continue
-            if ny >= bottom:                      # sits cleanly below
-                limit = min(limit, ny - bottom)
-            else:
-                return 0.0
-        return max(0.0, limit)
-    if direction == "left":
-        limit = bx
-        for nx, ny, nw, nh in others:
-            if ny + nh <= by or ny >= by + bh:
-                continue
-            if nx >= bx:
-                continue
-            n_right = nx + nw
-            if n_right <= bx:
-                limit = min(limit, bx - n_right)
-            else:
-                return 0.0
-        return max(0.0, limit)
-    if direction == "right":
-        right = bx + bw
-        limit = W - right
-        for nx, ny, nw, nh in others:
-            if ny + nh <= by or ny >= by + bh:
-                continue
-            if nx + nw <= right:
-                continue
-            if nx >= right:
-                limit = min(limit, nx - right)
-            else:
-                return 0.0
-        return max(0.0, limit)
-    return 0.0
-
-
-def detect_materials_in_crop(
-    image: Any,
-    bbox: list[float] | tuple[float, float, float, float],
-    material_vocab: Iterable[str],
-    pad_thin_bbox: bool = True,
-    other_bboxes: Iterable[list[float] | tuple[float, float, float, float]] | None = None,
-) -> dict:
-    """Pass 2 — material segmentation within a single object crop.
-
-    Args:
-        image: same accepted types as `detect_objects`, in ORIGINAL coords.
-        bbox: [x, y, w, h] on the original image (from pass 1).
-        material_vocab: prompt list e.g. ["painted wall", "wood paneling",
-                        "tile"] — max 16.
-        pad_thin_bbox: when True (default), a bbox whose SHORT edge is <15%
-                       of the image's short edge is padded outward before
-                       cropping so SAM3 has enough spatial context to
-                       classify materials (fixes the "tile between cabinets"
-                       backsplash-strip dropout).
-        other_bboxes: optional list of sibling object bboxes (from the same
-                      detect_objects call). When provided, padding is
-                      clipped so it never expands into another already-
-                      detected object's territory. Prevents cross-object
-                      material bleed (e.g. floor padding upward into
-                      cabinet space and returning "wood paneling").
-
-    Returns:
-        {
-          "crop_origin": [x, y],           # pixel offset in original image
-                                           # (of the ACTUAL crop sent, i.e.
-                                           # AFTER any thin-bbox padding).
-          "crop_size":   [w, h],           # pixel size of the crop sent.
-          "bbox_padded": bool,             # True if thin-bbox padding fired.
-          "pad_applied": {up,down,left,right},  # per-side px actually padded.
-          "detections":  [ ... ],          # each with LOCAL crop coords AND
-                                           # `bbox_global`, `polygon_global`
-                                           # mapping back to the original.
-        }
-    """
-    img = _to_pil(image)
-    W, H = img.size
-    x, y, w, h = [float(v) for v in bbox]
-
-    # Normalize sibling bboxes and remove any that are byte-identical to ours
-    # (defensive: caller might forget to exclude self).
-    sibs: list[tuple[float, float, float, float]] = []
-    if other_bboxes:
-        for ob in other_bboxes:
-            if not ob or len(ob) < 4:
-                continue
-            t = tuple(float(v) for v in ob[:4])
-            if t == (x, y, w, h):
-                continue
-            sibs.append(t)
-
-    # ------------------------------------------------------------------
-    # Thin-bbox padding, now NEIGHBOR-AWARE.
-    #   1. Trigger when short edge < 15% of image short edge.
-    #   2. Target: extend short edge to reach 25% of image short edge.
-    #   3. Split the required extra 50/50 between the two sides of the
-    #      short axis, but cap each side by the max-safe-pad computed
-    #      against sibling bboxes. Unused half is redistributed to the
-    #      other side (if that side has room). If total available space
-    #      is less than target, accept the tighter crop — never bleed.
-    # ------------------------------------------------------------------
-    padded = False
-    pad_up = pad_down = pad_left = pad_right = 0.0
-    if pad_thin_bbox:
-        THIN_THRESHOLD_FRAC = 0.15
-        TARGET_SHORT_EDGE_FRAC = 0.25
-        img_short = min(W, H)
-        bbox_short = min(w, h)
-        if bbox_short > 0 and bbox_short / img_short < THIN_THRESHOLD_FRAC:
-            target = TARGET_SHORT_EDGE_FRAC * img_short
-            cur_bbox = (x, y, w, h)
-            if w <= h:  # short axis is width → pad left/right
-                extra = max(0.0, target - w)
-                half = extra / 2
-                max_l = _max_pad_in_direction("left", cur_bbox, sibs, W, H)
-                max_r = _max_pad_in_direction("right", cur_bbox, sibs, W, H)
-                pad_left = min(half, max_l)
-                pad_right = min(extra - pad_left, max_r)
-                # Redistribute unused left-room to right and vice versa.
-                if pad_left + pad_right < extra and pad_left < max_l:
-                    pad_left = min(max_l, extra - pad_right)
-                x -= pad_left
-                w += pad_left + pad_right
-            else:       # short axis is height → pad up/down
-                extra = max(0.0, target - h)
-                half = extra / 2
-                max_u = _max_pad_in_direction("up", cur_bbox, sibs, W, H)
-                max_d = _max_pad_in_direction("down", cur_bbox, sibs, W, H)
-                pad_up = min(half, max_u)
-                pad_down = min(extra - pad_up, max_d)
-                if pad_up + pad_down < extra and pad_up < max_u:
-                    pad_up = min(max_u, extra - pad_down)
-                y -= pad_up
-                h += pad_up + pad_down
-            padded = (pad_up + pad_down + pad_left + pad_right) > 0
-
-    x0 = max(0, int(round(x)))
-    y0 = max(0, int(round(y)))
-    x1 = min(W, int(round(x + w)))
-    y1 = min(H, int(round(y + h)))
-    if x1 <= x0 or y1 <= y0:
-        raise Sam3Error(f"bbox {bbox} does not intersect the image ({W}x{H}).")
-    crop = img.crop((x0, y0, x1, y1))
-    b64, sent_size, scale = _prepare_payload_image(crop)
-    payload = _post_sam3(b64, list(material_vocab))
-    scale_back = 1.0 / scale if scale else 1.0
-    local = _parse_prompt_results(payload, scale_back)
-
-    # Attach original-image-space mirrors so callers can render without
-    # having to redo the offset arithmetic.
-    for d in local:
-        if d["bbox"]:
-            bx, by, bw, bh = d["bbox"]
-            d["bbox_global"] = [bx + x0, by + y0, bw, bh]
-        else:
-            d["bbox_global"] = None
-        if d.get("polygon"):
-            d["polygon_global"] = [
-                {"x": pt["x"] + x0, "y": pt["y"] + y0} for pt in d["polygon"]
-            ]
-        else:
-            d["polygon_global"] = None
-    logger.info(
-        "SAM3 detect_materials_in_crop: crop_origin=(%d,%d) crop_size=%s "
-        "prompts=%d detections=%d padded=%s pad_udlr=(%d,%d,%d,%d)",
-        x0, y0, (x1 - x0, y1 - y0), len(list(material_vocab)), len(local),
-        padded, pad_up, pad_down, pad_left, pad_right,
-    )
-    return {
-        "crop_origin": [x0, y0],
-        "crop_size": [x1 - x0, y1 - y0],
-        "bbox_padded": padded,
-        "pad_applied": {
-            "up": round(pad_up), "down": round(pad_down),
-            "left": round(pad_left), "right": round(pad_right),
-        },
-        "detections": local,
-    }
-
-
 def filter_detections(
     detections: list[dict],
     min_confidence: float = 0.55,
@@ -541,21 +307,7 @@ def filter_detections(
     image_w: int | None = None,
     image_h: int | None = None,
 ) -> list[dict]:
-    """Drop sub-threshold detections and same-class near-duplicates.
-
-    Rules (deliberately simple — no NMS across classes, no mask IoU, no
-    box-in-box logic):
-      1. Drop confidence < min_confidence.
-      2. Drop bbox_area / (image_w * image_h) < min_area_frac  when the
-         image size is provided and min_area_frac > 0. Kills tiny
-         decorative slat / pendant / cubby-edge clutter that survives the
-         confidence gate. 21-image sweep found ~5-11 spurious `shelf`
-         detections per image at 0.05-0.4% area — 0.005 (=0.5%) removes
-         them without touching legitimate small objects like mirrors.
-      3. For each class, keep the highest-confidence detection first;
-         drop any lower-confidence detection of the SAME class whose
-         bounding-box IoU exceeds `iou_dedup`.
-    """
+    """Drop sub-threshold detections and same-class near-duplicates."""
     kept = [d for d in detections if float(d.get("confidence", 0)) >= min_confidence]
     if min_area_frac > 0 and image_w and image_h:
         img_area = float(image_w) * float(image_h)
@@ -584,3 +336,136 @@ def filter_detections(
         if not clash:
             out.append(d)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Stage B — Material classification via generate_swatch_dna (GPT-4o-mini)
+# ---------------------------------------------------------------------------
+def _crop_to_bbox(img: Image.Image, bbox: list[float]) -> tuple[Image.Image, tuple[int, int, int, int]]:
+    """Return (crop, (x0, y0, x1, y1)) with bbox in [x, y, w, h] format."""
+    W, H = img.size
+    x, y, w, h = [float(v) for v in bbox]
+    x0 = max(0, int(round(x)))
+    y0 = max(0, int(round(y)))
+    x1 = min(W, int(round(x + w)))
+    y1 = min(H, int(round(y + h)))
+    if x1 <= x0 or y1 <= y0:
+        raise Sam3Error(f"bbox {bbox} does not intersect the image ({W}x{H}).")
+    return img.crop((x0, y0, x1, y1)), (x0, y0, x1, y1)
+
+
+def _crop_to_base64(crop: Image.Image, max_edge: int = 1024) -> str:
+    """Encode crop as base64 JPEG.  Downscale huge crops so the vision
+    API doesn't burn tokens on unnecessary pixels."""
+    w, h = crop.size
+    longest = max(w, h)
+    if longest > max_edge:
+        s = max_edge / longest
+        crop = crop.resize((max(1, int(w * s)), max(1, int(h * s))), Image.LANCZOS)
+    buf = io.BytesIO()
+    crop.save(buf, "JPEG", quality=90, optimize=True)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+async def classify_object_material(
+    image: Any,
+    bbox: list[float] | tuple[float, float, float, float],
+    object_label: str,
+    api_key: str,
+) -> dict:
+    """Stage B — material identification for a single detected object.
+
+    Handles the three deterministic shortcuts (mirror / sink / faucet /
+    plant) without hitting the LLM.  For everything else, crops the image
+    to the object's bbox and calls the production
+    `intelligence.dna.generate_swatch_dna` function — the same call the
+    live matcher uses on every user-region query.
+
+    Args:
+        image: source image (PIL / bytes / base64 / path).
+        bbox:  [x, y, w, h] in original-image pixels (from Stage A).
+        object_label: SAM3 object label (used both as `object_type_hint`
+                      for the DNA prompt AND as the key for the
+                      deterministic shortcut table).
+        api_key: EMERGENT_LLM_KEY.
+
+    Returns:
+        {
+          "crop_origin": [x0, y0] | None,   # pixel offset in original.
+          "crop_size":   [w, h]   | None,   # size of the crop sent.
+          "source":      "shortcut" | "dna" | "skipped" | "error",
+          "material":    <DNA dict>  or  <shortcut dict>  or  None,
+          "error":       str  or  None,
+        }
+    """
+    label_l = (object_label or "").strip().lower()
+
+    # --- Shortcut: skip material entirely (plants). -----------------------
+    if label_l in DETERMINISTIC_MATERIAL and DETERMINISTIC_MATERIAL[label_l] is None:
+        return {
+            "crop_origin": None, "crop_size": None,
+            "source": "skipped",
+            "material": None,
+            "error": f"no meaningful material for object type '{label_l}'",
+        }
+
+    # --- Shortcut: deterministic material (mirror/sink/faucet). -----------
+    if label_l in DETERMINISTIC_MATERIAL:
+        return {
+            "crop_origin": None, "crop_size": None,
+            "source": "shortcut",
+            "material": dict(DETERMINISTIC_MATERIAL[label_l]),
+            "error": None,
+        }
+
+    # --- LLM path: crop + generate_swatch_dna. ----------------------------
+    if not api_key:
+        return {
+            "crop_origin": None, "crop_size": None,
+            "source": "error",
+            "material": None,
+            "error": "EMERGENT_LLM_KEY missing — cannot run Stage-B DNA call",
+        }
+
+    try:
+        img = _to_pil(image)
+        crop, (x0, y0, x1, y1) = _crop_to_bbox(img, list(bbox))
+    except Sam3Error as e:
+        return {
+            "crop_origin": None, "crop_size": None,
+            "source": "error", "material": None, "error": str(e),
+        }
+
+    b64 = _crop_to_base64(crop)
+    metadata = {
+        "detected_color": "",
+        "detected_finish": "",
+        "object_type_hint": label_l,
+    }
+    from intelligence.dna import generate_swatch_dna
+    try:
+        dna = await asyncio.wait_for(
+            generate_swatch_dna(
+                b64, metadata, api_key, VISUAL_DNA_PROVIDER, VISUAL_DNA_MODEL,
+                timeout_s=DNA_TIMEOUT_S,
+            ),
+            timeout=DNA_TIMEOUT_S + 5,
+        )
+    except asyncio.TimeoutError:
+        return {
+            "crop_origin": [x0, y0], "crop_size": [x1 - x0, y1 - y0],
+            "source": "error", "material": None,
+            "error": f"generate_swatch_dna timed out after {DNA_TIMEOUT_S}s",
+        }
+    if not dna:
+        return {
+            "crop_origin": [x0, y0], "crop_size": [x1 - x0, y1 - y0],
+            "source": "error", "material": None,
+            "error": "generate_swatch_dna returned no DNA (LLM parse failure)",
+        }
+    return {
+        "crop_origin": [x0, y0], "crop_size": [x1 - x0, y1 - y0],
+        "source": "dna",
+        "material": {**dna, "source": "dna"},
+        "error": None,
+    }

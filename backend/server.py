@@ -7429,39 +7429,28 @@ async def studio_upload_records(upload_id: str, user: dict = Depends(require_adm
 
 
 # ---------------------------------------------------------------------------
-# SAM3 scene-segmentation VALIDATION endpoint (admin-only).
+# Scene-segmentation VALIDATION endpoint (admin-only).
 #
-# Two-pass test harness: pass 1 detects architectural objects on the whole
-# image; pass 2 crops to each detected object and re-runs SAM3 with a
-# material-concept vocabulary. Returns the full nested JSON so we can
-# manually inspect on a handful of images before wiring anything to the
-# user-facing flow. NOT connected to the live analyze-region pipeline.
-# Requires ROBOFLOW_API_KEY in the backend environment.
+# Hybrid two-stage pipeline:
+#   Stage A — SAM3 (Roboflow) detects architectural objects (bboxes).
+#   Stage B — GPT-4o-mini (`generate_swatch_dna`) classifies the material
+#             of each detected object's crop.  This is the same production
+#             function the live matcher uses on every user-region query.
+#
+# Rationale: the March-2026 head-to-head test on failed SAM3 cases
+# (`/tmp/sam3_hard/`) showed GPT-4o-mini wins 7/7 on hard cases (low-
+# contrast material transitions, reflective surfaces, cross-object bleed)
+# while running ~2-4x faster than SAM3's material vocab pass.  The result
+# is a full Visual DNA dict per object (family, surface_type, color,
+# pattern, finish, gloss, canonical_description) instead of a bag of
+# vocab-matched sub-masks.
+#
+# Requires: ROBOFLOW_API_KEY (Stage A) + EMERGENT_LLM_KEY (Stage B).
 # ---------------------------------------------------------------------------
-_DEFAULT_MATERIAL_VOCAB = (
-    "painted wall", "wood paneling", "tile", "stone slab", "wallpaper",
-    "laminate panel", "fabric upholstery", "metal fixture", "glass panel",
-    # 21-image sweep additions — wood-flooring & marble/quartz counter
-    # were the two highest-impact vocab gaps (~15% + ~5% of all
-    # mislabelled material surfaces).
-    "hardwood floor", "wood plank flooring",
-    "marble slab", "quartz counter",
-)
-
-# 21-image sweep observation — walls whose bbox covers >40% of the image
-# consistently pick up 5-16 material sub-detections that are actually
-# bleed from adjacent objects (sofa arms, mirror frames, pendant hardware,
-# framed art). Skip Stage-B for those; they're too large to isolate.
-# Follow-up (post-fix rerun) — same pattern seen on `ceiling`: window /
-# pendant / chandelier bleed as `glass panel`, `metal fixture`. Applied
-# identically.
-_WALL_STAGEB_SKIP_AREA_FRAC = 0.40
-_BIG_OBJECT_STAGEB_SKIP = {"wall", "ceiling"}
-# Pass-1 minimum area gate — 21-image sweep found ~5-11 spurious `shelf`
+# Pass-1 minimum area gate — earlier sweeps found ~5-11 spurious `shelf`
 # detections per image at 0.05-0.4% area (decorative slats / pendant
-# hardware / cubby dividers). 0.5% dropped them but was slightly too
-# aggressive on small-but-real sinks/toilets. Lowered to 0.3%: still
-# clears the < 0.2% clutter, keeps 0.3-0.5% legitimate small fixtures.
+# hardware / cubby dividers).  0.3% clears the < 0.2% clutter while
+# keeping 0.3-0.5% legitimate small fixtures (sinks / toilets).
 _OBJECT_MIN_AREA_FRAC = 0.003
 
 
@@ -7469,25 +7458,23 @@ _OBJECT_MIN_AREA_FRAC = 0.003
 async def admin_test_scene_segmentation(
     file: UploadFile = File(...),
     min_confidence: float = Form(default=0.55),
-    material_vocab: str | None = Form(default=None),
     object_vocab: str | None = Form(default=None),
     user: dict = Depends(require_admin),
 ):
-    """VALIDATION ONLY. Runs SAM3 in two passes on the uploaded image and
-    returns raw nested JSON (no persistence, no downstream side effects).
+    """VALIDATION ONLY. Runs the hybrid two-stage pipeline on the uploaded
+    image and returns raw nested JSON (no persistence, no downstream side
+    effects).
 
     Form fields:
       file:            image file (jpg / png / webp).
       min_confidence:  optional float (default 0.55) applied by
-                       `filter_detections`.
+                       `filter_detections` on Stage-A outputs.
       object_vocab:    optional comma-separated architectural prompts,
                        overrides the built-in ARCHITECTURAL_VOCAB.
-      material_vocab:  optional comma-separated material prompts,
-                       overrides the built-in list.
     """
     from intelligence.scene_segmentation import (
-        ARCHITECTURAL_VOCAB, MATERIAL_VOCAB_BY_OBJECT, Sam3Error,
-        detect_materials_in_crop, detect_objects, filter_detections,
+        ARCHITECTURAL_VOCAB, Sam3Error,
+        classify_object_material, detect_objects, filter_detections,
     )
 
     raw = await file.read()
@@ -7503,17 +7490,13 @@ async def admin_test_scene_segmentation(
         return items or list(fallback)
 
     obj_prompts = _parse_vocab(object_vocab, ARCHITECTURAL_VOCAB)
-    mat_prompts = _parse_vocab(material_vocab, _DEFAULT_MATERIAL_VOCAB)
-    # When the caller explicitly overrides material_vocab, respect it —
-    # they're deliberately testing. Otherwise use the object-aware map.
-    use_object_aware_vocab = not (material_vocab and material_vocab.strip())
 
     try:
         from PIL import Image
         img = Image.open(io.BytesIO(raw)).convert("RGB")
         W, H = img.size
 
-        # Pass 1 — object detection.
+        # Stage A — SAM3 object detection.
         obj_raw = detect_objects(img, vocab=obj_prompts)
         objects = filter_detections(
             obj_raw, min_confidence=min_confidence,
@@ -7521,83 +7504,40 @@ async def admin_test_scene_segmentation(
             image_w=W, image_h=H,
         )
 
-        # Pass 2 — per-object material segmentation.
+        # Stage B — per-object material classification via
+        # generate_swatch_dna (GPT-4o-mini), with deterministic shortcuts
+        # for mirror / sink / faucet / plant.
+        stage_b_tasks = [
+            classify_object_material(
+                img, obj["bbox"], obj["label"], EMERGENT_LLM_KEY,
+            )
+            for obj in objects
+        ]
+        # Run Stage-B calls concurrently — each is a network-bound LLM
+        # request, so gather cuts the wall-clock cost by N.
+        stage_b_results = await asyncio.gather(*stage_b_tasks, return_exceptions=True)
+
         object_results = []
-        for obj in objects:
+        for obj, mat_res in zip(objects, stage_b_results):
             entry = {
                 "label": obj["label"],
                 "confidence": obj["confidence"],
                 "bbox": obj["bbox"],
                 "polygon": obj.get("polygon"),
-                "materials": [],
-                "material_error": None,
             }
-            # Object-aware material vocab (Fix 2). When the caller hasn't
-            # overridden material_vocab, look up an object-specific subset.
-            # A value of `None` in MATERIAL_VOCAB_BY_OBJECT means skip the
-            # material pass entirely (e.g. plant / mirror-glass — a
-            # generic material sub-detection doesn't add signal).
-            obj_label_l = str(obj.get("label") or "").lower().strip()
-            if use_object_aware_vocab and obj_label_l in MATERIAL_VOCAB_BY_OBJECT:
-                mapped = MATERIAL_VOCAB_BY_OBJECT[obj_label_l]
-                if mapped is None:
-                    entry["material_error"] = (
-                        f"material pass skipped — no meaningful material "
-                        f"vocab for object type '{obj_label_l}'"
-                    )
-                    entry["material_vocab_used"] = []
-                    object_results.append(entry)
-                    continue
-                effective_mat_prompts = list(mapped)
+            if isinstance(mat_res, Exception):
+                entry["material"] = {
+                    "crop_origin": None, "crop_size": None,
+                    "source": "error", "material": None,
+                    "error": f"{type(mat_res).__name__}: {mat_res}",
+                }
             else:
-                effective_mat_prompts = mat_prompts
-            entry["material_vocab_used"] = effective_mat_prompts
-            if obj["bbox"] is None:
-                entry["material_error"] = "object has no bbox — skipped material pass"
-            elif obj_label_l in _BIG_OBJECT_STAGEB_SKIP and (
-                (float(obj["bbox"][2]) * float(obj["bbox"][3])) / (W * H)
-                > _WALL_STAGEB_SKIP_AREA_FRAC
-            ):
-                # Big-object bleed guard. A wall OR ceiling bbox that
-                # covers >40% of the image can never be isolated cleanly
-                # from adjacent sofas / mirrors / art / windows /
-                # pendants. Skip Stage-B honestly rather than surface
-                # contaminated material sub-detections.
-                area_pct = (
-                    float(obj["bbox"][2]) * float(obj["bbox"][3])
-                ) / (W * H) * 100
-                entry["material_error"] = (
-                    f"material pass skipped — {obj_label_l} bbox covers "
-                    f"{area_pct:.0f}% of image (>{_WALL_STAGEB_SKIP_AREA_FRAC*100:.0f}%), "
-                    f"too large to isolate from adjacent objects"
-                )
-            else:
-                # Sibling bboxes = every OTHER kept object. Pass these to
-                # detect_materials_in_crop so thin-bbox padding never
-                # expands into another already-detected object's territory.
-                sibs = [o["bbox"] for o in objects
-                        if o is not obj and o.get("bbox")]
-                try:
-                    mat = detect_materials_in_crop(
-                        img, obj["bbox"], effective_mat_prompts,
-                        other_bboxes=sibs,
-                    )
-                    mat_filtered = filter_detections(
-                        mat["detections"], min_confidence=min_confidence,
-                    )
-                    entry["crop_origin"] = mat["crop_origin"]
-                    entry["crop_size"] = mat["crop_size"]
-                    entry["bbox_padded"] = mat.get("bbox_padded", False)
-                    entry["pad_applied"] = mat.get("pad_applied")
-                    entry["materials"] = mat_filtered
-                except Sam3Error as e:
-                    entry["material_error"] = str(e)
+                entry["material"] = mat_res
             object_results.append(entry)
 
         return {
             "image_size": {"width": W, "height": H},
             "object_vocab": obj_prompts,
-            "material_vocab": mat_prompts,
             "min_confidence": min_confidence,
             "objects_raw_count": len(obj_raw),
             "objects_kept_count": len(objects),
