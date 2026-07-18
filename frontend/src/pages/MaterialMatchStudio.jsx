@@ -20,11 +20,16 @@ import {
   Archive,
   Sparkles,
   AlertCircle,
+  Layers,
 } from "lucide-react";
 
 const TABS = [
   { id: "upload", label: "Upload Catalogue", icon: Upload },
-  { id: "processing", label: "Processing Queue", icon: Loader2 },
+  // `icon` is the IDLE icon; the processing tab swaps to `Loader2` at
+  // render time only while a job is actually running. A permanent
+  // `Loader2` used to look like a stuck spinner even when nothing was
+  // in flight — see the tab render block below for the swap logic.
+  { id: "processing", label: "Processing Queue", icon: Layers },
   { id: "review", label: "Review Queue", icon: ClipboardList },
   { id: "library", label: "Published Library", icon: BookOpen },
 ];
@@ -1373,12 +1378,14 @@ export default function MaterialMatchStudio() {
           data-testid="studio-tabs"
         >
           {TABS.map((t) => {
-            const Icon = t.icon;
             const active = tab === t.id;
-            // Spin the Processing Queue icon ONLY while at least one
-            // upload is actually processing. Prevents the "frozen
-            // spinner halfway" bug when there is no active job.
+            // Swap the Processing tab's idle icon (`Layers`) for
+            // `Loader2` ONLY while a job is actually running.  This is
+            // the fix for the "stuck spinner" perception — a static
+            // `Loader2` glyph looks identical to a paused spinner
+            // whether or not the CSS animation is active.
             const isSpinning = t.id === "processing" && anyProcessing;
+            const Icon = isSpinning ? Loader2 : t.icon;
             return (
               <button
                 key={t.id}
