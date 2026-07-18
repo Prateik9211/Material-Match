@@ -9,7 +9,11 @@ import { toast } from "sonner";
  * then click "Analyze this area" — client-side crops and POSTs to
  * /api/projects/{id}/analyze-region and returns rows for the right panel.
  */
-export default function RegionSelector({ projectId, imgSrc, onAnalyzed, pins, focusedPinIndex, onHoverPin }) {
+export default function RegionSelector({
+  projectId, imgSrc, onAnalyzed,
+  pins, focusedPinIndex, onHoverPin,
+  productPins, focusedProductIndex, onHoverProductPin,
+}) {
   const wrapRef = useRef(null);
   const imgRef = useRef(null);
   const [mode, setMode] = useState("view"); // view | draw
@@ -162,6 +166,35 @@ export default function RegionSelector({ projectId, imgSrc, onAnalyzed, pins, fo
               data-testid={`image-pin-${i}`}
               aria-label={p.label || `Zone ${i + 1}`}
               title={p.label || `Zone ${i + 1}`}
+            />
+          );
+        })}
+        {/* 2026-02-27 (round 5) — product pins.  Distinct style (ochre
+            ring) so users can visually tell products apart from
+            material zones. Hover mechanism identical to material pins.
+            `p.index` is the RAW products array index (may be non-
+            contiguous because unpinned products are filtered out
+            before this array is built), so the callback and testid
+            both reference the original product's index. */}
+        {mode !== "draw" && !rect && Array.isArray(productPins) && productPins.map((p) => {
+          if (!p || typeof p.x !== "number" || typeof p.y !== "number") return null;
+          const rawIndex = typeof p.index === "number" ? p.index : 0;
+          const isFocused = focusedProductIndex === rawIndex;
+          return (
+            <button
+              type="button"
+              key={`product-${rawIndex}`}
+              onMouseEnter={() => onHoverProductPin && onHoverProductPin(rawIndex)}
+              onMouseLeave={() => onHoverProductPin && onHoverProductPin(null)}
+              className={`absolute -translate-x-1/2 -translate-y-1/2 transition-all shadow-hover ${
+                isFocused
+                  ? "w-5 h-5 bg-ochre ring-4 ring-paper/70 z-20 rotate-45"
+                  : "w-3.5 h-3.5 bg-paper/95 border-2 border-ochre hover:bg-ochre z-10 rotate-45"
+              }`}
+              style={{ left: `${p.x}%`, top: `${p.y}%` }}
+              data-testid={`product-pin-${rawIndex}`}
+              aria-label={p.label || `Product ${rawIndex + 1}`}
+              title={p.label || `Product ${rawIndex + 1}`}
             />
           );
         })}

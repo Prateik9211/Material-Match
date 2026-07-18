@@ -100,6 +100,7 @@ export default function Analysis() {
   const [imgError, setImgError] = useState(false);
   const [regionResult, setRegionResult] = useState(null); // { rows, summary, crop_data_url }
   const [focusedIndex, setFocusedIndex] = useState(null); // syncs image pins ↔ material cards
+  const [focusedProductIndex, setFocusedProductIndex] = useState(null); // syncs product pins ↔ product cards
 
   const fetchProject = useCallback(async () => {
     try {
@@ -231,6 +232,18 @@ export default function Analysis() {
     })
     .filter(Boolean);
 
+  // 2026-02-27 (round 5) — product pins.  Only shown on the full-image
+  // view (never for ephemeral zone results, since region analysis
+  // doesn't re-run the products pipeline).
+  const productPins = (activeEphemeral ? [] : products)
+    .map((p, i) => {
+      if (p?.pin && typeof p.pin.x === "number" && typeof p.pin.y === "number") {
+        return { x: p.pin.x, y: p.pin.y, label: p.product_name, index: i };
+      }
+      return null;
+    })
+    .filter(Boolean);
+
   return (
     <div className="min-h-screen bg-paper" data-testid="analysis-page">
       <Header />
@@ -311,6 +324,9 @@ export default function Analysis() {
                       pins={imagePins}
                       focusedPinIndex={focusedIndex}
                       onHoverPin={setFocusedIndex}
+                      productPins={productPins}
+                      focusedProductIndex={focusedProductIndex}
+                      onHoverProductPin={setFocusedProductIndex}
                     />
                   ) : (
                     <div className="aspect-video rounded-2xl bg-stone-panel border border-stone-border-soft grid place-items-center text-overline">
@@ -394,6 +410,8 @@ export default function Analysis() {
                   products={products}
                   onAddToShortlist={addProductToShortlist}
                   shortlistedNames={shortlistedProductNames}
+                  focusedProductIndex={focusedProductIndex}
+                  onHoverProductCard={setFocusedProductIndex}
                 />
 
                 {/* Sourceable Shortlist */}

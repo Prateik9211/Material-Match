@@ -992,6 +992,110 @@ def _fallback_pin_for_group(group: str | None, index: int) -> dict | None:
     return {"x": round(x, 1), "y": round(y, 1)}
 
 
+# 2026-02-27 (round 5) — Product → SAM3 detection matching.  Products
+# are detected by an independent whole-image LLM pass and don't carry
+# coordinates.  This helper attaches real bbox-derived pins by looking
+# up each product's name / keywords against the SAM3 Stage-A objects
+# captured during scene-mode.  Products whose category doesn't map to
+# any architectural label (chandelier / lamp / etc.) stay pin-less
+# rather than getting fake coordinates.
+#
+# Word-boundary matches against a curated synonym map: e.g. a product
+# called "Upholstered Bed" → SAM3 label "bed" → pin at bbox centre.
+# Multi-word matches (e.g. "throw pillow") try the compound label
+# first and fall back to any of the whitespace-split parts.
+_PRODUCT_SAM3_SYNONYMS: dict[str, tuple[str, ...]] = {
+    # SAM3 label → product-name / keyword synonyms that should map to it.
+    "bed":         ("bed", "mattress", "bedframe"),
+    "headboard":   ("headboard",),
+    "sofa":        ("sofa", "couch", "loveseat", "sectional", "armchair"),
+    "curtain":     ("curtain", "drape", "drapery", "blind"),
+    "rug":         ("rug", "carpet", "runner", "mat"),
+    "mirror":      ("mirror",),
+    "sink":        ("sink", "basin", "washbasin"),
+    "toilet":      ("toilet", "wc"),
+    "bathtub":     ("bathtub", "tub"),
+    "plant":       ("plant", "planter", "pot", "vase"),
+    "shelf":       ("shelf", "shelving", "bookshelf"),
+    "nightstand":  ("nightstand", "bedside", "side table"),
+    "cabinet":     ("cabinet", "cupboard", "wardrobe", "dresser"),
+    "cushion":     ("cushion",),
+    "pillow":      ("pillow", "sham"),
+    "throw pillow": ("throw pillow", "throw"),
+    "mattress":    ("mattress",),
+}
+
+
+def _attach_product_pins(products: list, scene_stage_a: dict) -> None:
+    """Mutate `products` in place — attach `pin: {x, y}` (image %) and
+    `pin_source: "product_sam3"` to each product that maps to a SAM3
+    detection.  Products without a match get `pin=None`.
+
+    Match rule: assemble a haystack from each product's `product_name`,
+    `material_keywords`, `style_keywords`, and `search_keywords`
+    (lowercased, joined).  For each SAM3 detection, check whether any
+    synonym from `_PRODUCT_SAM3_SYNONYMS` for that detection's label
+    appears in the haystack.  On first match, take the detection's bbox
+    centre.  Ties broken by SAM3 confidence.
+    """
+    if not products or not isinstance(scene_stage_a, dict):
+        return
+    objects = scene_stage_a.get("objects") or []
+    image_size = scene_stage_a.get("image_size") or {}
+    W = float(image_size.get("width") or 0)
+    H = float(image_size.get("height") or 0)
+    if not objects or W <= 0 or H <= 0:
+        return
+
+    # Sort detections by confidence descending so ties go to the
+    # highest-confidence mask.
+    sorted_objects = sorted(
+        objects, key=lambda o: float(o.get("confidence", 0)), reverse=True
+    )
+
+    for prod in products:
+        if not isinstance(prod, dict):
+            continue
+        haystack = " ".join([
+            str(prod.get("product_name") or ""),
+            " ".join(prod.get("material_keywords") or []),
+            " ".join(prod.get("style_keywords") or []),
+            " ".join(prod.get("search_keywords") or []),
+        ]).lower()
+
+        best: dict | None = None
+        for obj in sorted_objects:
+            label = (obj.get("label") or "").strip().lower()
+            if not label:
+                continue
+            synonyms = _PRODUCT_SAM3_SYNONYMS.get(label)
+            if not synonyms:
+                continue
+            if any(syn in haystack for syn in synonyms):
+                best = obj
+                break
+
+        if best is None:
+            prod["pin"] = None
+            prod["pin_source"] = None
+            continue
+
+        bbox = best.get("bbox") or []
+        try:
+            bx, by, bw, bh = [float(v) for v in bbox]
+            cx_pct = ((bx + bw / 2.0) / W) * 100.0
+            cy_pct = ((by + bh / 2.0) / H) * 100.0
+            if 0 <= cx_pct <= 100 and 0 <= cy_pct <= 100:
+                prod["pin"] = {"x": round(cx_pct, 1), "y": round(cy_pct, 1)}
+                prod["pin_source"] = "product_sam3"
+                prod["pin_matched_label"] = best.get("label")
+                continue
+        except (TypeError, ValueError):
+            pass
+        prod["pin"] = None
+        prod["pin_source"] = None
+
+
 def _validate_analysis_payload(data) -> dict:
     """Strictly validate the LLM payload. Raises ValueError on any deviation.
     Returns {'rows': [...], 'summary': {...}} — summary is optional (may be empty).
@@ -1339,7 +1443,14 @@ async def real_analyze(project_id: str, user: dict = Depends(get_current_user)):
             region=user.get("preferred_region", DEFAULT_REGION),
         )
         if products_result:
-            analysis["products"] = products_result.get("products", [])
+            products_list = products_result.get("products", [])
+            # 2026-02-27 (round 5) — attach real bbox-derived pins to each
+            # detected product by matching its name/keywords against the
+            # SAM3 Stage-A objects captured during scene-mode analysis.
+            # Products that don't match any object stay pin-less (no fake
+            # coordinates).  See _attach_product_pins for match rules.
+            _attach_product_pins(products_list, analysis.get("scene_stage_a") or {})
+            analysis["products"] = products_list
             analysis["products_generated_at"] = products_result.get("generated_at")
             await db.projects.update_one(
                 {"_id": ObjectId(project_id)},
@@ -3374,6 +3485,18 @@ async def run_scene_region_analysis(
             "raw": len(obj_raw), "kept": len(objects),
             "with_material": len(rows), "skipped": skipped, "errored": errored,
             "image_size": {"width": W, "height": H},
+            # 2026-02-27 (round 5) — expose the SAM3 detections themselves
+            # so the products-pipeline hookup can attach real bbox-derived
+            # pins to detected products.  Includes skipped labels (cushion
+            # / pillow / plant / mattress) — those never make it into
+            # `rows` but ARE valid product anchors on the image.
+            "objects": [
+                {"label": o.get("label"),
+                 "confidence": float(o.get("confidence", 0)),
+                 "bbox": o.get("bbox")}
+                for o in objects
+                if isinstance(o.get("bbox"), (list, tuple)) and len(o.get("bbox")) == 4
+            ],
         },
     }
     return result, per_object_crops

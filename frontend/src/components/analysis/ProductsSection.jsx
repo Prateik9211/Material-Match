@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useRef, useEffect } from "react";
 import { ExternalLink, Sparkles, ShoppingBag, Package, Search, ListChecks, Check } from "lucide-react";
 
 const CATEGORY_LABEL = {
@@ -50,13 +50,32 @@ function KeywordChips({ items, testid }) {
   );
 }
 
-function ProductCard({ product, index, onAddToShortlist, alreadyShortlisted }) {
+function ProductCard({ product, index, onAddToShortlist, alreadyShortlisted, focused, onHoverCard }) {
   const matched = product.matched_affiliate;
   const search = product.search_urls || {};
+  const cardRef = useRef(null);
+
+  // Mirror of MaterialCard behaviour: when this card becomes focused
+  // via a pin hover on the reference image and it's off-screen, scroll
+  // it into view.  Silent no-op if already in view.
+  useEffect(() => {
+    if (!focused || !cardRef.current) return;
+    const rect = cardRef.current.getBoundingClientRect();
+    const fullyInView = rect.top >= 0 && rect.bottom <= window.innerHeight;
+    if (!fullyInView) {
+      cardRef.current.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }, [focused]);
+
   return (
     <div
-      className="bg-white border border-black/5 rounded-2xl shadow-soft hover:shadow-hover transition-all duration-300 hover:-translate-y-0.5 overflow-hidden flex flex-col"
+      ref={cardRef}
+      className={`bg-white border rounded-2xl shadow-soft hover:shadow-hover transition-all duration-300 hover:-translate-y-0.5 overflow-hidden flex flex-col ${
+        focused ? "border-ochre ring-2 ring-ochre/40 shadow-hover" : "border-black/5"
+      }`}
       data-testid={`product-card-${index}`}
+      onMouseEnter={() => onHoverCard && onHoverCard(index)}
+      onMouseLeave={() => onHoverCard && onHoverCard(null)}
     >
       {/* Header strip with icon + category */}
       <div className="bg-[#F5F1EC] p-4 flex items-center justify-between border-b border-black/5">
@@ -177,7 +196,7 @@ function ProductCard({ product, index, onAddToShortlist, alreadyShortlisted }) {
   );
 }
 
-export default function ProductsSection({ products, onAddToShortlist, shortlistedNames }) {
+export default function ProductsSection({ products, onAddToShortlist, shortlistedNames, focusedProductIndex, onHoverProductCard }) {
   if (!products || products.length === 0) return null;
   const withCurated = products.filter((p) => p.matched_affiliate).length;
   const shortlisted = shortlistedNames || new Set();
@@ -205,6 +224,8 @@ export default function ProductsSection({ products, onAddToShortlist, shortliste
             index={i}
             onAddToShortlist={onAddToShortlist}
             alreadyShortlisted={shortlisted.has(p.product_name)}
+            focused={focusedProductIndex === i}
+            onHoverCard={onHoverProductCard}
           />
         ))}
       </div>

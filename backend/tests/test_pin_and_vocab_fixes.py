@@ -27,6 +27,7 @@ from intelligence.scene_segmentation import (
 )
 from server import (
     MATERIAL_FAMILIES,
+    _attach_product_pins,
     _dna_to_row,
     _fallback_pin_for_group,
     _validate_analysis_payload,
@@ -259,3 +260,74 @@ def test_scene_mode_default_wiring_smoke():
     assert "real-scene-hybrid-v1" in src, (
         "scene-mode success path must use version='real-scene-hybrid-v1'"
     )
+
+
+# ---------------------------------------------------------------------------
+# 2026-02-27 (round 5) — Product → SAM3 bbox pinning.
+# ---------------------------------------------------------------------------
+_STAGE_A_SAMPLE = {
+    "image_size": {"width": 1000, "height": 1000},
+    "objects": [
+        {"label": "bed",    "confidence": 0.82, "bbox": [200, 400, 600, 400]},
+        {"label": "rug",    "confidence": 0.75, "bbox": [150, 800, 700, 180]},
+        {"label": "curtain","confidence": 0.72, "bbox": [50, 100, 200, 700]},
+        {"label": "mirror", "confidence": 0.68, "bbox": [780, 200, 180, 240]},
+        {"label": "pillow", "confidence": 0.66, "bbox": [300, 380, 200, 120]},
+    ],
+}
+
+
+def test_attach_product_pins_matches_by_name_keyword():
+    products = [
+        {"product_name": "Upholstered Bed",   "material_keywords": ["fabric"]},
+        {"product_name": "Decorative Rug",    "material_keywords": ["wool"]},
+        {"product_name": "Curtains with Grommets", "material_keywords": ["cotton"]},
+        {"product_name": "Gold Chandelier",   "material_keywords": ["brass"]},  # no SAM3 match
+        {"product_name": "Silk Throw Pillow", "material_keywords": ["silk"]},
+    ]
+    _attach_product_pins(products, _STAGE_A_SAMPLE)
+
+    # Bed → bbox centre (500, 600) → (50.0%, 60.0%)
+    assert products[0]["pin"] == {"x": 50.0, "y": 60.0}
+    assert products[0]["pin_source"] == "product_sam3"
+    assert products[0]["pin_matched_label"] == "bed"
+
+    # Rug → bbox centre (500, 890) → (50.0%, 89.0%)
+    assert products[1]["pin"] == {"x": 50.0, "y": 89.0}
+    assert products[1]["pin_matched_label"] == "rug"
+
+    # Curtain
+    assert products[2]["pin_source"] == "product_sam3"
+    assert products[2]["pin_matched_label"] == "curtain"
+
+    # Chandelier — no SAM3 label maps.  Must NOT get a fake pin.
+    assert products[3]["pin"] is None
+    assert products[3]["pin_source"] is None
+
+    # Throw pillow → matches "pillow" SAM3 label.
+    assert products[4]["pin_source"] == "product_sam3"
+    assert products[4]["pin_matched_label"] == "pillow"
+
+
+def test_attach_product_pins_ties_broken_by_confidence():
+    """If two SAM3 detections match the same product, the one with the
+    higher confidence wins."""
+    stage_a = {
+        "image_size": {"width": 1000, "height": 1000},
+        "objects": [
+            {"label": "sofa", "confidence": 0.60, "bbox": [0, 0, 100, 100]},
+            {"label": "sofa", "confidence": 0.85, "bbox": [800, 800, 100, 100]},
+        ],
+    }
+    products = [{"product_name": "Red Fabric Armchair"}]
+    _attach_product_pins(products, stage_a)
+    # 0.85 sofa wins → centre (850, 850) → (85%, 85%)
+    assert products[0]["pin"] == {"x": 85.0, "y": 85.0}
+
+
+def test_attach_product_pins_noop_without_stage_a():
+    products = [{"product_name": "Bed"}]
+    _attach_product_pins(products, {})   # empty stage_a → no-op
+    assert "pin" not in products[0]      # never touched
+    _attach_product_pins(products, {"objects": [], "image_size": {"width": 1000, "height": 1000}})
+    assert "pin" not in products[0]
