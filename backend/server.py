@@ -7452,12 +7452,17 @@ _DEFAULT_MATERIAL_VOCAB = (
 # consistently pick up 5-16 material sub-detections that are actually
 # bleed from adjacent objects (sofa arms, mirror frames, pendant hardware,
 # framed art). Skip Stage-B for those; they're too large to isolate.
+# Follow-up (post-fix rerun) — same pattern seen on `ceiling`: window /
+# pendant / chandelier bleed as `glass panel`, `metal fixture`. Applied
+# identically.
 _WALL_STAGEB_SKIP_AREA_FRAC = 0.40
+_BIG_OBJECT_STAGEB_SKIP = {"wall", "ceiling"}
 # Pass-1 minimum area gate — 21-image sweep found ~5-11 spurious `shelf`
 # detections per image at 0.05-0.4% area (decorative slats / pendant
-# hardware / cubby dividers). 0.5% drops them without touching legit
-# small objects like mirrors and nightstands.
-_OBJECT_MIN_AREA_FRAC = 0.005
+# hardware / cubby dividers). 0.5% dropped them but was slightly too
+# aggressive on small-but-real sinks/toilets. Lowered to 0.3%: still
+# clears the < 0.2% clutter, keeps 0.3-0.5% legitimate small fixtures.
+_OBJECT_MIN_AREA_FRAC = 0.003
 
 
 @api_router.post("/admin/test-scene-segmentation")
@@ -7549,19 +7554,20 @@ async def admin_test_scene_segmentation(
             entry["material_vocab_used"] = effective_mat_prompts
             if obj["bbox"] is None:
                 entry["material_error"] = "object has no bbox — skipped material pass"
-            elif obj_label_l == "wall" and (
+            elif obj_label_l in _BIG_OBJECT_STAGEB_SKIP and (
                 (float(obj["bbox"][2]) * float(obj["bbox"][3])) / (W * H)
                 > _WALL_STAGEB_SKIP_AREA_FRAC
             ):
-                # Big-wall bleed guard. A wall bbox that covers >40% of
-                # the image can never be isolated cleanly from adjacent
-                # sofas / mirrors / art. Skip Stage-B honestly rather
-                # than surface contaminated material sub-detections.
+                # Big-object bleed guard. A wall OR ceiling bbox that
+                # covers >40% of the image can never be isolated cleanly
+                # from adjacent sofas / mirrors / art / windows /
+                # pendants. Skip Stage-B honestly rather than surface
+                # contaminated material sub-detections.
                 area_pct = (
                     float(obj["bbox"][2]) * float(obj["bbox"][3])
                 ) / (W * H) * 100
                 entry["material_error"] = (
-                    f"material pass skipped — wall bbox covers "
+                    f"material pass skipped — {obj_label_l} bbox covers "
                     f"{area_pct:.0f}% of image (>{_WALL_STAGEB_SKIP_AREA_FRAC*100:.0f}%), "
                     f"too large to isolate from adjacent objects"
                 )
