@@ -3253,11 +3253,30 @@ async def analyze_region(project_id: str, payload: RegionAnalyzePayload,
         # row per material.  This is the pipeline validated at 96.5%
         # material plausibility in the March-2026 batch.
         per_object_crops: dict[int, str] = {}
-        if str(getattr(payload, "mode", "single") or "single").lower() == "scene":
+        scene_mode = str(getattr(payload, "mode", "single") or "single").lower() == "scene"
+        if scene_mode:
             result, per_object_crops = await run_scene_region_analysis(
                 project_id, user["id"], crop,
                 region=user.get("preferred_region", DEFAULT_REGION),
             )
+            # Isolated-crop fallback: users often upload a close-up of a
+            # single material (a floor sample photo, a swatch they cropped
+            # from a supplier PDF).  SAM3 Stage-A won't recognize such a
+            # crop as any architectural OBJECT and returns nothing.  In
+            # that case, silently fall through to the single-swatch
+            # analysis path so the crop still gets a material read.
+            if not result.get("rows"):
+                logger.info(
+                    "[scene %s] Stage-A returned 0 objects — falling back "
+                    "to single-swatch analysis on the whole crop.", project_id,
+                )
+                result = await run_real_analysis(
+                    project_id, user["id"], crop,
+                    region=user.get("preferred_region", DEFAULT_REGION),
+                )
+                per_object_crops = {}  # reset — single-swatch path uses `crop`
+                scene_mode = False
+                result["scene_fallback"] = "single_swatch_no_objects_detected"
         else:
             # Sprint 6 — object-aware region analysis. When the caller
             # provided the FULL reference image + selected bbox, we ask
@@ -3340,7 +3359,13 @@ async def analyze_region(project_id: str, payload: RegionAnalyzePayload,
         for i, r in enumerate(result.get("rows") or []):
             try:
                 per_row_crop = per_object_crops.get(i) or crop
-                await _apply_visual_rerank(r, per_row_crop)
+                # Scene-mode crops are wide-angle polygon-masked views —
+                # they'll systematically look different from an isolated
+                # catalogue swatch, so rerank rejections DEMOTE (−15 pts)
+                # instead of dropping the candidate.  Single-swatch pre-
+                # cropped queries keep the original strict behaviour.
+                strict = not per_object_crops
+                await _apply_visual_rerank(r, per_row_crop, strict=strict)
             except Exception:
                 logger.exception("visual rerank failed — keeping retrieval results")
         result["ephemeral"] = True
