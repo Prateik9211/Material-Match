@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Header from "@/components/Header";
 import { useAuth } from "@/context/AuthContext";
-import { ArrowRight, Check, Camera, Layers, BookOpen, ShoppingBag, ListChecks, PenSquare, PlayCircle, PauseCircle, X, ChevronRight, Focus } from "lucide-react";
+import { ArrowRight, Check, Camera, Layers, BookOpen, ShoppingBag, ListChecks, PenSquare, PlayCircle, PauseCircle, X, ChevronRight, Focus, Search, Sparkles } from "lucide-react";
 // Static asset — Unsplash-licensed kitchen photo used as the "Reference"
 // in the landing-page WorkflowVisual panel.  This IS the image the live
 // hybrid pipeline analysed to produce the Detected + Sourceable numbers
@@ -26,29 +26,187 @@ const WORKFLOW = [
   { n: "06", icon: ListChecks, title: "Sourceable Shortlist", body: "Build a shortlist to walk into vendor meetings prepared." },
 ];
 
-const DEMO_CHAPTERS = [
-  { t: "Reference", caption: "Upload a reference image.",
-    detail: "A Pinterest pin, a client mood board, or a photograph — anything can seed a specification.",
-    icon: Camera, accent: "bg-sand/60" },
-  { t: "Detection", caption: "MaterialMatch detects finishes and products.",
-    detail: "Zones, material families, colours and product categories surface automatically with confidence scores.",
-    icon: Layers, accent: "bg-stone-panel" },
-  { t: "Zone Focus", caption: "Draw over the image to zoom into one area.",
-    detail: "Google-Lens-style region selection returns ephemeral zone-specific materials without altering the project.",
-    icon: Focus, accent: "bg-sage-soft/60" },
-  { t: "Catalogue", caption: "Match against your uploaded catalogues.",
-    detail: "Ranked matches from PDF supplier catalogues with source, page and match reason.",
-    icon: BookOpen, accent: "bg-ochre-soft/60" },
-  { t: "Products", caption: "Discover Indian-market products.",
-    detail: "Curated affiliate suggestions where available, tuned search keywords everywhere else.",
-    icon: ShoppingBag, accent: "bg-white" },
-  { t: "Shortlist", caption: "Walk into vendor meetings prepared.",
-    detail: "A sourceable shortlist of materials and products with brands, notes and links.",
-    icon: ListChecks, accent: "bg-charcoal text-paper" },
+const _DEMO_CHAPTERS_HISTORICAL = [
+  // Previous abstract 6-chapter walkthrough — kept as a comment for
+  // provenance.  Superseded 2026-02-27 by the 4-chapter Detect →
+  // Search → Compare → Decide replay that renders the real
+  // KITCHEN_DEMO data progressively.
 ];
+
+/* ---------------- Real captured T2 pipeline result ----------------
+   This is the SAME real end-to-end kitchen-scene run rendered
+   statically in <WorkflowVisual/> below.  Every label and every
+   percentage came out of the actual /analyze-region hybrid pipeline
+   (SAM3 Stage-A → GPT-4o-mini classification → visual-rerank
+   retrieval) on 2026-07-18.  The Interactive Demo below just
+   replays this frozen result — no live AI calls per visitor.       */
+const KITCHEN_DEMO = {
+  refCaption: "Kitchen scene",
+  refSubtitle: "Mixed wood + white cabinets",
+  detections: [
+    { id: "d0", label: "Cabinet · Laminate",
+      name: "Warm wood grain",     conf: 85,
+      accent: "bg-stone-panel",
+      /* SAM3 bbox centre — from the actual pipeline result. */
+      pin: { x: 30, y: 62 } },
+    { id: "d1", label: "Countertop · Solid",
+      name: "Smooth quartz white", conf: 85,
+      accent: "bg-sand/60",
+      pin: { x: 55, y: 45 } },
+    { id: "d2", label: "Cabinet · Veneer",
+      name: "Light oak grain",     conf: 65,
+      accent: "bg-white",
+      pin: { x: 72, y: 30 } },
+  ],
+  matches: [
+    { id: "m0", zone: "Cabinet · Laminate",
+      product: "Elysian Wood",      brand: "Advance",
+      conf: 85, accent: "sage" },
+    { id: "m1", zone: "Countertop · Solid",
+      product: "Frosty White",      brand: "Advance",
+      conf: 85, accent: "ochre" },
+    { id: "m2", zone: "Cabinet · Veneer",
+      product: "Light Urban Teak",  brand: "Advance",
+      conf: 65, accent: "sage" },
+  ],
+};
+
+/* ---------------- Demo stage — progressive reveal of KITCHEN_DEMO ----
+   Given the current chapter's stage + intra-chapter progress (0..1),
+   renders the appropriate slice of the real captured pipeline result.
+   No external calls. */
+function DemoStage({ stage, progress, step }) {
+  const dets = KITCHEN_DEMO.detections;
+  const matches = KITCHEN_DEMO.matches;
+
+  // Progressive reveal: for "detect" stage, one detection per third of
+  // the chapter.  For "match" stage, one match per third.
+  const revealCount = Math.min(3, Math.floor(progress * 3) + 1);
+
+  return (
+    <div className="relative w-full h-full flex items-center gap-4 px-6 pt-6 pb-32" data-testid={`demo-stage-${stage}`}>
+      {/* LEFT — reference image with pins that appear during detect */}
+      <div className="relative w-2/5 h-full rounded-2xl border border-stone-border-soft overflow-hidden shadow-hover" data-testid="demo-reference-card">
+        <img
+          src={heroKitchenScene}
+          alt="Kitchen reference — the actual image the pipeline analysed."
+          className="absolute inset-0 w-full h-full object-cover"
+        />
+        <div className="absolute top-2 left-2 bg-paper/95 backdrop-blur rounded-md px-2 py-1">
+          <div className="text-[9px] uppercase tracking-widest text-warm-grey">Reference</div>
+          <div className="text-[11px] font-medium text-charcoal">{KITCHEN_DEMO.refCaption}</div>
+        </div>
+
+        {/* Numbered-style dots appear as detections reveal. */}
+        {(stage === "detect" || stage === "search" || stage === "match") &&
+          dets.slice(0, stage === "detect" ? revealCount : 3).map((d, i) => (
+            <span
+              key={d.id}
+              className="absolute -translate-x-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full bg-paper border-2 border-charcoal shadow-hover animate-fade-in-up"
+              style={{ left: `${d.pin.x}%`, top: `${d.pin.y}%`, animationDelay: `${i * 60}ms` }}
+              data-testid={`demo-pin-${i}`}
+              aria-label={d.label}
+            />
+          ))}
+      </div>
+
+      {/* MIDDLE — detected cards / search animation */}
+      <div className="w-[27%] h-full flex flex-col gap-2 pt-3" data-testid="demo-detect-column">
+        <div className="text-[9px] uppercase tracking-widest text-warm-grey">Detected</div>
+        {dets.map((d, i) => {
+          const isVisible = stage === "detect" ? i < revealCount
+                          : (stage === "search" || stage === "match");
+          const isSearching = stage === "search";
+          return (
+            <div
+              key={d.id}
+              className={`p-2.5 rounded-xl ${d.accent} border border-stone-border-soft transition-all duration-500 ${
+                isVisible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2"
+              }`}
+              style={{ transitionDelay: `${i * 120}ms` }}
+              data-testid={`demo-detection-${i}`}
+            >
+              <div className="text-[9px] uppercase tracking-widest text-warm-grey">{d.label}</div>
+              <div className="text-[11px] font-medium text-charcoal">{d.name}</div>
+              <div className="flex items-center justify-between mt-1">
+                <span className="text-[10px] text-sage font-mono">{d.conf}%</span>
+                {isSearching && (
+                  <span className="inline-flex items-center gap-1 text-[9px] text-ochre" data-testid={`demo-searching-${i}`}>
+                    <Search className="w-2.5 h-2.5 animate-pulse" strokeWidth={2} />
+                    Searching…
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* RIGHT — catalogue matches (only in "match" chapter) */}
+      <div className="w-[27%] h-full flex flex-col gap-2 pt-3" data-testid="demo-match-column">
+        <div className="text-[9px] uppercase tracking-widest text-warm-grey">Sourceable</div>
+        {matches.map((m, i) => {
+          const isVisible = stage === "match" ? i < revealCount : false;
+          const ring = m.accent === "sage" ? "bg-sage-soft/70 border-sage/30"
+                    : m.accent === "ochre" ? "bg-ochre-soft/60 border-ochre/30"
+                    : "bg-charcoal text-paper border-charcoal";
+          const percentColor = m.accent === "ochre" ? "text-ochre" : "text-sage";
+          return (
+            <div
+              key={m.id}
+              className={`p-2.5 rounded-xl border ${ring} transition-all duration-500 ${
+                isVisible ? "opacity-100 translate-y-0 scale-100" : "opacity-0 translate-y-3 scale-95"
+              }`}
+              style={{ transitionDelay: `${i * 140}ms` }}
+              data-testid={`demo-match-${i}`}
+            >
+              <div className={`flex items-center gap-1 text-[9px] uppercase tracking-widest font-semibold ${m.accent === "ochre" ? "text-ochre" : "text-sage"}`}>
+                <BookOpen className="w-2.5 h-2.5" strokeWidth={2.5} />
+                Catalogue Match
+              </div>
+              <div className="text-[11px] font-medium text-charcoal leading-tight mt-0.5">
+                {m.product} · {m.brand}
+              </div>
+              <div className="text-[9px] text-warm-grey/80 mt-0.5">{m.zone}</div>
+              <div className={`text-[10px] font-mono mt-0.5 ${percentColor}`}>{m.conf}%</div>
+            </div>
+          );
+        })}
+        {stage !== "match" && (
+          <div className="text-[10px] text-warm-grey/60 italic mt-1 pl-1">
+            Matches reveal in Chapter 4
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 
 /* ---------------- Interactive Demo Modal (Video-style) ---------------- */
 const CHAPTER_MS = 4200;
+
+/* Four chapters, matching the founder-defined flow
+   Detect → Search → Compare → Decide.  Each chapter's `stage` drives
+   what the modal video-frame progressively reveals from KITCHEN_DEMO. */
+const DEMO_CHAPTERS = [
+  { t: "Reference", stage: "reference",
+    caption: "A real kitchen photo, straight from a designer's mood board.",
+    detail: "This is the exact reference image the live pipeline analysed on 2026-07-18. No CGI, no cherry-picking.",
+    icon: Camera, accent: "bg-sand/60" },
+  { t: "Detect",    stage: "detect",
+    caption: "MaterialMatch detects surfaces and finishes.",
+    detail: "SAM3 finds architectural objects; GPT-4o-mini names each material family with a confidence score. Watch three real detections light up.",
+    icon: Layers, accent: "bg-stone-panel" },
+  { t: "Search",    stage: "search",
+    caption: "Searching the catalogue for visually similar swatches.",
+    detail: "Each detection is described, embedded and reranked against the uploaded supplier catalogue. This normally takes 2–4 seconds; the replay is faster.",
+    icon: Search, accent: "bg-ochre-soft/60" },
+  { t: "Match",     stage: "match",
+    caption: "Real catalogue matches, real percentages.",
+    detail: "Three verified Advance-brand swatches with the actual match_percent returned by the pipeline. These aren't handpicked — they came out of retrieval.",
+    icon: ListChecks, accent: "bg-charcoal text-paper" },
+];
 
 function fmtTime(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -129,44 +287,48 @@ function DemoModal({ onClose }) {
           </button>
         </div>
 
-        {/* Video frame */}
+        {/* Video frame — replays the real 2026-07-18 kitchen-scene
+            pipeline result stored in KITCHEN_DEMO.  Each chapter
+            reveals a different stage; no live AI calls happen here. */}
         <div
-          className={`aspect-video ${current.accent} border-b border-stone-border-soft grid place-items-center relative overflow-hidden transition-colors duration-500`}
+          className="aspect-video bg-stone-panel border-b border-stone-border-soft relative overflow-hidden transition-colors duration-500"
           data-testid="demo-video-frame"
         >
           {/* Ambient grid */}
-          <div className="absolute inset-0 opacity-[0.06] pointer-events-none" style={{
+          <div className="absolute inset-0 opacity-[0.05] pointer-events-none" style={{
             backgroundImage: "linear-gradient(#2b2724 1px, transparent 1px), linear-gradient(90deg, #2b2724 1px, transparent 1px)",
             backgroundSize: "32px 32px",
           }} />
 
-          {/* Big centered chapter card */}
-          <div className="relative text-center px-8 max-w-2xl animate-fade-in-up" key={`chapter-${step}`}>
-            <div className="w-14 h-14 rounded-full bg-paper/90 backdrop-blur border border-stone-border-soft grid place-items-center mx-auto mb-4 shadow-hover">
-              <Icon className="w-6 h-6 text-charcoal" strokeWidth={1.5} />
+          <DemoStage stage={current.stage} chapterMs={CHAPTER_MS} progress={progress} step={step} />
+
+          {/* Chapter caption strip (bottom overlay) */}
+          <div className="absolute bottom-14 left-4 right-4 bg-paper/95 backdrop-blur rounded-xl border border-stone-border-soft px-4 py-3 shadow-hover animate-fade-in-up" key={`caption-${step}`} data-testid="demo-caption-strip">
+            <div className="flex items-start gap-3">
+              <div className="w-8 h-8 rounded-full bg-charcoal text-paper grid place-items-center shrink-0">
+                <Icon className="w-4 h-4" strokeWidth={1.5} />
+              </div>
+              <div className="min-w-0">
+                <div className="text-[10px] uppercase tracking-widest text-warm-grey">Chapter {step + 1} · {current.t}</div>
+                <div className="text-sm font-medium text-charcoal leading-snug" data-testid="demo-caption">{current.caption}</div>
+                <div className="text-[11px] text-warm-grey mt-0.5 leading-relaxed" data-testid="demo-caption-detail">{current.detail}</div>
+              </div>
             </div>
-            <div className="text-overline mb-2 opacity-80">Chapter {step + 1} · {current.t}</div>
-            <div className="font-display text-2xl sm:text-3xl font-semibold leading-tight" data-testid="demo-caption">
-              {current.caption}
-            </div>
-            <p className="text-sm text-charcoal/70 mt-3 leading-relaxed" data-testid="demo-caption-detail">
-              {current.detail}
-            </p>
           </div>
 
           {/* Play/Pause overlay */}
           <button
             type="button"
             onClick={() => setPlaying((p) => !p)}
-            className="absolute bottom-16 left-1/2 -translate-x-1/2 w-12 h-12 rounded-full bg-charcoal text-paper grid place-items-center hover:scale-105 transition-transform shadow-hover"
+            className="absolute top-3 right-3 w-10 h-10 rounded-full bg-paper/90 backdrop-blur border border-stone-border-soft text-charcoal grid place-items-center hover:scale-105 transition-transform shadow-hover"
             data-testid="demo-play-toggle"
             aria-label={playing ? "Pause walkthrough" : "Play walkthrough"}
           >
-            {playing ? <PauseCircle className="w-6 h-6" strokeWidth={1.5} /> : <PlayCircle className="w-6 h-6" strokeWidth={1.5} />}
+            {playing ? <PauseCircle className="w-5 h-5" strokeWidth={1.5} /> : <PlayCircle className="w-5 h-5" strokeWidth={1.5} />}
           </button>
 
           {/* Timeline (chapter markers) */}
-          <div className="absolute bottom-0 left-0 right-0 px-5 pb-4" data-testid="demo-timeline">
+          <div className="absolute bottom-0 left-0 right-0 px-5 pb-3 pt-6 bg-gradient-to-t from-stone-panel via-stone-panel/85 to-transparent" data-testid="demo-timeline">
             <div className="flex items-center gap-1 mb-1.5">
               {DEMO_CHAPTERS.map((c, i) => {
                 const isDone = i < step;

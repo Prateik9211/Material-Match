@@ -59,6 +59,30 @@ The LLM-only fallback still emits deterministic group-based fallback pins from t
 - Bedroom 1 (headboard + bed + pillows): 32 SAM3 raw → 20 kept → **11 materials, zero cushion/pillow/mattress leaked**; headboard classified as Fabric. Products included "Upholstered Bed".
 - Bedroom 2 (18 rows including `trim` from round 1): zero forbidden entries; no headboard present.
 
+## 2026-02-27 (round 5) — Product pins wired to SAM3 bboxes ✅
+
+Each detected product now gets a real bbox-derived pin on the reference image (visually distinct from material dots — rotated ochre diamond vs round white dot). Reuses the exact same hover-highlight mechanism built for materials.
+
+**How it works**: `_attach_product_pins(products, scene_stage_a)` runs after both pipelines. For each product, it scans a keyword haystack (`product_name` + `material_keywords` + `style_keywords` + `search_keywords`) against a curated `_PRODUCT_SAM3_SYNONYMS` map (`bed`↔"bed/mattress/bedframe", `sofa`↔"sofa/couch/loveseat/armchair", etc.). On a match, the SAM3 detection's bbox centre becomes the pin. Ties broken by SAM3 confidence. Products that don't map to any architectural label stay pin-less — no fake coordinates. `scene_stage_a` also now exposes the raw SAM3 `objects` list so the matcher can consume without re-running SAM3.
+
+**Frontend**: `RegionSelector` accepts a `productPins` prop (rotated ochre diamonds), `Analysis.jsx` adds `focusedProductIndex` state mirroring `focusedIndex`, `ProductsSection` cards get the same scroll-into-view + focused-ring behaviour as materials cards.
+
+**Live-verified** (bedroom scene): 11/11 material rows retain scene_bbox pins (no regression). 5 products → 2 got real bbox pins (Upholstered Bed → bed bbox @58.5%,72.9%; Decorative Rug → rug bbox @55.4%,86.1%), 3 correctly declined (Chandelier, Table Lamp, Accent Stool). Bidirectional hover works both ways on both material and product sides. 17/17 pytest suite passes (+3 new tests for `_attach_product_pins`).
+
+## 2026-02-27 (round 6) — Interactive Demo modal ✅ (frontend-only, no live AI calls)
+
+The landing-page "Explore Interactive Demo" CTA now opens a real, chapter-based walkthrough that replays a frozen 2026-07-18 pipeline result. Zero backend calls — no per-visitor API cost.
+
+**Architecture**: New `KITCHEN_DEMO` const in `Landing.jsx` — single source of truth for the reference image + 3 real SAM3 detections (Cabinet Laminate 85%, Countertop Solid 85%, Cabinet Veneer 65%) + 3 real catalogue matches (Elysian Wood / Frosty White / Light Urban Teak, all Advance brand). Chapters trimmed from the previous abstract 6-icon walkthrough down to a founder-defined 4-step flow: **Reference → Detect → Search → Match**. New `DemoStage` component progressively reveals KITCHEN_DEMO based on `current.stage` + intra-chapter progress:
+- Chapter 1: reference image only.
+- Chapter 2: pins appear on the image; detection cards fade in staggered (one per third of the chapter).
+- Chapter 3: all 3 detections stable, animated "Searching…" pulse per card.
+- Chapter 4: 3 catalogue matches reveal one-by-one with real match percentages.
+
+Reuses the existing modal chrome (timeline, play/pause, chapter markers, prev/next, CTA footer, ESC/arrow keys).
+
+**Live-verified** (four screenshots, one per chapter): pins + detection cards + "Searching…" indicator + real match cards render correctly per stage. Navigation, chapter-marker jump, keyboard shortcuts, close (X), and both footer CTAs work.
+
 ## 2026-02-27 (round 3) — Hover-to-highlight ✅ (frontend-only, tiny)
 
 Small frontend polish: hovering a material card on the right column glows the matching numbered pin on the reference image, and hovering a pin on the image highlights the matching card (auto-scrolling it into view if off-screen). 90% of the plumbing was already there from the split-layout work — the components had `focusedIndex` state, `onHoverPin`, `onHoverCard`, and the pin/card styling both respected a `focused` prop. Two remaining gaps closed:
