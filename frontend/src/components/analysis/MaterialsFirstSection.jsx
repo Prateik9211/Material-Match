@@ -435,13 +435,9 @@ function MaterialCard({ row, index, onAddToShortlist, shortlisted, onAddCatalogu
     >
       <div className="bg-stone-panel px-5 py-3 border-b border-stone-border-soft flex items-baseline justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
-          <span
-            className="w-6 h-6 rounded-full bg-charcoal text-paper text-[10px] font-mono grid place-items-center shrink-0"
-            data-testid={`material-pin-${index}`}
-          >
-            {index + 1}
-          </span>
-          <div className="text-overline truncate">{row.zone || `Zone ${index + 1}`}</div>
+          <div className="text-overline truncate" data-testid={`material-pin-${index}`}>
+            {row.zone || "Zone"}
+          </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           <span

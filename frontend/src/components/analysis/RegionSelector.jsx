@@ -140,7 +140,10 @@ export default function RegionSelector({ projectId, imgSrc, onAnalyzed, pins, fo
         data-testid="region-canvas"
       >
         <img ref={imgRef} src={imgSrc} alt="Reference" crossOrigin="anonymous" className="w-full h-auto block select-none pointer-events-none" />
-        {/* Sprint 2 Revision — numbered pins linking image ↔ material card. */}
+        {/* Sprint 2 Revision — pins link image ↔ material card. 2026-02-27:
+            removed the numeric labels (founder felt they implied a
+            false sense of positional precision); now unlabeled dots
+            in the same bbox positions.  All hover interactivity kept. */}
         {mode !== "draw" && !rect && Array.isArray(pins) && pins.map((p, i) => {
           if (!p || typeof p.x !== "number" || typeof p.y !== "number") return null;
           const isFocused = focusedPinIndex === i;
@@ -150,18 +153,16 @@ export default function RegionSelector({ projectId, imgSrc, onAnalyzed, pins, fo
               key={i}
               onMouseEnter={() => onHoverPin && onHoverPin(i)}
               onMouseLeave={() => onHoverPin && onHoverPin(null)}
-              className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-full font-mono text-[10px] font-semibold grid place-items-center transition-all shadow-hover ${
+              className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-full transition-all shadow-hover ${
                 isFocused
-                  ? "w-8 h-8 bg-charcoal text-paper ring-4 ring-paper/70 z-20"
-                  : "w-6 h-6 bg-paper/95 text-charcoal border border-charcoal/40 hover:bg-charcoal hover:text-paper z-10"
+                  ? "w-5 h-5 bg-charcoal ring-4 ring-paper/70 z-20"
+                  : "w-3.5 h-3.5 bg-paper/95 border border-charcoal/70 hover:bg-charcoal z-10"
               }`}
               style={{ left: `${p.x}%`, top: `${p.y}%` }}
               data-testid={`image-pin-${i}`}
               aria-label={p.label || `Zone ${i + 1}`}
               title={p.label || `Zone ${i + 1}`}
-            >
-              {i + 1}
-            </button>
+            />
           );
         })}
         {rect && rect.w > 0.2 && rect.h > 0.2 && (
