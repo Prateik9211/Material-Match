@@ -27,6 +27,22 @@ Build a modern AI SaaS web application called "MaterialMatch AI" that helps arch
 ## Scene Segmentation — Hybrid Pipeline v3 (2026-07-18, live analyze flow)
 Admin validation tool at `/admin/scene-test` AND the LIVE user-facing `POST /api/projects/{id}/analyze-region` (with `mode="scene"`) now use a hybrid two-stage pipeline. Landing-page demo panel at `/` (`WorkflowVisual` in `Landing.jsx`) shows a real end-to-end T2 kitchen-scene result — MISTY GREY 85% visually verified, FROSTY WHITE, Anthracite 70% — no fabricated numbers.
 
+## 2026-02-27 — Founder-reported live-flow bug fixes ✅
+Three live-flow bugs surfaced during founder testing (all three fixed & regression-tested — see `/app/backend/tests/test_pin_and_vocab_fixes.py` and `test_reports/iteration_19.json`, backend 15/15 + frontend layout+sticky+pins verified):
+
+1. **Under-detection — ceilings / floors / trims went missing**
+   - Root cause: `ARCHITECTURAL_VOCAB` in `scene_segmentation.py` lacked `wainscot`, `trim`, `paneled wainscoting`. Separately, `filter_detections` used a uniform 0.55 confidence gate — plain white ceilings and neutral hardwood floors regularly return 0.42–0.52 from SAM3, so they were being suppressed even when the mask was correct.
+   - Fix: Added the three vocab prompts. Added `LABEL_MIN_CONFIDENCE` per-label override map (wall=0.40, ceiling/floor=0.35, backsplash/wainscot/trim/paneled=0.40); everything else still gates at 0.55. `filter_detections` now accepts `label_min_confidence=` and `run_scene_region_analysis` passes it through.
+
+2. **Inconsistent numbered pins on the reference image**
+   - Root cause: LLM prompt marks `pin` as OPTIONAL ("only include when confident, do not fabricate coordinates"), so `_coerce_pin` returned None for the omitted ones and the frontend rendered zero pins for those rows. Also, scene-mode rows produced by `_dna_to_row` had no `pin` field at all.
+   - Fix (LLM path): `_validate_analysis_payload` now fills a deterministic **group-based fallback pin** when the LLM omits `pin` (`_fallback_pin_for_group`: Ceiling→top band, Wall→mid, Floor→bottom band, Furniture→lower-mid; staggered across rows). Rows now carry `pin_source ∈ {"llm", "fallback_group"}` for debugging.
+   - Fix (scene path): `_dna_to_row` derives `pin` deterministically from **bbox centre in image %** whenever `image_size` and `bbox` are present. Scene mode always has both.
+   - Frontend: removed the `activeEphemeral ? [] : imagePins` gate in `Analysis.jsx` so pins render for scene-mode / region results too.
+
+3. **Stacked vertical layout requiring constant scroll**
+   - Fix: Restructured `Analysis.jsx` to a two-column grid (`data-testid="analysis-split-layout"`). Left column (`analysis-left-column`, `lg:col-span-5`, `lg:sticky lg:top-6 lg:self-start`) holds reference + intelligence panel and sticks to viewport. Right column (`analysis-right-column`, `lg:col-span-7`) holds materials → products → shortlist and scrolls independently.
+
 - **Stage A — object detection**: Roboflow SAM3 hosted API detects architectural objects. `filter_detections()` applies confidence + area + intra-class dedup (IoU 0.70) + **cross-class dedup (IoU 0.85, added 2026-07-18)** to eliminate the wall/backsplash concept-overlap bug.
 - **Stage B — material classification**: crops each kept object's bbox, applies a polygon mask (pixels outside SAM3's polygon replaced with the crop's median color), then calls `intelligence.dna.generate_swatch_dna` (GPT-4o-mini via Emergent Universal Key). Runs concurrently via `asyncio.gather`.
 - **Deterministic shortcuts** (no LLM call): `mirror → Glass`, `sink|faucet → Metal`, `plant → skip`. Mirror/sink/faucet shortcuts fire only when Stage-A confidence ≥ 0.65 (`shortcut_min_confidence`).
