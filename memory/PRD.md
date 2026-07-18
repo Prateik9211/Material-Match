@@ -24,23 +24,25 @@ Build a modern AI SaaS web application called "MaterialMatch AI" that helps arch
 - Downloadable PDF reports
 - Modern premium SaaS UX
 
-## Scene Segmentation — Hybrid Pipeline v2 (2026-07-18, production gate)
-Admin-only validation tool at `/admin/scene-test` (endpoint `POST /api/admin/test-scene-segmentation`) uses a hybrid two-stage pipeline:
+## Scene Segmentation — Hybrid Pipeline v3 (2026-07-18, live analyze flow)
+Admin validation tool at `/admin/scene-test` AND the LIVE user-facing `POST /api/projects/{id}/analyze-region` (with `mode="scene"`) now use a hybrid two-stage pipeline. Landing-page demo panel at `/` (`WorkflowVisual` in `Landing.jsx`) shows a real end-to-end T2 kitchen-scene result — MISTY GREY 85% visually verified, FROSTY WHITE, Anthracite 70% — no fabricated numbers.
 
-- **Stage A — object detection**: Roboflow SAM3 hosted API detects architectural objects using `ARCHITECTURAL_VOCAB` (wall, ceiling, floor, cabinet, countertop, backsplash, sofa, curtain, plant, bed, headboard, mirror, sink, toilet, bathtub, rug, shelf, nightstand). Post-processed by `filter_detections()` with confidence + area + intra-class dedup (IoU 0.70) + **cross-class dedup (IoU 0.85, added 2026-07-18)** to eliminate the SAM3 wall/backsplash concept-overlap bug.
-- **Stage B — material classification**: crops each kept object's bbox, then **applies a polygon mask** (added 2026-07-18) — pixels outside SAM3's polygon are replaced with the crop's median color so the classifier only sees pixels SAM3 assigned to the object. Then calls the production `intelligence.dna.generate_swatch_dna` (GPT-4o-mini via Emergent Universal Key) — the same function the live matcher uses. Runs concurrently via `asyncio.gather`.
-- **Deterministic shortcuts** (no LLM call): `mirror → Glass`, `sink | faucet → Metal`, `plant → skip`. Mirror/sink/faucet shortcuts fire only when Stage-A confidence ≥ 0.65 (`shortcut_min_confidence`, added 2026-07-18) — below that they defer to DNA to avoid confidently mislabeling low-confidence false positives.
+- **Stage A — object detection**: Roboflow SAM3 hosted API detects architectural objects. `filter_detections()` applies confidence + area + intra-class dedup (IoU 0.70) + **cross-class dedup (IoU 0.85, added 2026-07-18)** to eliminate the wall/backsplash concept-overlap bug.
+- **Stage B — material classification**: crops each kept object's bbox, applies a polygon mask (pixels outside SAM3's polygon replaced with the crop's median color), then calls `intelligence.dna.generate_swatch_dna` (GPT-4o-mini via Emergent Universal Key). Runs concurrently via `asyncio.gather`.
+- **Deterministic shortcuts** (no LLM call): `mirror → Glass`, `sink|faucet → Metal`, `plant → skip`. Mirror/sink/faucet shortcuts fire only when Stage-A confidence ≥ 0.65 (`shortcut_min_confidence`).
+- **Family alternatives**: DNA classifier returns `family_confidence` (0-1) and `family_alternatives` (top 1-2 alternate families) when the crop lacks material-defining texture. `normalize_dna` also applies a heuristic: warm caramel/tan/oak hex on a Paint result auto-downgrades to fconf=0.5 with `[Laminate, Wood, Veneer]` alts. Retrieval widens `allowed_categories` and treats alt families as full-match when fconf<0.7.
+- **Isolated-crop fallback**: if Stage-A returns 0 objects (user uploads a close-up of a single material), silently fall through to the existing single-swatch analysis path.
+- **Scene-mode rerank**: uses `strict=False` — wide-angle scene crops DEMOTE rejected candidates by −15 pts rather than dropping them (same treatment paint chips already get).
 
-**Environment vars:** `ROBOFLOW_API_KEY` (Stage A) + `EMERGENT_LLM_KEY` (Stage B). Both already present in `backend/.env`.
+**Environment vars**: `ROBOFLOW_API_KEY` (Stage A) + `EMERGENT_LLM_KEY` (Stage B).
 
-**Removed as part of the pivot** (2026-07-18): SAM3 Stage-B material vocab (`_DEFAULT_MATERIAL_VOCAB`), `MATERIAL_VOCAB_BY_OBJECT`, thin-strip neighbor-aware padding (`_max_pad_in_direction`), wall/ceiling >40% skip gate (`_WALL_STAGEB_SKIP_AREA_FRAC`, `_BIG_OBJECT_STAGEB_SKIP`), and the admin form's `material_vocab` parameter.
+**Removed 2026-07-18**: SAM3 Stage-B material vocab, `MATERIAL_VOCAB_BY_OBJECT`, thin-strip padding, >40% wall/ceiling skip gate, admin `material_vocab` param.
 
-**Validation result (2026-07-18, production gate):**
-- Hard-case 10 batch: material plausibility **100%** (102/102 attempted) — every previously-failed case now handled correctly.
-- General 21 batch: material plausibility **94.5%** (171/181 attempted). Excluding 3 accidentally-outdoor photos, 97.5%.
-- Combined: **273/283 = 96.5%** material plausibility across all 31 images.
-- Remaining ~4% error is Stage-A quality (SAM3 detecting objects in outdoor scenes; imprecise polygons on 1-2 countertops), NOT Stage-B DNA errors.
-- Per-image wall-clock: ~7 s (parallel=3). Per-crop LLM cost: ~$0.001. Cross-class dedup drops 7 duplicate LLM calls per 31-image batch.
+**Validation results (2026-07-18)**:
+- Hard-case 10 batch: material plausibility **100% (102/102)**.
+- General 21 batch: material plausibility **94.5% (171/181)**.
+- End-to-end match test (5 realistic scene/close-up photos against the live published catalogue): **3/4 direct-target hit rate** (was 2/4 before family-alts). T1 UNIQUE tile rank 1, T2 MISTY GREY rank 1 @ 85% verified + MISTY SLATE SPARKLE rank 4, T3 LENOIR LIMESTONE rank 1 @ 100% verified, T4 miss due to inconsistent catalogue metadata (target has `material_family=Wood` but `category=Stone`).
+- Per-image wall-clock: ~7 s (parallel=3). Per-crop LLM cost: ~$0.001.
 
 
 

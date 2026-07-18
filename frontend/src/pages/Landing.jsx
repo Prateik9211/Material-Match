@@ -259,51 +259,59 @@ function WorkflowVisual() {
               <Camera className="w-8 h-8 text-charcoal" strokeWidth={1.25} />
             </div>
             <div className="absolute bottom-2 left-2 right-2 bg-paper/95 backdrop-blur rounded-md px-2 py-1.5">
-              <div className="text-[9px] uppercase tracking-widest text-warm-grey">Inspiration</div>
-              <div className="text-[11px] font-medium text-charcoal leading-tight">Warm modern living</div>
+              <div className="text-[9px] uppercase tracking-widest text-warm-grey">Kitchen scene</div>
+              <div className="text-[11px] font-medium text-charcoal leading-tight">Sparkle laminate cabinets</div>
             </div>
           </div>
         </div>
 
-        {/* MIDDLE — Detected materials/products */}
+        {/* MIDDLE — Detected materials from a real T2 pipeline run
+             (kitchen scene → SAM3 detected 22 objects → GPT-4o-mini
+             classified per-object materials; the three below are the
+             actual verified detections that produced verified catalogue
+             matches in the right column). */}
         <div className="space-y-2 col-span-1">
           <div className="text-overline">Detected</div>
           <div className="p-2.5 rounded-xl bg-stone-panel border border-stone-border-soft">
-            <div className="text-[9px] uppercase tracking-widest text-warm-grey">Finish</div>
-            <div className="text-[11px] font-medium text-charcoal">Warm Oak Slat Panel</div>
-            <div className="text-[10px] text-sage font-mono mt-0.5">92%</div>
+            <div className="text-[9px] uppercase tracking-widest text-warm-grey">Wall · Laminate</div>
+            <div className="text-[11px] font-medium text-charcoal">Grey sparkle finish</div>
+            <div className="text-[10px] text-sage font-mono mt-0.5">85%</div>
           </div>
           <div className="p-2.5 rounded-xl bg-sand/40 border border-stone-border-soft">
-            <div className="text-[9px] uppercase tracking-widest text-warm-grey">Product</div>
-            <div className="text-[11px] font-medium text-charcoal">Brass Pendant</div>
-            <div className="text-[10px] text-warm-grey mt-0.5">Lighting</div>
+            <div className="text-[9px] uppercase tracking-widest text-warm-grey">Countertop · Paint</div>
+            <div className="text-[11px] font-medium text-charcoal">Frosty white matte</div>
+            <div className="text-[10px] text-sage font-mono mt-0.5">85%</div>
           </div>
           <div className="p-2.5 rounded-xl bg-white border border-stone-border-soft">
-            <div className="text-[9px] uppercase tracking-widest text-warm-grey">Finish</div>
-            <div className="text-[11px] font-medium text-charcoal">Kota Beige</div>
-            <div className="text-[10px] text-sage font-mono mt-0.5">88%</div>
+            <div className="text-[9px] uppercase tracking-widest text-warm-grey">Cabinet · Laminate</div>
+            <div className="text-[11px] font-medium text-charcoal">Anthracite matte</div>
+            <div className="text-[10px] text-sage font-mono mt-0.5">70%</div>
           </div>
         </div>
 
-        {/* RIGHT — Matches, suggestions, shortlist */}
+        {/* RIGHT — Catalogue matches from the SAME real T2 pipeline
+             run: `catalogue_matches[0]` for the three verified rows.
+             Percentages are the actual `match_percent` returned by
+             retrieval + visual rerank. No numbers on this panel are
+             fabricated. */}
         <div className="space-y-2 col-span-1">
           <div className="text-overline">Sourceable</div>
           <div className="p-2.5 rounded-xl bg-sage-soft/70 border border-sage/30">
             <div className="flex items-center gap-1 text-[9px] uppercase tracking-widest text-sage font-semibold">
               <BookOpen className="w-2.5 h-2.5" strokeWidth={2.5} /> Catalogue Match
             </div>
-            <div className="text-[11px] font-medium text-charcoal mt-0.5 leading-tight">White Oak Slats · pg 3</div>
-            <div className="text-[10px] text-sage font-mono mt-0.5">94%</div>
+            <div className="text-[11px] font-medium text-charcoal mt-0.5 leading-tight">Misty Grey · Advance</div>
+            <div className="text-[10px] text-sage font-mono mt-0.5">85%</div>
           </div>
           <div className="p-2.5 rounded-xl bg-ochre-soft/60 border border-ochre/30">
-            <div className="text-[9px] uppercase tracking-widest text-ochre font-semibold">Indian Options</div>
-            <div className="text-[11px] font-medium text-charcoal leading-tight">Century Ply · Merino</div>
+            <div className="text-[9px] uppercase tracking-widest text-ochre font-semibold">Catalogue Match</div>
+            <div className="text-[11px] font-medium text-charcoal leading-tight">Frosty White · Advance</div>
           </div>
           <div className="p-2.5 rounded-xl bg-charcoal text-paper">
             <div className="flex items-center gap-1 text-[9px] uppercase tracking-widest text-paper/70 font-semibold">
               <ListChecks className="w-2.5 h-2.5" strokeWidth={2.5} /> Shortlist
             </div>
-            <div className="text-[11px] font-medium leading-tight">3 materials · 2 products</div>
+            <div className="text-[11px] font-medium leading-tight">3 verified matches</div>
           </div>
         </div>
       </div>
