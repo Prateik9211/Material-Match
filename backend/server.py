@@ -7506,10 +7506,13 @@ async def admin_test_scene_segmentation(
 
         # Stage B — per-object material classification via
         # generate_swatch_dna (GPT-4o-mini), with deterministic shortcuts
-        # for mirror / sink / faucet / plant.
+        # for mirror / sink / faucet / plant.  Polygon-masked crops so
+        # the classifier only sees pixels SAM3 assigned to the object.
         stage_b_tasks = [
             classify_object_material(
                 img, obj["bbox"], obj["label"], EMERGENT_LLM_KEY,
+                polygon=obj.get("polygon"),
+                object_confidence=float(obj.get("confidence", 0.0)),
             )
             for obj in objects
         ]

@@ -306,8 +306,20 @@ def filter_detections(
     min_area_frac: float = 0.0,
     image_w: int | None = None,
     image_h: int | None = None,
+    cross_class_iou: float = 0.85,
 ) -> list[dict]:
-    """Drop sub-threshold detections and same-class near-duplicates."""
+    """Drop sub-threshold detections and dedup masks with heavy overlap.
+
+    Two dedup passes:
+      * Same-class:  detections with the SAME label sharing > `iou_dedup`
+                     IoU keep only the higher-confidence one (default 0.70).
+      * Cross-class: detections with DIFFERENT labels sharing very high
+                     IoU (> `cross_class_iou`, default 0.85) keep only
+                     the higher-confidence one — targets the SAM3
+                     concept-overlap bug where "wall" and "backsplash"
+                     fire on the same rectangular region with identical
+                     bboxes.
+    """
     kept = [d for d in detections if float(d.get("confidence", 0)) >= min_confidence]
     if min_area_frac > 0 and image_w and image_h:
         img_area = float(image_w) * float(image_h)
@@ -328,11 +340,14 @@ def filter_detections(
             continue
         clash = False
         for k in out:
-            if k.get("label") != d.get("label") or k.get("bbox") is None:
+            if k.get("bbox") is None:
                 continue
-            if _bbox_iou(k["bbox"], d["bbox"]) > iou_dedup:
-                clash = True
-                break
+            iou = _bbox_iou(k["bbox"], d["bbox"])
+            same_label = k.get("label") == d.get("label")
+            if same_label and iou > iou_dedup:
+                clash = True; break
+            if not same_label and iou > cross_class_iou:
+                clash = True; break
         if not clash:
             out.append(d)
     return out
@@ -367,19 +382,110 @@ def _crop_to_base64(crop: Image.Image, max_edge: int = 1024) -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+def _apply_polygon_mask(
+    crop: Image.Image,
+    polygon: list[dict[str, float]],
+    crop_origin: tuple[int, int],
+) -> Image.Image:
+    """Replace pixels outside SAM3's polygon with the crop's median color.
+
+    The median color is used (rather than pure black or white) because
+    it minimizes the visual contrast between the masked-out region and
+    the object surface — the DNA classifier can then focus on the
+    object's material without being distracted by a hard mask edge or a
+    contrasting background that the model might describe.
+
+    Args:
+        crop:        the axis-aligned bbox crop already extracted.
+        polygon:     list of {"x": ..., "y": ...} points in ORIGINAL
+                     image coordinates (as returned by Stage A).
+        crop_origin: (x0, y0) offset of the crop within the original
+                     image, so polygon coords can be translated into
+                     crop-local coordinates.
+
+    Returns:
+        A new RGB PIL.Image with non-polygon pixels replaced by the
+        crop's median colour.  Falls back to the untouched crop if the
+        polygon degenerates or the mask fails to render.
+    """
+    from PIL import ImageDraw
+
+    ox, oy = crop_origin
+    cw, ch = crop.size
+    local = []
+    for p in polygon:
+        try:
+            x = float(p.get("x", 0)) - ox
+            y = float(p.get("y", 0)) - oy
+        except (TypeError, ValueError):
+            continue
+        local.append((x, y))
+    if len(local) < 3:
+        return crop
+    try:
+        mask = Image.new("L", (cw, ch), 0)
+        ImageDraw.Draw(mask).polygon(local, fill=255)
+    except (ValueError, TypeError):
+        return crop
+
+    # Sample the median color from ONLY the in-polygon pixels — if we
+    # took the median of the whole crop, the background we're about to
+    # mask out would drag the fill color.
+    try:
+        rgb = crop.convert("RGB")
+        # Use a small sample to keep this fast — PIL's histogram over
+        # 1M+ pixels is measurable on the request path.
+        sample_edge = 128
+        if max(cw, ch) > sample_edge:
+            scale = sample_edge / max(cw, ch)
+            sw, sh = max(1, int(cw * scale)), max(1, int(ch * scale))
+            rgb_s = rgb.resize((sw, sh), Image.BILINEAR)
+            mask_s = mask.resize((sw, sh), Image.NEAREST)
+        else:
+            rgb_s, mask_s = rgb, mask
+        pixels = rgb_s.load()
+        mpx = mask_s.load()
+        rs, gs, bs = [], [], []
+        for yy in range(rgb_s.height):
+            for xx in range(rgb_s.width):
+                if mpx[xx, yy] > 127:
+                    r, g, b = pixels[xx, yy]
+                    rs.append(r); gs.append(g); bs.append(b)
+        if not rs:
+            fill = (128, 128, 128)
+        else:
+            rs.sort(); gs.sort(); bs.sort()
+            n = len(rs)
+            fill = (rs[n // 2], gs[n // 2], bs[n // 2])
+    except Exception:
+        fill = (128, 128, 128)
+
+    bg = Image.new("RGB", (cw, ch), fill)
+    return Image.composite(crop.convert("RGB"), bg, mask)
+
+
 async def classify_object_material(
     image: Any,
     bbox: list[float] | tuple[float, float, float, float],
     object_label: str,
     api_key: str,
+    polygon: list[dict[str, float]] | None = None,
+    object_confidence: float = 1.0,
+    shortcut_min_confidence: float = 0.65,
 ) -> dict:
     """Stage B — material identification for a single detected object.
 
     Handles the three deterministic shortcuts (mirror / sink / faucet /
-    plant) without hitting the LLM.  For everything else, crops the image
-    to the object's bbox and calls the production
-    `intelligence.dna.generate_swatch_dna` function — the same call the
-    live matcher uses on every user-region query.
+    plant) without hitting the LLM — but only when Stage-A confidence is
+    high enough to trust the object label.  Below `shortcut_min_confidence`
+    the mirror/sink/faucet shortcuts defer to the LLM path so a false-
+    positive Stage-A detection doesn't get confidently mislabeled.
+
+    For the LLM path, the crop is polygon-masked: pixels outside SAM3's
+    reported polygon are filled with the crop's median color so the
+    classifier never sees pixels that belong to a neighboring object.
+    This eliminates the "wall bbox overlaps curtain → classifier flips
+    to Fabric" family of failures.
 
     Args:
         image: source image (PIL / bytes / base64 / path).
@@ -388,11 +494,18 @@ async def classify_object_material(
                       for the DNA prompt AND as the key for the
                       deterministic shortcut table).
         api_key: EMERGENT_LLM_KEY.
+        polygon: optional list of {x, y} points in original-image pixels;
+                 when present, pixels outside this polygon are masked out
+                 of the crop before the LLM call.
+        object_confidence: Stage-A confidence for this detection; used to
+                 gate the deterministic shortcuts.
+        shortcut_min_confidence: minimum confidence to trust a
+                 mirror/sink/faucet shortcut (default 0.65).
 
     Returns:
         {
-          "crop_origin": [x0, y0] | None,   # pixel offset in original.
-          "crop_size":   [w, h]   | None,   # size of the crop sent.
+          "crop_origin": [x0, y0] | None,
+          "crop_size":   [w, h]   | None,
           "source":      "shortcut" | "dna" | "skipped" | "error",
           "material":    <DNA dict>  or  <shortcut dict>  or  None,
           "error":       str  or  None,
@@ -400,7 +513,10 @@ async def classify_object_material(
     """
     label_l = (object_label or "").strip().lower()
 
-    # --- Shortcut: skip material entirely (plants). -----------------------
+    # --- Shortcut: skip material entirely (plants). ----------------------
+    # Plant → skip fires at ANY confidence; a skipped material is always
+    # safer than a wrong one, and even a low-confidence plant detection
+    # is very unlikely to have useful material info.
     if label_l in DETERMINISTIC_MATERIAL and DETERMINISTIC_MATERIAL[label_l] is None:
         return {
             "crop_origin": None, "crop_size": None,
@@ -409,8 +525,15 @@ async def classify_object_material(
             "error": f"no meaningful material for object type '{label_l}'",
         }
 
-    # --- Shortcut: deterministic material (mirror/sink/faucet). -----------
-    if label_l in DETERMINISTIC_MATERIAL:
+    # --- Shortcut: deterministic material (mirror/sink/faucet). ----------
+    # Only trust when Stage-A confidence is high enough; below the gate,
+    # fall through to the LLM path so g10-style false-positive "sinks"
+    # on exterior walls don't get confidently mislabeled as Metal.
+    if (
+        label_l in DETERMINISTIC_MATERIAL
+        and DETERMINISTIC_MATERIAL[label_l] is not None
+        and float(object_confidence) >= float(shortcut_min_confidence)
+    ):
         return {
             "crop_origin": None, "crop_size": None,
             "source": "shortcut",
@@ -418,7 +541,7 @@ async def classify_object_material(
             "error": None,
         }
 
-    # --- LLM path: crop + generate_swatch_dna. ----------------------------
+    # --- LLM path: crop + generate_swatch_dna. ---------------------------
     if not api_key:
         return {
             "crop_origin": None, "crop_size": None,
@@ -430,6 +553,13 @@ async def classify_object_material(
     try:
         img = _to_pil(image)
         crop, (x0, y0, x1, y1) = _crop_to_bbox(img, list(bbox))
+        # Polygon mask: replace non-object pixels with the crop's median
+        # color so the classifier only reasons about pixels SAM3 assigned
+        # to this object.  Skip masking if the polygon is missing or so
+        # coarse it barely differs from the bbox (in which case the mask
+        # has no effect anyway).
+        if polygon and len(polygon) >= 3:
+            crop = _apply_polygon_mask(crop, polygon, (x0, y0))
     except Sam3Error as e:
         return {
             "crop_origin": None, "crop_size": None,
