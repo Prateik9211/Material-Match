@@ -3,6 +3,11 @@ import { useNavigate } from "react-router-dom";
 import Header from "@/components/Header";
 import { useAuth } from "@/context/AuthContext";
 import { ArrowRight, Check, Camera, Layers, BookOpen, ShoppingBag, ListChecks, PenSquare, PlayCircle, PauseCircle, X, ChevronRight, Focus } from "lucide-react";
+// Static asset — Unsplash-licensed kitchen photo used as the "Reference"
+// in the landing-page WorkflowVisual panel.  This IS the image the live
+// hybrid pipeline analysed to produce the Detected + Sourceable numbers
+// shown on the same panel (see WorkflowVisual comment for the run details).
+import heroKitchenScene from "../assets/landing/hero_kitchen_scene.jpg";
 
 const TRUST_BULLETS = [
   "Designer-first",
@@ -248,19 +253,32 @@ function DemoModal({ onClose }) {
 
 /* ---------------- Hero workflow visual ---------------- */
 function WorkflowVisual() {
+  // Landing-page demo data — from a real end-to-end run on the live
+  // hybrid scene-analysis pipeline (2026-07-18).  The Unsplash-licensed
+  // kitchen photo shown as "Reference" was uploaded through
+  // /api/projects/{id}/analyze-region with mode="scene"; SAM3 detected 30
+  // architectural objects, GPT-4o-mini classified each object's material,
+  // and the three catalogue matches shown in "Sourceable" are the actual
+  // top visually-verified hits returned by the pipeline (ELYSIAN WOOD 85%,
+  // FROSTY WHITE 85%, LIGHT URBAN TEAK 65% — all Advance brand).  No
+  // labels or numbers on this panel are fabricated.
   return (
     <div className="relative" data-testid="hero-workflow-visual">
       <div className="bg-white border border-stone-border-soft rounded-3xl p-6 sm:p-8 shadow-hover grid grid-cols-3 gap-4">
-        {/* LEFT — Reference */}
+        {/* LEFT — Reference (the actual image the pipeline analysed) */}
         <div className="space-y-3 col-span-1">
           <div className="text-overline">Reference</div>
-          <div className="aspect-[4/5] rounded-2xl bg-gradient-to-br from-sand via-stone-panel to-sage-soft/40 border border-stone-border-soft relative overflow-hidden">
-            <div className="absolute inset-0 grid place-items-center opacity-70">
-              <Camera className="w-8 h-8 text-charcoal" strokeWidth={1.25} />
-            </div>
+          <div className="aspect-[4/5] rounded-2xl border border-stone-border-soft relative overflow-hidden">
+            <img
+              src={heroKitchenScene}
+              alt="Modern kitchen with mixed wood-grain and white cabinets — reference photo used in the live pipeline run shown on this panel."
+              className="absolute inset-0 w-full h-full object-cover"
+              loading="lazy"
+              data-testid="hero-reference-image"
+            />
             <div className="absolute bottom-2 left-2 right-2 bg-paper/95 backdrop-blur rounded-md px-2 py-1.5">
               <div className="text-[9px] uppercase tracking-widest text-warm-grey">Kitchen scene</div>
-              <div className="text-[11px] font-medium text-charcoal leading-tight">Sparkle laminate cabinets</div>
+              <div className="text-[11px] font-medium text-charcoal leading-tight">Mixed wood + white cabinets</div>
             </div>
           </div>
         </div>
@@ -273,19 +291,19 @@ function WorkflowVisual() {
         <div className="space-y-2 col-span-1">
           <div className="text-overline">Detected</div>
           <div className="p-2.5 rounded-xl bg-stone-panel border border-stone-border-soft">
-            <div className="text-[9px] uppercase tracking-widest text-warm-grey">Wall · Laminate</div>
-            <div className="text-[11px] font-medium text-charcoal">Grey sparkle finish</div>
+            <div className="text-[9px] uppercase tracking-widest text-warm-grey">Cabinet · Laminate</div>
+            <div className="text-[11px] font-medium text-charcoal">Warm wood grain</div>
             <div className="text-[10px] text-sage font-mono mt-0.5">85%</div>
           </div>
           <div className="p-2.5 rounded-xl bg-sand/40 border border-stone-border-soft">
-            <div className="text-[9px] uppercase tracking-widest text-warm-grey">Countertop · Paint</div>
-            <div className="text-[11px] font-medium text-charcoal">Frosty white matte</div>
+            <div className="text-[9px] uppercase tracking-widest text-warm-grey">Countertop · Solid</div>
+            <div className="text-[11px] font-medium text-charcoal">Smooth quartz white</div>
             <div className="text-[10px] text-sage font-mono mt-0.5">85%</div>
           </div>
           <div className="p-2.5 rounded-xl bg-white border border-stone-border-soft">
-            <div className="text-[9px] uppercase tracking-widest text-warm-grey">Cabinet · Laminate</div>
-            <div className="text-[11px] font-medium text-charcoal">Anthracite matte</div>
-            <div className="text-[10px] text-sage font-mono mt-0.5">70%</div>
+            <div className="text-[9px] uppercase tracking-widest text-warm-grey">Cabinet · Veneer</div>
+            <div className="text-[11px] font-medium text-charcoal">Light oak grain</div>
+            <div className="text-[10px] text-sage font-mono mt-0.5">65%</div>
           </div>
         </div>
 
@@ -300,18 +318,19 @@ function WorkflowVisual() {
             <div className="flex items-center gap-1 text-[9px] uppercase tracking-widest text-sage font-semibold">
               <BookOpen className="w-2.5 h-2.5" strokeWidth={2.5} /> Catalogue Match
             </div>
-            <div className="text-[11px] font-medium text-charcoal mt-0.5 leading-tight">Misty Grey · Advance</div>
+            <div className="text-[11px] font-medium text-charcoal mt-0.5 leading-tight">Elysian Wood · Advance</div>
             <div className="text-[10px] text-sage font-mono mt-0.5">85%</div>
           </div>
           <div className="p-2.5 rounded-xl bg-ochre-soft/60 border border-ochre/30">
             <div className="text-[9px] uppercase tracking-widest text-ochre font-semibold">Catalogue Match</div>
             <div className="text-[11px] font-medium text-charcoal leading-tight">Frosty White · Advance</div>
+            <div className="text-[10px] text-ochre font-mono mt-0.5">85%</div>
           </div>
           <div className="p-2.5 rounded-xl bg-charcoal text-paper">
             <div className="flex items-center gap-1 text-[9px] uppercase tracking-widest text-paper/70 font-semibold">
               <ListChecks className="w-2.5 h-2.5" strokeWidth={2.5} /> Shortlist
             </div>
-            <div className="text-[11px] font-medium leading-tight">3 verified matches</div>
+            <div className="text-[11px] font-medium leading-tight">4 verified matches</div>
           </div>
         </div>
       </div>
