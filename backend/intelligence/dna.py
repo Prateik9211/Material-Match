@@ -57,6 +57,8 @@ CANONICAL DESCRIPTION rules (critical for embedding retrieval):
 Return exactly this JSON:
 {{
   "material_family": "one of: Laminate | Veneer | Tile | Paint | Stone | Fabric | Wood | Metal | Wallpaper | Other",
+  "family_confidence": "0.0-1.0 — how confident you are the primary family is correct. Rules for LOW confidence (<0.55): (a) the crop is a plain uniform panel with NO texture, grain, veining, weave, or grout visible AND the colour is a wood-tone warm brown / tan / oak / walnut / caramel — in that case a plausible Laminate or Veneer or Wood cannot be ruled out by texture and you MUST report LOW confidence with those as alternatives; (b) small (<200px) low-resolution crop where fine grain / weave would not be resolvable; (c) glossy dark panel that could be Laminate, Paint, or Stone. Rules for HIGH confidence (>=0.8): visible grain, weave, veining, grout / tile joints, or an unambiguous fabric drape.",
+  "family_alternatives": ["1-2 other plausible families in order of likelihood — REQUIRED when family_confidence < 0.7. Common pairs: a warm-brown flat patch → ['Laminate','Wood']; a dark glossy panel → ['Laminate','Stone']; a white matte panel → ['Laminate','Paint']. Empty [] only when family_confidence >= 0.7. Never include the primary family here."],
   "surface_type": "specific surface e.g. 'wood-grain decorative laminate', 'polished marble slab', 'cane-look laminate panel'",
   "primary_color": {{"name": "short colour name", "hex": "#RRGGBB"}},
   "secondary_colors": [{{"name": "...", "hex": "#RRGGBB"}}],
@@ -84,8 +86,28 @@ def _norm_color(c) -> dict:
 def normalize_dna(raw: dict) -> dict:
     """Coerce any LLM/metadata output into the canonical DNA shape."""
     raw = raw or {}
+    # Family alternatives — parsed for low-confidence crops so retrieval
+    # can widen the candidate pool to include a second/third plausible
+    # family instead of committing to a single guessed family and
+    # searching the wrong catalogue category.
+    alts_raw = raw.get("family_alternatives") or []
+    if isinstance(alts_raw, str):
+        alts_raw = [alts_raw]
+    family_alternatives: list[str] = []
+    for a in alts_raw[:3]:
+        s = _clean_str(a).title()
+        if s and s not in family_alternatives:
+            family_alternatives.append(s)
+    try:
+        family_confidence = float(raw.get("family_confidence") or 1.0)
+    except (TypeError, ValueError):
+        family_confidence = 1.0
+    family_confidence = max(0.0, min(1.0, family_confidence))
+
     dna = {
         "material_family": _clean_str(raw.get("material_family")).title(),
+        "family_confidence": family_confidence,
+        "family_alternatives": family_alternatives,
         "surface_type": _clean_str(raw.get("surface_type")),
         "primary_color": _norm_color(raw.get("primary_color")),
         "secondary_colors": [_norm_color(c) for c in (raw.get("secondary_colors") or [])[:3]],
@@ -99,6 +121,38 @@ def normalize_dna(raw: dict) -> dict:
         "canonical_description": _clean_str(raw.get("canonical_description")),
         "dna_version": DNA_VERSION,
     }
+    # Never let an alt echo the primary.
+    fam_l = dna["material_family"].lower()
+    dna["family_alternatives"] = [a for a in dna["family_alternatives"] if a.lower() != fam_l]
+
+    # 2026-07 heuristic — DNA classifiers are prone to committing to
+    # "Paint" for any flat uniform crop, but real interior paint colours
+    # don't cover the warm caramel / tan / oak / walnut range (those
+    # colours read as Laminate or Wood in a real spec book).  When we
+    # see `Paint` on a warm-brown crop, override to low confidence and
+    # add the missing alternatives so retrieval also searches the
+    # laminate and wood catalogues.  This directly fixes the T4-class
+    # failure: an isolated warm-oak swatch getting Paint-family retrieval
+    # instead of Wood/Laminate.
+    if fam_l == "paint":
+        pc_hex = (dna.get("primary_color") or {}).get("hex") or ""
+        r = g = b = None
+        if pc_hex.startswith("#") and len(pc_hex) == 7:
+            try:
+                r = int(pc_hex[1:3], 16); g = int(pc_hex[3:5], 16); b = int(pc_hex[5:7], 16)
+            except ValueError:
+                r = g = b = None
+        # Warm-brown / tan / oak / walnut range: R > G > B AND R-B > 40
+        # AND R > 100 AND B < 180 (excludes bright whites/creams that
+        # ARE plausible paint colours).
+        if (r is not None and r > g > b and (r - b) > 40
+                and r > 100 and b < 180):
+            dna["family_confidence"] = min(dna["family_confidence"], 0.5)
+            for alt in ("Laminate", "Wood", "Veneer"):
+                if alt.lower() != fam_l and alt not in dna["family_alternatives"]:
+                    dna["family_alternatives"].append(alt)
+            dna["family_alternatives"] = dna["family_alternatives"][:3]
+
     if not dna["canonical_description"]:
         dna["canonical_description"] = build_canonical_text(dna)
     return dna
@@ -183,6 +237,8 @@ def dna_from_query_row(row: dict) -> dict:
     keywords = row.get("keywords") or []
     return normalize_dna({
         "material_family": row.get("material_family"),
+        "family_confidence": row.get("family_confidence", 1.0),
+        "family_alternatives": row.get("family_alternatives") or [],
         "surface_type": _clean_str(row.get("material_type")),
         "primary_color": {"name": _clean_str(row.get("color")), "hex": _clean_str(row.get("color_hex"))},
         "texture": _clean_str(row.get("texture")),

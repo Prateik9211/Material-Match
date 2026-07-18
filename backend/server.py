@@ -1398,6 +1398,35 @@ def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 62,
     if allowed_categories is not None:
         allow_norm = set(_normalize_category(c) or "" for c in allowed_categories)
         allow_norm.discard("")
+        # 2026-07 — when the DNA classifier itself reported LOW confidence
+        # on the primary family (`family_confidence < 0.7`, typically a
+        # flat / texture-less crop where Paint vs Laminate vs Veneer are
+        # visually indistinguishable), widen the allowed-category set to
+        # include the categories of the alternative families the
+        # classifier flagged.  Retrieval then searches those extra
+        # catalogue partitions AND the `attribute_similarity` family
+        # scorer treats them as full-family-match, so the correct answer
+        # can win on colour / finish / pattern signals.
+        alts = row.get("family_alternatives") or []
+        fconf = float(row.get("family_confidence") or 1.0)
+        # LLM-classifier path (single-swatch / analyze-region fallback)
+        # attaches alts inside visual_dna rather than on the top-level
+        # row.  Look there too so pool widening fires for that path
+        # too — critical for isolated-crop uploads that never hit the
+        # hybrid scene classifier.
+        vdna = row.get("visual_dna") or {}
+        if not alts:
+            alts = vdna.get("family_alternatives") or []
+        if fconf >= 1.0 and vdna.get("family_confidence") is not None:
+            try:
+                fconf = float(vdna["family_confidence"])
+            except (TypeError, ValueError):
+                pass
+        if alts and fconf < 0.7:
+            for alt_fam in alts:
+                alt_cat = _normalize_category(alt_fam)
+                if alt_cat:
+                    allow_norm.add(alt_cat)
         if not allow_norm:
             return []
     # Studio (uploaded PDF) records first — real user data outranks seed.
@@ -3048,6 +3077,13 @@ def _dna_to_row(
         "object_type": label,
         "surface_description": canonical or material_type,
         "material_family": material_family or "Other",
+        # 2026-07 — expose family ambiguity to retrieval so a flat cabinet-
+        # door crop classified as "Paint" but truly a laminate can still
+        # find the correct laminate entry.  See dna.py + retrieval.py.
+        "family_confidence": float(dna.get("family_confidence") or 1.0)
+                             if isinstance(dna, dict) else 1.0,
+        "family_alternatives": list(dna.get("family_alternatives") or [])
+                               if isinstance(dna, dict) else [],
         "material_type": material_type,
         "color": color_name,
         "color_hex": color_hex,
@@ -3328,6 +3364,8 @@ async def analyze_region(project_id: str, payload: RegionAnalyzePayload,
                 from intelligence.dna import normalize_dna
                 vision_dna = normalize_dna({
                     "material_family": r.get("material_family"),
+                    "family_confidence": r.get("family_confidence", 1.0),
+                    "family_alternatives": r.get("family_alternatives") or [],
                     "surface_type": r.get("material_type"),
                     "primary_color": {"name": r.get("color", ""),
                                        "hex": r.get("color_hex", "")},

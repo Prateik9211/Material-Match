@@ -109,11 +109,27 @@ def _token_sim(a: str, b: str) -> float | None:
 def attribute_similarity(qdna: dict, cdna: dict) -> dict:
     """Deterministic field-wise similarity between two Visual DNA dicts.
     Missing data scores neutral (0.5) — absence of evidence is not
-    evidence of mismatch. Returns per-field 0..1 plus weighted overall."""
+    evidence of mismatch. Returns per-field 0..1 plus weighted overall.
+
+    2026-07 — when the query's DNA was flagged as low-confidence on
+    family (`family_confidence < 0.7` from a plain / texture-less crop),
+    any family in `family_alternatives` also scores as a full match.
+    Prevents "flat cabinet door classified as Paint" from locking
+    retrieval into the Paint catalogue and missing the correct Laminate
+    entry — instead both catalogues are treated equally against the
+    same colour / finish / pattern signals."""
     qfam = str(qdna.get("material_family") or "").lower()
     cfam = str(cdna.get("material_family") or "").lower()
+    q_alts = [str(a).lower() for a in (qdna.get("family_alternatives") or [])]
+    q_conf = float(qdna.get("family_confidence") or 1.0)
     if qfam and cfam:
-        family = 1.0 if (cfam in _FAMILY_EQUIV.get(qfam, {qfam})) else 0.3
+        equiv = _FAMILY_EQUIV.get(qfam, {qfam})
+        if cfam in equiv:
+            family = 1.0
+        elif q_conf < 0.7 and cfam in q_alts:
+            family = 1.0
+        else:
+            family = 0.3
     else:
         family = 0.6
 
