@@ -1250,6 +1250,13 @@ class RegionAnalyzePayload(BaseModel):
     # colour patch. All three fields are optional for backwards compat.
     full_image_b64: Optional[str] = None      # full reference (may be reused from server-side blob)
     bbox: Optional[list] = None               # [x, y, w, h] percent of image (0-100)
+    # 2026-07 hybrid pipeline — when `mode="scene"`, `crop_b64` is
+    # treated as the WHOLE room photo rather than a pre-selected region.
+    # The endpoint then runs SAM3 Stage-A object detection followed by
+    # polygon-masked GPT-4o-mini material classification on each detected
+    # object, and returns ONE row per material.  Existing "single"
+    # behaviour is unchanged and remains the default.
+    mode: Optional[str] = "single"            # "single" | "scene"
 
 
 # ---------------------------------------------------------------------------
@@ -1742,12 +1749,13 @@ def _reconcile_family_with_vision_dna(row: dict, vision_dna: dict) -> dict:
     return debug
 
 
-async def _apply_visual_rerank(row: dict, crop_b64: str) -> None:
+async def _apply_visual_rerank(row: dict, crop_b64: str, strict: bool = True) -> None:
     """Stage 5 — visual re-rank of a row's retrieved matches against the
     user's selected crop. Mutates the row in place: accepted candidates get
-    the re-rank confidence, rejected ones are dropped. Skipped entirely on
-    an exact pHash loopback hit (already pixel-verified — no LLM spend).
-    Fails open: if the re-rank call errors, retrieval results stand.
+    the re-rank confidence, rejected ones are dropped when `strict=True`.
+    Skipped entirely on an exact pHash loopback hit (already pixel-verified
+    — no LLM spend). Fails open: if the re-rank call errors, retrieval
+    results stand.
 
     Sprint 8 — candidates without any swatch image are routed AROUND the
     rerank (visual comparison is impossible so a text-only 'judge on
@@ -1755,7 +1763,17 @@ async def _apply_visual_rerank(row: dict, crop_b64: str) -> None:
     their retrieval confidence and are surfaced as 'compatible' at a
     small confidence penalty so the designer can still shortlist them
     for physical sampling. Common case: paint chip records that store
-    only colour metadata, not an isolated swatch image."""
+    only colour metadata, not an isolated swatch image.
+
+    2026-07 — `strict=False` scene-mode behaviour: when the query crop is
+    a WIDE-ANGLE scene shot (polygon-masked floor / cabinet / wall in a
+    room photo), it will systematically look different from a plain
+    isolated catalogue swatch (perspective, lighting, surrounding
+    context). Rejecting candidates on that basis drops the RIGHT match
+    for the wrong reason. In `strict=False` mode, rerank still runs and
+    still BOOSTS accepted candidates, but REJECTED candidates are
+    demoted (−15 pts) rather than dropped — same treatment paint chips
+    without swatch images already get on the strict path."""
     from intelligence.rerank import visual_rerank, RERANK_MAX_CANDIDATES, RERANK_MODEL
     from intelligence.confidence import reranked_confidence
     matches = row.get("catalogue_matches") or []
@@ -1796,6 +1814,12 @@ async def _apply_visual_rerank(row: dict, crop_b64: str) -> None:
         for i, m in enumerate(visual_shortlist):
             r = by_idx.get(i)
             if not r:
+                # Reranker returned no verdict for this candidate.
+                # Non-strict: keep at retrieval conf.  Strict: drop.
+                if not strict:
+                    m["debug"]["rerank_score"] = None
+                    m["debug"]["rerank_verdict"] = "rerank_no_verdict"
+                    accepted.append(m)
                 continue
             m["debug"]["rerank_score"] = r["score"]
             m["debug"]["rerank_verdict"] = r["verdict"]
@@ -1803,6 +1827,18 @@ async def _apply_visual_rerank(row: dict, crop_b64: str) -> None:
                 m["match_percent"] = reranked_confidence(r["score"])
                 m["match_reason"] = f"Visually verified — {r['reason']}"
                 m["visually_verified"] = True
+                accepted.append(m)
+            elif not strict:
+                # Non-strict scene mode: demote rather than drop.  The
+                # wide-angle crop can't be pixel-matched to an isolated
+                # swatch, but the retrieval signal is still real.
+                m["match_percent"] = max(0, int(m.get("match_percent", 0)) - 15)
+                m["match_reason"] = (
+                    "Retrieved as a description-level match — visual "
+                    f"verification inconclusive ({r.get('reason', 'no reason given')[:120]}). "
+                    "Order a physical sample before finalising."
+                )
+                m["visually_verified"] = False
                 accepted.append(m)
 
     # Text-only candidates (no swatch image) can't be visually verified,
@@ -1827,6 +1863,7 @@ async def _apply_visual_rerank(row: dict, crop_b64: str) -> None:
     row["catalogue_matches"] = accepted
     row["match_buckets"] = _bucket_matches(accepted)
     row["rerank"] = {"ran": bool(visual_shortlist), "model": RERANK_MODEL,
+                     "strict": strict,
                      "evaluated": len(visual_shortlist),
                      "accepted": sum(1 for m in accepted if m.get("visually_verified")),
                      "text_only_passthrough": len(text_only_shortlist)}
@@ -2911,6 +2948,257 @@ def _bucket_matches(matches: list) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Scene-mode helpers for `/analyze-region` (2026-07 hybrid pipeline).
+#
+# The hybrid pipeline validated at 96.5% material plausibility in
+# `/api/admin/test-scene-segmentation` is now the front-end of the
+# user-facing analyze flow for multi-object scene uploads.  Single-swatch
+# pre-cropped queries still take the original per-crop path.
+# ---------------------------------------------------------------------------
+
+# SAM3 object label → (group, object_group) used by downstream classify /
+# enrichment / palette code.  Values chosen to line up with the LLM
+# `run_object_aware_region_analysis` prompt vocabulary so the rest of the
+# stack sees the exact same fields regardless of which path built them.
+_SCENE_OBJECT_META: dict[str, tuple[str, str]] = {
+    "wall":       ("Wall",      "Architectural Surface"),
+    "ceiling":    ("Ceiling",   "Architectural Surface"),
+    "floor":      ("Floor",     "Architectural Surface"),
+    "backsplash": ("Wall",      "Architectural Surface"),
+    "cabinet":    ("Furniture", "Built-in Element"),
+    "countertop": ("Furniture", "Built-in Element"),
+    "shelf":      ("Furniture", "Built-in Element"),
+    "nightstand": ("Furniture", "Furniture"),
+    "sofa":       ("Furniture", "Furniture"),
+    "bed":        ("Furniture", "Furniture"),
+    "headboard":  ("Furniture", "Furniture"),
+    "curtain":    ("Furniture", "Furniture"),
+    "rug":        ("Floor",     "Furniture"),
+    "mirror":     ("Furniture", "Fixture"),
+    "sink":       ("Furniture", "Fixture"),
+    "faucet":     ("Furniture", "Fixture"),
+    "toilet":     ("Furniture", "Fixture"),
+    "bathtub":    ("Furniture", "Fixture"),
+}
+
+
+def _dna_to_row(
+    dna: dict,
+    object_label: str,
+    object_confidence: float,
+    index: int,
+    bbox: list | None,
+    polygon: list | None,
+    source: str,
+) -> dict:
+    """Convert a Stage-B DNA dict + Stage-A object metadata into a row
+    dict compatible with the existing rerank / catalogue-match pipeline.
+
+    Args:
+        dna:               DNA dict as returned by `generate_swatch_dna`
+                           (or a shortcut dict from `DETERMINISTIC_MATERIAL`).
+        object_label:      SAM3 label ("wall" / "cabinet" / ...).
+        object_confidence: Stage-A confidence.
+        index:             enumeration index — used to build a stable zone
+                           string so the UI can order rows deterministically.
+        bbox:              [x, y, w, h] in ORIGINAL image pixels.
+        polygon:           SAM3 polygon (list of {x, y}) in ORIGINAL image
+                           pixels; carried through so the UI can render an
+                           overlay.
+        source:            "dna" or "shortcut" — recorded on the row for
+                           debugging / audit.
+    """
+    label = (object_label or "").strip().lower() or "unknown"
+    group, object_group = _SCENE_OBJECT_META.get(
+        label, ("Furniture", "Furniture")
+    )
+    pc = (dna.get("primary_color") or {}) if isinstance(dna, dict) else {}
+    color_name = pc.get("name") or ""
+    color_hex = pc.get("hex") or ""
+    material_family = str(dna.get("material_family") or "").strip().title()
+    surface_type = dna.get("surface_type") or ""
+    canonical = dna.get("canonical_description") or ""
+
+    zone = f"{label.title()} · region {index + 1}"
+    material_type = (surface_type or canonical or material_family).strip()[:120]
+
+    # Keywords from DNA — used by _classify_row and application priors.
+    keywords: list[str] = []
+    for k in (
+        material_family, surface_type, dna.get("pattern"), dna.get("finish"),
+        dna.get("gloss_level"), dna.get("texture"),
+    ):
+        if not k:
+            continue
+        for tok in re.split(r"[^a-z0-9]+", str(k).lower()):
+            if len(tok) > 2 and tok not in keywords:
+                keywords.append(tok)
+    keywords = keywords[:6]
+
+    # Confidence — derive from object confidence for now; the visual
+    # reranker will overwrite `visual_rerank_confidence` afterwards.
+    conf_pct = int(round(float(object_confidence) * 100))
+    conf_pct = max(0, min(100, conf_pct))
+
+    row: dict = {
+        "zone": zone,
+        "group": group,
+        "object_group": object_group,
+        "object_type": label,
+        "surface_description": canonical or material_type,
+        "material_family": material_family or "Other",
+        "material_type": material_type,
+        "color": color_name,
+        "color_hex": color_hex,
+        "texture": dna.get("texture") or "",
+        "finish": dna.get("finish") or "",
+        "pattern": dna.get("pattern") or "",
+        "gloss_level": dna.get("gloss_level") or "",
+        "design_style": "",
+        "keywords": keywords,
+        "confidence": conf_pct,
+        "object_confidence": conf_pct,
+        "material_confidence": conf_pct,
+        # Scene-mode extras — visible in the response so the UI can draw
+        # the overlay without a second server round-trip.
+        "scene_bbox": bbox,
+        "scene_polygon": polygon,
+        "scene_source": source,
+    }
+    row["classification"] = _classify_row(row)
+    return row
+
+
+async def run_scene_region_analysis(
+    project_id: str, user_id: str,
+    scene_b64: str,
+    region: str = None,
+) -> tuple[dict, dict[int, str]]:
+    """Hybrid scene analysis: SAM3 Stage-A object detection followed by
+    polygon-masked GPT-4o-mini material classification on each detected
+    object.  Returns `(result_dict, per_object_crop_b64)` where
+    `per_object_crop_b64[i]` is the polygon-masked crop for row i, used
+    by the caller for visual reranking against the retrieved shortlist.
+
+    This is the same pipeline validated at 96.5% material plausibility
+    across the March-2026 31-image benchmark — see `/tmp/HYBRID_REPORT_V2.md`.
+    """
+    import asyncio as _asyncio
+    from PIL import Image as _Image
+    from intelligence.scene_segmentation import (
+        ARCHITECTURAL_VOCAB, Sam3Error,
+        classify_object_material, detect_objects, filter_detections,
+        _apply_polygon_mask, _crop_to_base64, _crop_to_bbox,
+    )
+    if region is None:
+        region = DEFAULT_REGION
+
+    # 1) Load scene image (base64 payload can be huge; decode once, share
+    #    the PIL handle between Stage A and Stage B).
+    raw = base64.b64decode(scene_b64)
+    scene_img = _Image.open(io.BytesIO(raw)).convert("RGB")
+    W, H = scene_img.size
+
+    # 2) Stage A — SAM3 architectural-object detection with the same
+    #    filter settings the admin validation tool uses.
+    obj_raw = detect_objects(scene_img, vocab=ARCHITECTURAL_VOCAB)
+    objects = filter_detections(
+        obj_raw, min_confidence=0.55, min_area_frac=0.003,
+        image_w=W, image_h=H,
+    )
+    logger.info(
+        "[scene %s] SAM3 stage-A: raw=%d kept=%d image=%dx%d",
+        project_id, len(obj_raw), len(objects), W, H,
+    )
+
+    # 3) Stage B — per-object polygon-masked DNA classification.  Run in
+    #    parallel; each call is network-bound so gather cuts wall-clock.
+    stage_b_tasks = [
+        classify_object_material(
+            scene_img, obj["bbox"], obj["label"], EMERGENT_LLM_KEY,
+            polygon=obj.get("polygon"),
+            object_confidence=float(obj.get("confidence", 0.0)),
+        )
+        for obj in objects
+    ]
+    stage_b_results = await _asyncio.gather(*stage_b_tasks, return_exceptions=True)
+
+    # 4) Build one row per object with a usable material result; also
+    #    encode the polygon-masked crop so downstream rerank has a clean
+    #    per-object view.
+    rows: list[dict] = []
+    per_object_crops: dict[int, str] = {}
+    skipped = 0
+    errored = 0
+    for obj, res in zip(objects, stage_b_results):
+        if isinstance(res, Exception):
+            logger.warning("[scene %s] stage-B exception on %s: %r",
+                           project_id, obj.get("label"), res)
+            errored += 1
+            continue
+        src = res.get("source") if isinstance(res, dict) else None
+        if src in (None, "error"):
+            errored += 1
+            continue
+        if src == "skipped":
+            skipped += 1
+            continue
+        mat = res.get("material") or {}
+        row_index = len(rows)
+        row = _dna_to_row(
+            dna=mat,
+            object_label=obj["label"],
+            object_confidence=float(obj.get("confidence", 0.0)),
+            index=row_index,
+            bbox=obj.get("bbox"),
+            polygon=obj.get("polygon"),
+            source=src,
+        )
+        rows.append(row)
+
+        # Build the polygon-masked crop for downstream rerank — same
+        # crop the DNA classifier saw, so we're comparing apples-to-apples
+        # against the catalogue swatch it was matched against.
+        try:
+            crop, (x0, y0, x1, y1) = _crop_to_bbox(scene_img, list(obj["bbox"]))
+            if obj.get("polygon") and len(obj["polygon"]) >= 3:
+                crop = _apply_polygon_mask(crop, obj["polygon"], (x0, y0))
+            per_object_crops[row_index] = _crop_to_base64(crop)
+        except Sam3Error:
+            # Bbox intersect failure — leave crop unset; rerank will just
+            # fall back to text scoring for this row.
+            pass
+
+    palette = list({
+        (r.get("color") or "").strip().title()
+        for r in rows if r.get("color")
+    })[:6]
+
+    result = {
+        "rows": rows,
+        "summary": {
+            "design_style": "",
+            "material_palette": ", ".join(palette),
+            "key_finishes": "",
+            "sourcing_note": (
+                f"Detected {len(objects)} object(s), {len(rows)} with usable "
+                f"materials ({skipped} skipped, {errored} errored)."
+            ),
+        },
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "version": "region-scene-hybrid-v1",
+        "scene_stage_a": {
+            "raw": len(obj_raw), "kept": len(objects),
+            "with_material": len(rows), "skipped": skipped, "errored": errored,
+            "image_size": {"width": W, "height": H},
+        },
+    }
+    return result, per_object_crops
+
+
+
+
 @api_router.post("/projects/{project_id}/analyze-region")
 async def analyze_region(project_id: str, payload: RegionAnalyzePayload,
                          user: dict = Depends(get_current_user)):
@@ -2959,42 +3247,81 @@ async def analyze_region(project_id: str, payload: RegionAnalyzePayload,
         }
     try:
         await _check_and_increment_quota(user["id"])
-        # Sprint 6 — object-aware region analysis. When the caller
-        # provided the FULL reference image + selected bbox, we ask the
-        # LLM to first identify the OBJECT at that region then classify
-        # its material. This is the fix for "blue kitchen cabinet
-        # becomes wall paint" — an isolated crop of flat blue was
-        # collapsing to Paint because the model had no object cue.
-        full_b64 = payload.full_image_b64
-        if full_b64 and full_b64.startswith("data:"):
-            full_b64 = full_b64.split(",", 1)[-1]
-        bbox = payload.bbox if isinstance(payload.bbox, list) and len(payload.bbox) == 4 else None
-        if full_b64 and bbox:
-            result = await run_object_aware_region_analysis(
-                project_id, user["id"], full_b64, crop, bbox,
-                region=user.get("preferred_region", DEFAULT_REGION),
-            )
-        else:
-            result = await run_real_analysis(
+        # 2026-07 hybrid pipeline — scene mode.  Runs SAM3 Stage-A object
+        # detection on the WHOLE uploaded image, then polygon-masked
+        # GPT-4o-mini material classification per object.  Returns one
+        # row per material.  This is the pipeline validated at 96.5%
+        # material plausibility in the March-2026 batch.
+        per_object_crops: dict[int, str] = {}
+        if str(getattr(payload, "mode", "single") or "single").lower() == "scene":
+            result, per_object_crops = await run_scene_region_analysis(
                 project_id, user["id"], crop,
                 region=user.get("preferred_region", DEFAULT_REGION),
             )
+        else:
+            # Sprint 6 — object-aware region analysis. When the caller
+            # provided the FULL reference image + selected bbox, we ask
+            # the LLM to first identify the OBJECT at that region then
+            # classify its material. This is the fix for "blue kitchen
+            # cabinet becomes wall paint" — an isolated crop of flat
+            # blue was collapsing to Paint because the model had no
+            # object cue.
+            full_b64 = payload.full_image_b64
+            if full_b64 and full_b64.startswith("data:"):
+                full_b64 = full_b64.split(",", 1)[-1]
+            bbox = payload.bbox if isinstance(payload.bbox, list) and len(payload.bbox) == 4 else None
+            if full_b64 and bbox:
+                result = await run_object_aware_region_analysis(
+                    project_id, user["id"], full_b64, crop, bbox,
+                    region=user.get("preferred_region", DEFAULT_REGION),
+                )
+            else:
+                result = await run_real_analysis(
+                    project_id, user["id"], crop,
+                    region=user.get("preferred_region", DEFAULT_REGION),
+                )
         # Sprint 6 — attach the perceptual fingerprint of the SELECTED
         # crop to each row so the ranker can do exact-match loopback
-        # against published swatches.
+        # against published swatches. In scene mode we hash each
+        # per-object crop instead of the whole-scene crop, so exact
+        # loopback works when a scene photo of a published swatch is
+        # uploaded.
         from visual_hash import compute_visual_hashes
-        crop_hashes = compute_visual_hashes(crop)
-        for r in result.get("rows") or []:
-            if crop_hashes and not r.get("visual_hashes"):
-                r["visual_hashes"] = crop_hashes
+        for i, r in enumerate(result.get("rows") or []):
+            if r.get("visual_hashes"):
+                continue
+            hash_source = per_object_crops.get(i) if per_object_crops else crop
+            hashes = compute_visual_hashes(hash_source) if hash_source else None
+            if hashes:
+                r["visual_hashes"] = hashes
         # Sprint 7 — symmetric query-side vision-DNA. The catalogue side
         # was already vision-described at publish time; this closes the
         # asymmetry by running the same describe pass on the user's crop
         # BEFORE retrieval. Also applies the approved family-override
         # rules so generic classifier labels (furniture / flooring / wall)
         # get replaced by canonical DNA families when appropriate.
-        for r in result.get("rows") or []:
-            vision_dna = await _generate_query_vision_dna(crop, r)
+        # Scene-mode rows ALREADY have vision-DNA attached from the
+        # hybrid Stage-B — skip the redundant LLM call and reuse it.
+        for i, r in enumerate(result.get("rows") or []):
+            if r.get("scene_source") in ("dna", "shortcut"):
+                # Rebuild the visual_dna dict from the row fields we
+                # already populated, then reconcile the family.
+                from intelligence.dna import normalize_dna
+                vision_dna = normalize_dna({
+                    "material_family": r.get("material_family"),
+                    "surface_type": r.get("material_type"),
+                    "primary_color": {"name": r.get("color", ""),
+                                       "hex": r.get("color_hex", "")},
+                    "texture": r.get("texture", ""),
+                    "pattern": r.get("pattern", ""),
+                    "finish": r.get("finish", ""),
+                    "gloss_level": r.get("gloss_level", ""),
+                    "canonical_description": r.get("surface_description", ""),
+                })
+                _reconcile_family_with_vision_dna(r, vision_dna)
+                continue
+            per_row_crop = per_object_crops.get(i) or crop
+            vision_dna = await _generate_query_vision_dna(per_row_crop, r)
             if vision_dna:
                 _reconcile_family_with_vision_dna(r, vision_dna)
             else:
@@ -3010,9 +3337,10 @@ async def analyze_region(project_id: str, payload: RegionAnalyzePayload,
         # user explicitly selected this region, so we spend ONE GPT-4o
         # call comparing the crop against the retrieved shortlist.
         # Skipped automatically on exact pHash loopback hits.
-        for r in result.get("rows") or []:
+        for i, r in enumerate(result.get("rows") or []):
             try:
-                await _apply_visual_rerank(r, crop)
+                per_row_crop = per_object_crops.get(i) or crop
+                await _apply_visual_rerank(r, per_row_crop)
             except Exception:
                 logger.exception("visual rerank failed — keeping retrieval results")
         result["ephemeral"] = True
