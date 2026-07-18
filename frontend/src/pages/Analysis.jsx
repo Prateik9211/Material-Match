@@ -18,7 +18,7 @@ function SummaryPanel({ summary, title, subtitle, ephemeral, onClear, cropPrevie
   ].filter((s) => s.value);
   return (
     <aside
-      className="bg-white border border-stone-border-soft rounded-2xl shadow-soft overflow-hidden sticky top-24"
+      className="bg-white border border-stone-border-soft rounded-2xl shadow-soft overflow-hidden"
       data-testid={ephemeral ? "intelligence-panel-zone" : "intelligence-panel-full"}
     >
       <div className="px-5 py-4 border-b border-stone-border-soft flex items-center justify-between bg-stone-panel/60">
@@ -258,12 +258,15 @@ export default function Analysis() {
             <div className="h-96 rounded-2xl shimmer"></div>
           </div>
         ) : (
-          <div className="space-y-10">
+          <div className="space-y-6">
             <DemoModeBanner />
 
-            {/* Reference + Intelligence Panel */}
-            <section className="grid lg:grid-cols-12 gap-6" data-testid="reference-intelligence-grid">
-              <div className="lg:col-span-8 space-y-4">
+            {/* Side-by-side layout — image + intelligence stick to the
+                left while materials, products and shortlist scroll on
+                the right. Eliminates the constant scroll-up / scroll-down
+                to check the reference against a zone card. */}
+            <div className="grid lg:grid-cols-12 gap-6" data-testid="analysis-split-layout">
+              <div className="lg:col-span-5 lg:sticky lg:top-6 lg:self-start space-y-4 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto lg:pr-1" data-testid="analysis-left-column">
                 <div className="bg-white border border-stone-border-soft rounded-2xl shadow-soft p-5 sm:p-6" data-testid="reference-card">
                   <div className="flex items-start justify-between gap-4 flex-wrap mb-4">
                     <div>
@@ -305,7 +308,7 @@ export default function Analysis() {
                       projectId={id}
                       imgSrc={refImg}
                       onAnalyzed={(result) => setRegionResult(result)}
-                      pins={activeEphemeral ? [] : imagePins}
+                      pins={imagePins}
                       focusedPinIndex={focusedIndex}
                       onHoverPin={setFocusedIndex}
                     />
@@ -338,9 +341,7 @@ export default function Analysis() {
                     )}
                   </div>
                 </div>
-              </div>
 
-              <div className="lg:col-span-4">
                 <SummaryPanel
                   summary={activeSummary}
                   title={activeEphemeral
@@ -356,50 +357,52 @@ export default function Analysis() {
                   cropPreview={regionResult?.crop_data_url}
                 />
               </div>
-            </section>
 
-            {/* Materials → Alternatives → Catalogue */}
-            {activeRows.length > 0 ? (
-              <MaterialsFirstSection
-                rows={activeRows}
-                onAddToShortlist={addMaterialRowToShortlist}
-                shortlistedNames={shortlistedMaterialNames}
-                onMatchCatalogue={activeEphemeral ? null : goToMatchZone}
-                matchResults={project?.match_results || {}}
-                ephemeral={activeEphemeral}
-                title={activeEphemeral
-                  ? `Zone focus · ${regionResult.rows.length} material${regionResult.rows.length === 1 ? "" : "s"}`
-                  : undefined}
-                subtitle={activeEphemeral
-                  ? "AI-detected materials just for the area you selected. Add any to your shortlist."
-                  : undefined}
-                onAddCatalogueToShortlist={addCatalogueMatchToShortlist}
-                shortlistedCatalogueIds={shortlistedCatalogueIds}
-                focusedIndex={focusedIndex}
-                onHoverCard={setFocusedIndex}
-              />
-            ) : (
-              <div className="bg-white border border-dashed border-stone-border rounded-2xl p-12 text-center" data-testid="analysis-empty">
-                <Sparkles className="w-10 h-10 text-warm-grey mx-auto mb-4" strokeWidth={1.25} />
-                <h2 className="font-display text-2xl font-semibold mb-2 text-charcoal">No specification yet</h2>
-                <p className="text-sm text-warm-grey max-w-sm mx-auto">
-                  Hit <span className="font-medium text-charcoal">Generate specification</span> to detect surfaces, finishes and India sourcing guidance for this reference.
-                </p>
+              <div className="lg:col-span-7 space-y-8" data-testid="analysis-right-column">
+                {/* Materials → Alternatives → Catalogue */}
+                {activeRows.length > 0 ? (
+                  <MaterialsFirstSection
+                    rows={activeRows}
+                    onAddToShortlist={addMaterialRowToShortlist}
+                    shortlistedNames={shortlistedMaterialNames}
+                    onMatchCatalogue={activeEphemeral ? null : goToMatchZone}
+                    matchResults={project?.match_results || {}}
+                    ephemeral={activeEphemeral}
+                    title={activeEphemeral
+                      ? `Zone focus · ${regionResult.rows.length} material${regionResult.rows.length === 1 ? "" : "s"}`
+                      : undefined}
+                    subtitle={activeEphemeral
+                      ? "AI-detected materials just for the area you selected. Add any to your shortlist."
+                      : undefined}
+                    onAddCatalogueToShortlist={addCatalogueMatchToShortlist}
+                    shortlistedCatalogueIds={shortlistedCatalogueIds}
+                    focusedIndex={focusedIndex}
+                    onHoverCard={setFocusedIndex}
+                  />
+                ) : (
+                  <div className="bg-white border border-dashed border-stone-border rounded-2xl p-12 text-center" data-testid="analysis-empty">
+                    <Sparkles className="w-10 h-10 text-warm-grey mx-auto mb-4" strokeWidth={1.25} />
+                    <h2 className="font-display text-2xl font-semibold mb-2 text-charcoal">No specification yet</h2>
+                    <p className="text-sm text-warm-grey max-w-sm mx-auto">
+                      Hit <span className="font-medium text-charcoal">Generate specification</span> to detect surfaces, finishes and India sourcing guidance for this reference.
+                    </p>
+                  </div>
+                )}
+
+                {/* Products → Product Alternatives */}
+                <ProductsSection
+                  products={products}
+                  onAddToShortlist={addProductToShortlist}
+                  shortlistedNames={shortlistedProductNames}
+                />
+
+                {/* Sourceable Shortlist */}
+                <ShortlistSection
+                  items={shortlist}
+                  onRemove={removeFromShortlist}
+                />
               </div>
-            )}
-
-            {/* Products → Product Alternatives */}
-            <ProductsSection
-              products={products}
-              onAddToShortlist={addProductToShortlist}
-              shortlistedNames={shortlistedProductNames}
-            />
-
-            {/* Sourceable Shortlist */}
-            <ShortlistSection
-              items={shortlist}
-              onRemove={removeFromShortlist}
-            />
+            </div>
           </div>
         )}
       </main>

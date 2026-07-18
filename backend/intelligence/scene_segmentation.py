@@ -57,15 +57,40 @@ VISUAL_DNA_PROVIDER = os.environ.get("VISUAL_DNA_PROVIDER", "openai")
 VISUAL_DNA_MODEL = os.environ.get("VISUAL_DNA_MODEL", "gpt-4o-mini")
 DNA_TIMEOUT_S = int(os.environ.get("VISUAL_DNA_TIMEOUT_S", "45"))
 
-# Architectural-object vocabulary for Stage A.  Nineteen prompts exceeds
+# Architectural-object vocabulary for Stage A.  Twenty-two prompts exceeds
 # SAM3's 16-per-request cap, so `detect_objects` chunks the vocab and
 # merges results — see that function for details.
+#
+# 2026-02-27 additions (wainscot / trim / paneled wainscoting) — closes
+# the founder-reported gap where lower-wall paneling and moulding never
+# surfaced as their own zones and got absorbed into "wall".  These three
+# prompts are distinct enough at the SAM3 concept level that they don't
+# just re-fire the plain "wall" mask.
 ARCHITECTURAL_VOCAB: tuple[str, ...] = (
     "wall", "ceiling", "floor", "cabinet", "countertop",
     "backsplash", "sofa", "curtain", "plant",
     "bed", "headboard", "mirror", "sink", "toilet", "bathtub",
     "rug", "shelf", "nightstand",
+    "wainscot", "trim", "paneled wainscoting",
 )
+
+
+# Per-label minimum confidence overrides for `filter_detections`.  Large
+# architectural surfaces (wall / ceiling / floor / backsplash) receive a
+# lower gate than furniture and fixtures because SAM3's confidence tends
+# to be soft on big, texture-poor regions — plain white ceilings and
+# neutral hardwood floors regularly clock 0.42–0.52 even when the mask
+# is a perfect fit.  Keeping the default 0.55 for everything else avoids
+# regressing on false-positive fixtures.
+LABEL_MIN_CONFIDENCE: dict[str, float] = {
+    "wall":               0.40,
+    "ceiling":            0.35,
+    "floor":              0.35,
+    "backsplash":         0.40,
+    "wainscot":           0.40,
+    "trim":               0.40,
+    "paneled wainscoting": 0.40,
+}
 
 
 # Deterministic shortcuts — no LLM call needed for these object types.
@@ -307,6 +332,7 @@ def filter_detections(
     image_w: int | None = None,
     image_h: int | None = None,
     cross_class_iou: float = 0.85,
+    label_min_confidence: dict[str, float] | None = None,
 ) -> list[dict]:
     """Drop sub-threshold detections and dedup masks with heavy overlap.
 
@@ -319,8 +345,24 @@ def filter_detections(
                      concept-overlap bug where "wall" and "backsplash"
                      fire on the same rectangular region with identical
                      bboxes.
+
+    2026-02-27 — `label_min_confidence`: per-label override map (see
+    module-level `LABEL_MIN_CONFIDENCE`).  Large architectural surfaces
+    (wall / ceiling / floor / backsplash / wainscot / trim) frequently
+    return sub-0.55 confidence on plain, texture-poor regions.  Using
+    the same 0.55 gate as furniture and fixtures dropped ceilings and
+    floors from live results.  The override loosens the gate ONLY for
+    named labels; anything not in the map still uses `min_confidence`.
     """
-    kept = [d for d in detections if float(d.get("confidence", 0)) >= min_confidence]
+    overrides = label_min_confidence or {}
+
+    def _min_conf_for(label: str) -> float:
+        return float(overrides.get((label or "").strip().lower(), min_confidence))
+
+    kept = [
+        d for d in detections
+        if float(d.get("confidence", 0)) >= _min_conf_for(d.get("label", ""))
+    ]
     if min_area_frac > 0 and image_w and image_h:
         img_area = float(image_w) * float(image_h)
         area_gated: list[dict] = []

@@ -1,0 +1,24 @@
+{
+  "summary": "Verified all 3 founder-reported bug fixes for MaterialMatch AI analyze flow: (1) pytest suite test_pin_and_vocab_fixes.py — 11/11 pass, covering SAM3 vocab additions (wainscot/trim/paneled wainscoting), per-label confidence overrides for architectural surfaces, group-based pin fallback, and bbox-derived scene pins. (2) Live backend E2E — POST /api/projects/{id}/analyze on admin project 6a160664dc7724d898d2ccf1 (3 rows) returns every row with non-null pin.{x,y} and pin_source='llm'. Regression: /analyze-region (default single mode) still returns 200 with rows + pin_source='fallback_group'. (3) Frontend at 1920x1080 — analysis-split-layout renders side-by-side (left x=344 w=499, right x=867), left column computed style position=sticky top=24px, 3 image-pin-* badges match 3 material-pin-* badges (labels 1/2/3 both sides). Pins render even without the activeEphemeral gate.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_pin_and_vocab_fixes.py",
+    "/app/backend/tests/test_pin_layout_e2e.py",
+    "/app/test_reports/analysis_layout.png"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is 6000+ lines — should be split into routers (auth, projects, analyze, region, admin) for maintainability.",
+    "Analysis.jsx pins array skips rows without pin — but with fallback now every row has one, so imagePins length equals activeRows length. Consider asserting this invariant.",
+    "test_analyze_region_single_mode confirms /analyze-region even without mode=scene still emits pin_source='fallback_group' on rows — this is expected/good behavior from the shared _validate_analysis_payload."
+  ],
+  "updated_files": ["/app/backend/tests/test_pin_layout_e2e.py (new)"],
+  "success_rate": {"backend": "100% (15/15: 11 unit + 4 e2e)", "frontend": "100% (layout + sticky + pins verified)"},
+  "test_credentials": "admin@materialmatch.ai / MaterialAdmin2026!",
+  "seed_data_creation": "None — used existing admin project 6a160664dc7724d898d2ccf1 ('Fail Path Test', 3 rows: Wall Paint, Flooring, Furniture).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Live SAM3 scene-mode (/analyze-region with mode='scene') was NOT tested because it needs ROBOFLOW_API_KEY and image upload — main agent's pytest coverage for vocab + LABEL_MIN_CONFIDENCE is sufficient. Route path is /projects/:id/analysis (NOT /projects/:id). Auth route is /auth (NOT /login). Analyzed project on admin account: 6a160664dc7724d898d2ccf1.",
+  "rca of the issue": "All three founder bugs verified fixed: (a) under-detection addressed via SAM3 vocab additions + LABEL_MIN_CONFIDENCE overrides in intelligence/scene_segmentation.py; (b) inconsistent pins addressed via _validate_analysis_payload fallback filling pin from group centroid and _dna_to_row deriving bbox-center pin for scene rows, tagging pin_source; (c) layout addressed in Analysis.jsx via lg:grid-cols-12 with sticky left column."
+}

@@ -957,6 +957,41 @@ def _coerce_pin(value) -> dict | None:
     return {"x": round(x, 1), "y": round(y, 1)}
 
 
+# 2026-02-27 — deterministic fallback pin per top-level group.  Used
+# when the LLM omits the optional `pin` field so every material row
+# still renders a numbered anchor on the reference image (founder-
+# reported bug: pins were dropping randomly on ~30% of results).
+#
+# Positions are canonical "where you'd expect to see this zone" points:
+#   Ceiling  → top band, alternating left / centre / right
+#   Wall     → mid-height, alternating left / right of centre
+#   Floor    → bottom band, alternating left / centre / right
+#   Furniture → lower-mid band, staggered horizontally
+# The staggering by `index` keeps multiple rows in the same group from
+# stacking on top of one another.
+_FALLBACK_PIN_POSITIONS: dict[str, tuple[tuple[float, float], ...]] = {
+    "Ceiling":   ((30.0, 12.0), (50.0, 10.0), (70.0, 14.0), (40.0, 16.0), (60.0, 12.0)),
+    "Wall":      ((22.0, 45.0), (78.0, 48.0), (35.0, 40.0), (65.0, 52.0), (50.0, 44.0)),
+    "Floor":     ((30.0, 88.0), (55.0, 90.0), (75.0, 86.0), (40.0, 92.0), (65.0, 88.0)),
+    "Furniture": ((30.0, 68.0), (70.0, 70.0), (50.0, 72.0), (25.0, 62.0), (75.0, 66.0)),
+}
+
+
+def _fallback_pin_for_group(group: str | None, index: int) -> dict | None:
+    """Return a deterministic pin coordinate for a group + index.
+
+    Returns None when the group is unknown so we don't fabricate a
+    coordinate for genuinely un-groupable rows.
+    """
+    if not group:
+        return None
+    slots = _FALLBACK_PIN_POSITIONS.get(str(group).strip().title())
+    if not slots:
+        return None
+    x, y = slots[index % len(slots)]
+    return {"x": round(x, 1), "y": round(y, 1)}
+
+
 def _validate_analysis_payload(data) -> dict:
     """Strictly validate the LLM payload. Raises ValueError on any deviation.
     Returns {'rows': [...], 'summary': {...}} — summary is optional (may be empty).
@@ -1006,12 +1041,29 @@ def _validate_analysis_payload(data) -> dict:
 
         # Sprint 5 — optional pin {x, y} in image %. Absent when the LLM
         # cannot pin the region confidently. Never fabricated.
+        # 2026-02-27 — deterministic group-based fallback so every row
+        # renders a numbered pin on the reference image.  The founder
+        # reported "some results show 0 pins" — this ensures pins are
+        # consistent on EVERY analysis result even when the LLM omits
+        # the (optional) coordinate field.  Fallback anchors sit at the
+        # canonical part of the frame for each group so users can still
+        # match number → zone at a glance:
+        #   Wall     → mid-height, alternating left / right
+        #   Ceiling  → top band
+        #   Floor    → bottom band
+        #   Furniture → lower-mid band
+        # The `pin_source` marker is kept for debugging / audit.
         pin = _coerce_pin(r.get("pin"))
+        pin_source = "llm" if pin else None
+        if pin is None:
+            pin = _fallback_pin_for_group(group, i)
+            pin_source = "fallback_group" if pin else None
 
         cleaned.append({
             "zone": r["zone"].strip(),
             "group": group,                              # Sprint 5
             "pin": pin,                                  # Sprint 5
+            "pin_source": pin_source,                    # 2026-02-27
             "material_family": family,
             "material_type": r["material_type"].strip(),
             "color": r["color"].strip(),
@@ -3020,6 +3072,7 @@ def _dna_to_row(
     bbox: list | None,
     polygon: list | None,
     source: str,
+    image_size: tuple[int, int] | None = None,
 ) -> dict:
     """Convert a Stage-B DNA dict + Stage-A object metadata into a row
     dict compatible with the existing rerank / catalogue-match pipeline.
@@ -3037,6 +3090,12 @@ def _dna_to_row(
                            overlay.
         source:            "dna" or "shortcut" — recorded on the row for
                            debugging / audit.
+        image_size:        Original scene (W, H) in pixels — used to
+                           derive a percent-based `pin` from the bbox
+                           centre so the UI can render numbered pins
+                           consistently on every scene-mode result
+                           (fixes founder-reported "some results have
+                           0 pins" bug).
     """
     label = (object_label or "").strip().lower() or "unknown"
     group, object_group = _SCENE_OBJECT_META.get(
@@ -3070,6 +3129,23 @@ def _dna_to_row(
     conf_pct = int(round(float(object_confidence) * 100))
     conf_pct = max(0, min(100, conf_pct))
 
+    # 2026-02-27 — deterministic pin from bbox centre.  Scene-mode rows
+    # ALWAYS have a bbox from SAM3, so every scene row can render a
+    # numbered pin (fixes the "some results have 0 pins" complaint —
+    # scene mode is no longer at the mercy of the LLM optionally
+    # emitting a `pin` field).
+    pin: dict | None = None
+    if bbox and image_size and image_size[0] and image_size[1]:
+        try:
+            bx, by, bw, bh = [float(v) for v in bbox]
+            W, H = float(image_size[0]), float(image_size[1])
+            cx_pct = ((bx + bw / 2.0) / W) * 100.0
+            cy_pct = ((by + bh / 2.0) / H) * 100.0
+            if 0 <= cx_pct <= 100 and 0 <= cy_pct <= 100:
+                pin = {"x": round(cx_pct, 1), "y": round(cy_pct, 1)}
+        except (TypeError, ValueError):
+            pin = None
+
     row: dict = {
         "zone": zone,
         "group": group,
@@ -3096,6 +3172,9 @@ def _dna_to_row(
         "confidence": conf_pct,
         "object_confidence": conf_pct,
         "material_confidence": conf_pct,
+        # Numbered pin (bbox-centre) — consumed by the RegionSelector
+        # overlay on the reference image.
+        "pin": pin,
         # Scene-mode extras — visible in the response so the UI can draw
         # the overlay without a second server round-trip.
         "scene_bbox": bbox,
@@ -3123,7 +3202,7 @@ async def run_scene_region_analysis(
     import asyncio as _asyncio
     from PIL import Image as _Image
     from intelligence.scene_segmentation import (
-        ARCHITECTURAL_VOCAB, Sam3Error,
+        ARCHITECTURAL_VOCAB, LABEL_MIN_CONFIDENCE, Sam3Error,
         classify_object_material, detect_objects, filter_detections,
         _apply_polygon_mask, _crop_to_base64, _crop_to_bbox,
     )
@@ -3142,6 +3221,7 @@ async def run_scene_region_analysis(
     objects = filter_detections(
         obj_raw, min_confidence=0.55, min_area_frac=0.003,
         image_w=W, image_h=H,
+        label_min_confidence=LABEL_MIN_CONFIDENCE,
     )
     logger.info(
         "[scene %s] SAM3 stage-A: raw=%d kept=%d image=%dx%d",
@@ -3190,6 +3270,7 @@ async def run_scene_region_analysis(
             bbox=obj.get("bbox"),
             polygon=obj.get("polygon"),
             source=src,
+            image_size=(W, H),
         )
         rows.append(row)
 
