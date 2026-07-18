@@ -44,7 +44,20 @@ The LLM-only fallback still emits deterministic group-based fallback pins from t
 
 **Observability**: rows now carry `pin_source ∈ {"scene_bbox", "llm", "fallback_group"}` so we can telemetry which path is producing the pin on any given result. Scene-mode results tagged with `version="real-scene-hybrid-v1"` (dedup-compatible with the existing `real-*` prefix check).
 
-**Regression suite**: 12 unit tests in `/app/backend/tests/test_pin_and_vocab_fixes.py` + all 12 sprint7 analyze-region tests still pass.
+**Regression suite**: 14 unit tests in `/app/backend/tests/test_pin_and_vocab_fixes.py` + all 12 sprint7 analyze-region tests still pass.
+
+## 2026-02-27 (round 4) — Cushion/pillow/mattress routing rule ✅
+
+**Founder universal rule**: Cushions, pillows, throw pillows, and mattresses must NEVER be classified as surface materials. If SAM3 detects them, skip material classification. Products pipeline (independent LLM pass on the whole image) already picks them up as shoppable items.  Headboards are explicitly exempt — they still go through normal LLM material classification for fabric/wood/upholstery.
+
+**Implementation** (5 lines): mirrors the existing `plant → None` shortcut in `scene_segmentation.py`:
+- Added `cushion`, `pillow`, `throw pillow`, `mattress` to `ARCHITECTURAL_VOCAB` (SAM3 detects them).
+- Added the same four to `DETERMINISTIC_MATERIAL` with value `None` (skip material entirely).
+- No products-pipeline changes needed — `PRODUCTS_USER_PROMPT` already explicitly targets `"cushions, rugs, curtains…"` and runs as a parallel independent LLM pass at whole-image level.
+
+**Live verified** (two bedroom photos, live endpoint):
+- Bedroom 1 (headboard + bed + pillows): 32 SAM3 raw → 20 kept → **11 materials, zero cushion/pillow/mattress leaked**; headboard classified as Fabric. Products included "Upholstered Bed".
+- Bedroom 2 (18 rows including `trim` from round 1): zero forbidden entries; no headboard present.
 
 ## 2026-02-27 (round 3) — Hover-to-highlight ✅ (frontend-only, tiny)
 

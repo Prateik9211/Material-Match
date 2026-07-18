@@ -43,6 +43,40 @@ def test_architectural_vocab_includes_wainscot_and_trim():
 
 
 # ---------------------------------------------------------------------------
+# 2026-02-27 (round 4) — Founder business rule: cushion / pillow / mattress
+# must NEVER surface as materials.  They are shoppable products (handled
+# by _run_products_pipeline).  Headboards are exempt from this rule.
+# ---------------------------------------------------------------------------
+def test_cushion_pillow_mattress_in_vocab_and_shortcut_none():
+    from intelligence.scene_segmentation import DETERMINISTIC_MATERIAL
+    vocab_lc = {v.lower() for v in ARCHITECTURAL_VOCAB}
+    for prompt in ("cushion", "pillow", "throw pillow", "mattress"):
+        assert prompt in vocab_lc, f"missing SAM3 prompt: {prompt!r}"
+        assert prompt in DETERMINISTIC_MATERIAL, (
+            f"{prompt!r} must be in DETERMINISTIC_MATERIAL for the "
+            f"skip-material routing rule"
+        )
+        assert DETERMINISTIC_MATERIAL[prompt] is None, (
+            f"{prompt!r} must map to None (skip material entirely) — "
+            f"got {DETERMINISTIC_MATERIAL[prompt]!r}"
+        )
+
+
+def test_headboard_is_NOT_in_skip_material_shortcut():
+    """Regression guard: headboards should ALWAYS go through the normal
+    LLM material classification (fabric / wood / upholstery). The founder
+    rule explicitly exempts headboards."""
+    from intelligence.scene_segmentation import DETERMINISTIC_MATERIAL
+    vocab_lc = {v.lower() for v in ARCHITECTURAL_VOCAB}
+    assert "headboard" in vocab_lc, "headboard must be detectable"
+    assert "headboard" not in DETERMINISTIC_MATERIAL, (
+        "headboard must NOT have a deterministic shortcut — it must go "
+        "through the normal LLM material path so fabric/wood upholstery "
+        "still fires"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Bug 1b — Under-detection: filter_detections must honour per-label overrides
 # so large architectural surfaces at soft-ish confidence (0.35-0.55) are kept.
 # ---------------------------------------------------------------------------

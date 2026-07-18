@@ -57,7 +57,7 @@ VISUAL_DNA_PROVIDER = os.environ.get("VISUAL_DNA_PROVIDER", "openai")
 VISUAL_DNA_MODEL = os.environ.get("VISUAL_DNA_MODEL", "gpt-4o-mini")
 DNA_TIMEOUT_S = int(os.environ.get("VISUAL_DNA_TIMEOUT_S", "45"))
 
-# Architectural-object vocabulary for Stage A.  Twenty-two prompts exceeds
+# Architectural-object vocabulary for Stage A.  Twenty-six prompts exceeds
 # SAM3's 16-per-request cap, so `detect_objects` chunks the vocab and
 # merges results — see that function for details.
 #
@@ -66,12 +66,22 @@ DNA_TIMEOUT_S = int(os.environ.get("VISUAL_DNA_TIMEOUT_S", "45"))
 # surfaced as their own zones and got absorbed into "wall".  These three
 # prompts are distinct enough at the SAM3 concept level that they don't
 # just re-fire the plain "wall" mask.
+#
+# 2026-02-27 (round 4) — cushion / pillow / throw pillow / mattress
+# added so SAM3 detects them explicitly on beds and sofas.  Their
+# DETERMINISTIC_MATERIAL entry is `None` so they're SKIPPED from the
+# materials pipeline — the parallel _run_products_pipeline LLM pass
+# already identifies them as shoppable products.  Founder rule: never
+# treat these as surface materials, always route to products.
+# Headboards are NOT in this shortcut — they still go through normal
+# material classification for fabric / wood / upholstery detection.
 ARCHITECTURAL_VOCAB: tuple[str, ...] = (
     "wall", "ceiling", "floor", "cabinet", "countertop",
     "backsplash", "sofa", "curtain", "plant",
     "bed", "headboard", "mirror", "sink", "toilet", "bathtub",
     "rug", "shelf", "nightstand",
     "wainscot", "trim", "paneled wainscoting",
+    "cushion", "pillow", "throw pillow", "mattress",
 )
 
 
@@ -128,6 +138,19 @@ DETERMINISTIC_MATERIAL: dict[str, dict | None] = {
         "source": "shortcut",
     },
     "plant": None,
+    # 2026-02-27 (round 4) — founder rule: cushions / pillows / mattresses
+    # should NEVER be classified as surface materials.  They are shoppable
+    # PRODUCTS, not surfaces, and the parallel _run_products_pipeline LLM
+    # pass already targets them explicitly ("cushions, rugs, curtains…"
+    # in PRODUCTS_USER_PROMPT), so we don't need to wire anything else —
+    # just skip material classification here and the products section
+    # picks them up automatically.
+    # Headboards are intentionally NOT in this list — they remain in the
+    # normal LLM material path so fabric / wood / upholstery still fires.
+    "cushion": None,
+    "pillow": None,
+    "throw pillow": None,
+    "mattress": None,
 }
 
 
