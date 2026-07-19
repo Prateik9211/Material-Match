@@ -1,0 +1,59 @@
+{
+  "verdict": "fixed",
+  "user_reported_bug": "P0 cross-category catalogue matching regression: walls, floors, and Other/undefined-family surfaces confidently matched into the wrong catalogue (paint→laminate at 88%, tile floor→laminate at 79%, etc.). Root cause is DNA-classifier low-family-confidence widen firing on top of Brain's already-good routing. Also P1: rug pin lands on book on rug (want polygon centroid); hover highlight too subtle; click-to-enlarge lightbox for shortlisted swatches.",
+  "summary": "No relevant testing skill found. Focused retest confirms the reported regression is fixed: the legacy materialmatch_brain now returns object_locked=True for flooring/app-context routes, the Tile floor + low-confidence Laminate alternative no longer widens into Laminates, wall/ceiling and Other/undefined wall searches stay Paint-only, and the P1 polygon-centroid/hover/lightbox fixes work. No MOCKED APIs were used; the UI lightbox/hover check used seeded project data and real backend auth/API calls.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "local preview UI at http://localhost:3000",
+        "issue": "Localhost browser login was blocked by CORS because frontend/.env points to the preview backend URL; the same UI flow passed on https://design-match-ai.preview.emergentagent.com, which is the configured origin.",
+        "affected_selectors": ["auth-email-input", "auth-submit-btn"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/pytest/pin_and_vocab_fixes_iteration_22.txt",
+    "/app/test_reports/flooring_edge_iteration_22.json",
+    "/app/test_reports/backend_direct_iteration_22.json",
+    "/app/test_reports/api_shortlist_fields_iteration_22.json",
+    "/app/test_reports/api_real_images_iteration_22.json",
+    "/app/test_reports/frontend_hover_lightbox_iteration_22.json",
+    "/app/test_reports/scripts/flooring_edge_iteration_21.py",
+    "/app/test_reports/scripts/backend_direct_checks_iteration_21.py",
+    "/app/test_reports/scripts/api_shortlist_fields_iteration_21.py",
+    "/app/test_reports/scripts/api_real_images_iteration_22.py",
+    "/app/test_reports/scripts/seed_frontend_lightbox_iteration_21.py",
+    "/app/test_reports/scripts/frontend_hover_lightbox_iteration_22.py"
+  ],
+  "action_items": [
+    "No blocking action items for the reported bug. Optional polish: make flooring reasoning text reflect the final per-row allowed_categories more explicitly when a Tile floor is locked to Tiles/Stone only."
+  ],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/test_reports/bug_verification_22.json",
+    "/app/test_reports/iteration_22.json",
+    "/app/test_reports/pytest/pin_and_vocab_fixes_iteration_22.txt",
+    "/app/test_reports/flooring_edge_iteration_22.json",
+    "/app/test_reports/backend_direct_iteration_22.json",
+    "/app/test_reports/api_shortlist_fields_iteration_22.json",
+    "/app/test_reports/api_real_images_iteration_22.json",
+    "/app/test_reports/frontend_hover_lightbox_iteration_22.json",
+    "/app/test_reports/scripts/api_real_images_iteration_22.py",
+    "/app/test_reports/scripts/frontend_hover_lightbox_iteration_22.py"
+  ],
+  "success_rate": {
+    "backend": "100%",
+    "frontend": "100%"
+  },
+  "seed_data_creation": "Created fresh API users/projects for shortlist persistence and real-image bedroom/kitchen analysis; seeded one project with two analysis rows for focused hover/lightbox UI verification. No product code changed.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Skill search returned no relevant testing skill. Pytest /app/backend/tests/test_pin_and_vocab_fixes.py passed 26/26. Direct Tile floor edge now passes: materialmatch_brain returns application_context=flooring, object_locked=true, allowed_categories=['Tiles','Stone'], and unmocked catalogue matches are Tiles only with no Laminate/Veneer leak. Backend direct checks passed for Other/unknown wall Paints-only, object_locked widen suppression, unlocked widen still allowed, alt-family similarity=0.7, polygon centroid pin, and ShortlistItemCreate fields. Real bedroom and kitchen image analyses passed for wall/ceiling Paint-only matches and no Tile/Stone floor Laminate/Veneer leaks; produced wood/laminate floors where appropriate. Preview UI test passed hover scale/ring/dim and shortlist swatch lightbox open/close via X/ESC/backdrop.",
+  "rca_of_the_issue": "Previous failure was the legacy Brain path returning no object_locked flag for app_ctx='flooring', so _find_catalogue_matches applied low-family-confidence family_alternatives widening and let Laminate catalogue records into a Tile floor retrieval pool. The fix adds object_locked=True for context-specific app_ctx values, including flooring, so Brain routing wins over DNA alt-family widening."
+}

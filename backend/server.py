@@ -3029,6 +3029,24 @@ def materialmatch_brain(row: dict) -> dict:
     else:
         reasoning = "Category-aware search based on the detected material family."
 
+    # Round 8 (retest) — object_locked signals to
+    # `_find_catalogue_matches` that this row's category has been
+    # confidently routed by application-context (not just a generic
+    # "let the LLM decide" fallback), so the low-DNA-confidence
+    # "widen alts" heuristic must NOT fire.  Fixes the founder-
+    # reported "Tile floor confidently matched Laminate at 79%" case
+    # (bug testing agent iteration 21) — the flooring branch here
+    # legitimately searches Tiles+Stone OR Laminates+Veneers, but
+    # never wants a Tile-classified floor to widen into Laminates
+    # via family_alternatives.
+    _OBJECT_LOCKED_CONTEXTS = {
+        "wall paint", "kitchen wall", "flooring", "countertop",
+        "backsplash", "bathroom wet wall", "curtain", "rug", "bedding",
+        "furniture upholstery", "lighting fixture", "hardware",
+        "feature wall", "headboard wall",
+    }
+    object_locked = app_ctx in _OBJECT_LOCKED_CONTEXTS
+
     return {
         "classification": classification,
         "application_context": app_ctx,
@@ -3040,6 +3058,7 @@ def materialmatch_brain(row: dict) -> dict:
         "excluded_libraries": [_LIBRARY_LABELS.get(c, c) for c in excluded],
         "ranking_weights": weights,
         "reasoning_notes": reasoning,
+        "object_locked": object_locked,
         "version": "brain-v1",
     }
 

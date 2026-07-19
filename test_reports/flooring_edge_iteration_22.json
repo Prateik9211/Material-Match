@@ -1,0 +1,74 @@
+{
+  "row": {
+    "object_type": "floor",
+    "group": "Floor",
+    "zone": "Floor \u00b7 QA tile edge",
+    "material_family": "Tile",
+    "material_type": "ivory stone tile floor",
+    "family_confidence": 0.5,
+    "family_alternatives": [
+      "Laminate"
+    ]
+  },
+  "brain": {
+    "application_context": "flooring",
+    "allowed_categories": [
+      "Tiles",
+      "Stone"
+    ],
+    "object_locked": true,
+    "reasoning_notes": "Flooring context \u2014 searching Laminates / Veneers for wood-look or Tiles / Stone for slab / marble-look installations."
+  },
+  "matches": [
+    {
+      "name": "Ivory Matte 300x600",
+      "category": "Tiles",
+      "family": "Tile",
+      "percent": 88
+    },
+    {
+      "name": "Warm Beige Cement 600x600",
+      "category": "Tiles",
+      "family": "Tile",
+      "percent": 61
+    },
+    {
+      "name": "Ivory Marble 600x600",
+      "category": "Tiles",
+      "family": "Tile",
+      "percent": 60
+    },
+    {
+      "name": "Sand Beige Cement 600x1200",
+      "category": "Tiles",
+      "family": "Tile",
+      "percent": 60
+    },
+    {
+      "name": "Terrazzo Warm 600x600",
+      "category": "Tiles",
+      "family": "Tile",
+      "percent": 58
+    },
+    {
+      "name": "Rovere Warm Oak 200x1200",
+      "category": "Tiles",
+      "family": "Tile",
+      "percent": 56
+    },
+    {
+      "name": "Concrete Warm Grey 600x1200",
+      "category": "Tiles",
+      "family": "Tile",
+      "percent": 56
+    },
+    {
+      "name": "Terracotta Warm 300x300",
+      "category": "Tiles",
+      "family": "Tile",
+      "percent": 55
+    }
+  ],
+  "laminate_or_veneer_matches": [],
+  "passed": true
+}

@@ -1,0 +1,26 @@
+{
+  "passed": true,
+  "origin": "https://design-match-ai.preview.emergentagent.com",
+  "seed_project_id": "6a5c8f75f05770d6130c21aa",
+  "checks": [
+    {
+      "name": "MaterialsFirstSection hover highlight",
+      "passed": true,
+      "details": "Hovering material-card-0 applied border-charcoal, ring-4, ring-ochre/60, shadow-hover, scale-[1.025], -translate-y-1; material-card-1 dimmed with opacity-40, blur-[0.5px], scale-[0.99]."
+    },
+    {
+      "name": "Shortlist swatch lightbox opens from swatch click",
+      "passed": true,
+      "details": "Clicked recommended-shortlist-btn-0-0, shortlist-swatch-0 appeared, clicking it opened shortlist-swatch-lightbox with shortlist-lightbox-image."
+    },
+    {
+      "name": "Lightbox close controls",
+      "passed": true,
+      "details": "Lightbox closed successfully by X button, Escape key, and backdrop click."
+    }
+  ],
+  "warnings": [
+    "Localhost UI attempt was blocked by preview CORS because frontend/.env points to the preview backend; reran successfully on the preview origin."
+  ],
+  "console_log": "/root/.emergent/automation_output/20260719_085000/console_20260719_085000.log"
+}

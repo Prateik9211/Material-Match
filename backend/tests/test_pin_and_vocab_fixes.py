@@ -528,3 +528,50 @@ def test_shortlist_item_persists_swatch_fields():
             f"ShortlistItemCreate is missing {f!r} — the click-to-"
             f"enlarge lightbox cannot render without this field"
         )
+
+
+# ---------------------------------------------------------------------------
+# Round 8 (retest 2) — Flooring must ALSO be object_locked so a Tile
+# floor with a Laminate alt suggestion doesn't widen into Laminates.
+# ---------------------------------------------------------------------------
+def test_tile_floor_object_locked_no_laminate_leak():
+    """A floor row confidently classified as Tile with family_confidence<0.7
+    and family_alternatives=['Laminate'] must NOT widen retrieval into
+    Laminates.  Bug testing agent iteration 21 caught this leak — 79%
+    Laminate match on a Tile floor.
+    """
+    import server as _s
+    from unittest.mock import patch
+
+    row = {
+        "object_type": "floor",
+        "material_family": "Tile",
+        "material_type": "ivory stone tile floor",
+        "family_confidence": 0.5,
+        "family_alternatives": ["Laminate"],
+        "visual_dna": {"family_confidence": 0.5,
+                       "family_alternatives": ["Laminate"],
+                       "material_family": "Tile"},
+    }
+    brain = _s.materialmatch_brain(row)
+    assert brain.get("object_locked") is True, (
+        f"flooring context must be object_locked, got "
+        f"{brain.get('object_locked')!r} for app_ctx="
+        f"{brain.get('application_context')!r}"
+    )
+    captured = {}
+
+    def _spy_retrieve(query_dna, ref_hashes, items, top_k=8):
+        captured["categories"] = {(it.get("category") or "").lower()
+                                   for it in items}
+        return {"candidates": [], "meta": {}}
+
+    with patch("intelligence.pipeline.retrieve_matches",
+               side_effect=_spy_retrieve):
+        _s._find_catalogue_matches(row,
+                                     allowed_categories=brain["allowed_categories"],
+                                     object_locked=brain["object_locked"])
+    assert "laminates" not in captured.get("categories", set()), (
+        f"Tile floor should NOT widen into Laminates via family_alts, "
+        f"but retrieval saw: {captured.get('categories')}"
+    )
