@@ -3291,9 +3291,10 @@ def _bucket_matches(matches: list) -> dict:
 # ---------------------------------------------------------------------------
 
 # SAM3 object label → (group, object_group) used by downstream classify /
-# enrichment / palette code.  Values chosen to line up with the LLM
-# `run_object_aware_region_analysis` prompt vocabulary so the rest of the
-# stack sees the exact same fields regardless of which path built them.
+# enrichment / palette code.  Values chosen to align with the DNA
+# classifier vocabulary so the rest of the stack sees the same fields
+# regardless of which entry-point (full-image spec or manual region
+# select) drove the classification.
 _SCENE_OBJECT_META: dict[str, tuple[str, str]] = {
     "wall":       ("Wall",      "Architectural Surface"),
     "ceiling":    ("Ceiling",   "Architectural Surface"),
@@ -3313,6 +3314,13 @@ _SCENE_OBJECT_META: dict[str, tuple[str, str]] = {
     "faucet":     ("Furniture", "Fixture"),
     "toilet":     ("Furniture", "Fixture"),
     "bathtub":    ("Furniture", "Fixture"),
+    # 2026-02-01 round 10 — dining / office vocab additions to
+    # `ARCHITECTURAL_VOCAB`. Grouped so the downstream group / palette
+    # code categorises them consistently with the rest of the furniture.
+    "dining table": ("Furniture", "Furniture"),
+    "chair":        ("Furniture", "Furniture"),
+    "desk":         ("Furniture", "Furniture"),
+    "office chair": ("Furniture", "Furniture"),
 }
 
 
@@ -3605,6 +3613,277 @@ async def run_scene_region_analysis(
 
 
 
+async def run_consolidated_region_analysis(
+    project_id: str, user_id: str,
+    crop_b64: str,
+    full_b64: str | None,
+    bbox_pct: list | None,
+    region: str = None,
+) -> tuple[dict, dict[int, str]]:
+    """Analyse a user-selected region through the SAME classification path
+    the full-image scene flow uses (SAM3 → `classify_object_material` →
+    `generate_swatch_dna`).
+
+    This is the foundational-trust consolidation (2026-02-01 P0 fix):
+    before this function existed, `analyze-region` routed through a
+    separate `run_object_aware_region_analysis` LLM prompt (since
+    deleted) that could disagree with the scene pipeline on the same
+    wall region (paint vs plaster). Now both flows call the same DNA
+    classifier on the same polygon-masked crop, so cross-flow
+    disagreement is structurally impossible.
+
+    Strategy:
+      1. If `full_b64` + `bbox_pct` are provided (normal case for the
+         Analysis-page rectangle selector), run SAM3 Stage-A on the FULL
+         reference image — the same detection call `run_scene_region_
+         analysis` makes.
+      2. Find the SAM3 object whose bbox has the highest IoU with the
+         user's drawn rectangle. If IoU ≥ MIN_IOU_MATCH, use THAT
+         object's polygon-masked crop for classification (a real
+         architectural anchor). Emits ONE row for that matched object.
+      3. If no SAM3 match (user drew on empty space, or on an object
+         SAM3 missed), fall through to `classify_object_material` on
+         the user's raw rectangular crop with label='unknown' — same
+         DNA prompt, no polygon mask.
+      4. If `full_b64` is absent (older callers, tests), classify the
+         crop directly with label='unknown'.
+
+    Returns `(result_dict, per_object_crops)` in the same shape as
+    `run_scene_region_analysis` so all downstream enrichment (family
+    reconcile / catalogue enrich / visual rerank) works untouched.
+    """
+    import asyncio as _asyncio
+    from PIL import Image as _Image
+    from intelligence.scene_segmentation import (
+        ARCHITECTURAL_VOCAB, LABEL_MIN_CONFIDENCE, Sam3Error,
+        classify_object_material, detect_objects, filter_detections,
+        _apply_polygon_mask, _crop_to_base64, _crop_to_bbox,
+    )
+    if region is None:
+        region = DEFAULT_REGION
+
+    MIN_IOU_MATCH = 0.30  # user's rect must overlap at least 30% with
+                          # a SAM3 object to be considered a match.
+
+    def _bbox_iou(a: list, b: list) -> float:
+        """IoU of two pixel bboxes in [x, y, w, h] form."""
+        ax0, ay0, aw, ah = float(a[0]), float(a[1]), float(a[2]), float(a[3])
+        bx0, by0, bw, bh = float(b[0]), float(b[1]), float(b[2]), float(b[3])
+        ax1, ay1 = ax0 + aw, ay0 + ah
+        bx1, by1 = bx0 + bw, by0 + bh
+        ix0, iy0 = max(ax0, bx0), max(ay0, by0)
+        ix1, iy1 = min(ax1, bx1), min(ay1, by1)
+        iw, ih = max(0.0, ix1 - ix0), max(0.0, iy1 - iy0)
+        inter = iw * ih
+        union = aw * ah + bw * bh - inter
+        return inter / union if union > 0 else 0.0
+
+    # -----------------------------------------------------------------
+    # Case A: full image + bbox present → SAM3 + object-match path.
+    # -----------------------------------------------------------------
+    matched_obj: dict | None = None
+    scene_img: "_Image.Image | None" = None
+    sam3_objects_summary: list[dict] = []
+
+    if full_b64 and bbox_pct and len(bbox_pct) == 4:
+        try:
+            raw = base64.b64decode(full_b64)
+            scene_img = _Image.open(io.BytesIO(raw)).convert("RGB")
+            W, H = scene_img.size
+
+            # Convert user's percent bbox → pixels.
+            u_x = float(bbox_pct[0]) / 100.0 * W
+            u_y = float(bbox_pct[1]) / 100.0 * H
+            u_w = float(bbox_pct[2]) / 100.0 * W
+            u_h = float(bbox_pct[3]) / 100.0 * H
+            user_bbox_px = [u_x, u_y, u_w, u_h]
+
+            # SAM3 Stage-A — identical call to the full-image scene flow.
+            obj_raw = detect_objects(scene_img, vocab=ARCHITECTURAL_VOCAB)
+            objects = filter_detections(
+                obj_raw, min_confidence=0.55, min_area_frac=0.003,
+                image_w=W, image_h=H,
+                label_min_confidence=LABEL_MIN_CONFIDENCE,
+            )
+            sam3_objects_summary = [
+                {"label": o.get("label"),
+                 "confidence": float(o.get("confidence", 0)),
+                 "bbox": o.get("bbox")}
+                for o in objects
+                if isinstance(o.get("bbox"), (list, tuple)) and len(o.get("bbox")) == 4
+            ]
+
+            # Find best-IoU object.
+            best_iou = 0.0
+            best_obj: dict | None = None
+            for obj in objects:
+                b = obj.get("bbox")
+                if not (isinstance(b, (list, tuple)) and len(b) == 4):
+                    continue
+                iou = _bbox_iou(user_bbox_px, list(b))
+                if iou > best_iou:
+                    best_iou = iou
+                    best_obj = obj
+            if best_obj is not None and best_iou >= MIN_IOU_MATCH:
+                matched_obj = best_obj
+                logger.info(
+                    "[region %s] matched SAM3 object %r conf=%.2f iou=%.2f "
+                    "-> routing through scene DNA path.",
+                    project_id, best_obj.get("label"),
+                    float(best_obj.get("confidence", 0)), best_iou,
+                )
+            else:
+                logger.info(
+                    "[region %s] no SAM3 object matched user bbox (best_iou=%.2f, "
+                    "candidates=%d) — falling back to raw-crop DNA.",
+                    project_id, best_iou, len(objects),
+                )
+        except Sam3Error as e:
+            logger.warning("[region %s] SAM3 stage-A failed (%s) — "
+                           "falling back to raw-crop DNA.", project_id, e)
+            scene_img = None
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[region %s] full-image decode/SAM3 error (%s: %s) — "
+                           "falling back to raw-crop DNA.",
+                           project_id, type(e).__name__, e)
+            scene_img = None
+
+    # -----------------------------------------------------------------
+    # Case A-matched: classify the SAM3-matched object's polygon-masked
+    # crop through the same DNA path the scene flow uses.
+    # -----------------------------------------------------------------
+    if matched_obj is not None and scene_img is not None:
+        res = await classify_object_material(
+            scene_img, matched_obj["bbox"], matched_obj["label"], EMERGENT_LLM_KEY,
+            polygon=matched_obj.get("polygon"),
+            object_confidence=float(matched_obj.get("confidence", 0.0)),
+        )
+        rows: list[dict] = []
+        per_object_crops: dict[int, str] = {}
+        src = res.get("source") if isinstance(res, dict) else None
+        if src in ("dna", "shortcut") and res.get("material"):
+            row = _dna_to_row(
+                dna=res["material"],
+                object_label=matched_obj["label"],
+                object_confidence=float(matched_obj.get("confidence", 0.0)),
+                index=0,
+                bbox=matched_obj.get("bbox"),
+                polygon=matched_obj.get("polygon"),
+                source=src,
+                image_size=scene_img.size,
+            )
+            rows.append(row)
+            # Build the polygon-masked crop the DNA classifier saw so
+            # downstream visual rerank compares apples-to-apples.
+            try:
+                crop, (x0, y0, x1, y1) = _crop_to_bbox(
+                    scene_img, list(matched_obj["bbox"]))
+                if matched_obj.get("polygon") and len(matched_obj["polygon"]) >= 3:
+                    crop = _apply_polygon_mask(
+                        crop, matched_obj["polygon"], (x0, y0))
+                per_object_crops[0] = _crop_to_base64(crop)
+            except Sam3Error:
+                pass
+        result = {
+            "rows": rows,
+            "summary": {
+                "design_style": "",
+                "material_palette": (rows[0].get("color") or "").title() if rows else "",
+                "key_finishes": "",
+                "sourcing_note": (
+                    f"Matched SAM3 {matched_obj['label']!r} at IoU with your selection; "
+                    "same DNA classifier the full-image spec uses."
+                ),
+            },
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "version": "region-consolidated-sam3-dna-v1",
+            "scene_stage_a": {
+                "raw": len(sam3_objects_summary), "kept": len(sam3_objects_summary),
+                "with_material": len(rows), "skipped": 0,
+                "errored": 0 if rows else 1,
+                "image_size": {"width": scene_img.size[0], "height": scene_img.size[1]},
+                "objects": sam3_objects_summary,
+                "matched_object": {
+                    "label": matched_obj["label"],
+                    "confidence": float(matched_obj.get("confidence", 0.0)),
+                    "bbox": matched_obj.get("bbox"),
+                },
+            },
+        }
+        return result, per_object_crops
+
+    # -----------------------------------------------------------------
+    # Case B: no SAM3 match (either no full-image, decode failure, or
+    # zero-IoU). Classify the user's raw rectangular crop directly
+    # through classify_object_material with label='unknown'. Same DNA
+    # prompt, no polygon mask.
+    # -----------------------------------------------------------------
+    try:
+        raw_crop = base64.b64decode(crop_b64)
+        crop_img = _Image.open(io.BytesIO(raw_crop)).convert("RGB")
+        cW, cH = crop_img.size
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=400,
+                            detail=f"Selected crop is not a valid image: {e}")
+
+    # Full-crop bbox in the crop's OWN coordinate space so
+    # `classify_object_material` produces sensible crop_origin fields.
+    whole_bbox = [0.0, 0.0, float(cW), float(cH)]
+    res = await classify_object_material(
+        crop_img, whole_bbox, "unknown", EMERGENT_LLM_KEY,
+        polygon=None, object_confidence=1.0,
+    )
+    src = res.get("source") if isinstance(res, dict) else None
+    rows_b: list[dict] = []
+    per_object_crops_b: dict[int, str] = {}
+    if src in ("dna", "shortcut") and res.get("material"):
+        row = _dna_to_row(
+            dna=res["material"],
+            object_label="unknown",
+            object_confidence=1.0,
+            index=0,
+            bbox=whole_bbox,
+            polygon=None,
+            source=src,
+            image_size=(cW, cH),
+        )
+        # Blank the pin — for raw-crop classification we don't have a
+        # meaningful anchor in the FULL reference image (the caller
+        # passed only the pre-cropped rectangle).
+        row["pin"] = None
+        row["pin_source"] = None
+        rows_b.append(row)
+        per_object_crops_b[0] = crop_b64
+
+    result = {
+        "rows": rows_b,
+        "summary": {
+            "design_style": "",
+            "material_palette": (rows_b[0].get("color") or "").title() if rows_b else "",
+            "key_finishes": "",
+            "sourcing_note": (
+                "Classified the raw selected crop with the same DNA classifier "
+                "the full-image spec uses (no matching SAM3 object found)."
+            ),
+        },
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "version": "region-consolidated-rawcrop-dna-v1",
+        "scene_stage_a": {
+            "raw": len(sam3_objects_summary),
+            "kept": len(sam3_objects_summary),
+            "with_material": len(rows_b),
+            "skipped": 0,
+            "errored": 0 if rows_b else 1,
+            "image_size": {"width": cW, "height": cH},
+            "objects": sam3_objects_summary,
+            "matched_object": None,
+        },
+    }
+    return result, per_object_crops_b
+
+
+
+
 @api_router.post("/projects/{project_id}/analyze-region")
 async def analyze_region(project_id: str, payload: RegionAnalyzePayload,
                          user: dict = Depends(get_current_user)):
@@ -3684,27 +3963,23 @@ async def analyze_region(project_id: str, payload: RegionAnalyzePayload,
                 scene_mode = False
                 result["scene_fallback"] = "single_swatch_no_objects_detected"
         else:
-            # Sprint 6 — object-aware region analysis. When the caller
-            # provided the FULL reference image + selected bbox, we ask
-            # the LLM to first identify the OBJECT at that region then
-            # classify its material. This is the fix for "blue kitchen
-            # cabinet becomes wall paint" — an isolated crop of flat
-            # blue was collapsing to Paint because the model had no
-            # object cue.
+            # 2026-02-01 (P0 consolidation) — the manual "Select area of
+            # interest" flow now routes through the SAME SAM3 + DNA
+            # classifier the full-image spec flow uses. This eliminates
+            # the paint/plaster mismatch where the two flows disagreed on
+            # the same wall region because they were calling different
+            # LLM prompts. See `run_consolidated_region_analysis` for
+            # the strategy (best-IoU SAM3 match on the full image, then
+            # raw-crop DNA fallback).
             full_b64 = payload.full_image_b64
             if full_b64 and full_b64.startswith("data:"):
                 full_b64 = full_b64.split(",", 1)[-1]
             bbox = payload.bbox if isinstance(payload.bbox, list) and len(payload.bbox) == 4 else None
-            if full_b64 and bbox:
-                result = await run_object_aware_region_analysis(
-                    project_id, user["id"], full_b64, crop, bbox,
-                    region=user.get("preferred_region", DEFAULT_REGION),
-                )
-            else:
-                result = await run_real_analysis(
-                    project_id, user["id"], crop,
-                    region=user.get("preferred_region", DEFAULT_REGION),
-                )
+            result, per_object_crops = await run_consolidated_region_analysis(
+                project_id, user["id"], crop,
+                full_b64=full_b64, bbox_pct=bbox,
+                region=user.get("preferred_region", DEFAULT_REGION),
+            )
         # Sprint 6 — attach the perceptual fingerprint of the SELECTED
         # crop to each row so the ranker can do exact-match loopback
         # against published swatches. In scene mode we hash each
@@ -3785,149 +4060,6 @@ async def analyze_region(project_id: str, payload: RegionAnalyzePayload,
         logger.exception(f"analyze-region failed project={project_id}")
         raise HTTPException(status_code=502, detail="Region analysis failed. Please try again.")
 
-
-async def run_object_aware_region_analysis(
-    project_id: str, user_id: str,
-    full_b64: str, crop_b64: str, bbox: list,
-    region: str = None,
-) -> dict:
-    """Sprint 6 — object-aware region analysis. Sends BOTH the full
-    reference image and the selected crop, plus the bbox as text, so the
-    LLM must first identify the OBJECT at that region before classifying
-    the material. Fixes the "blue kitchen cabinet becomes wall paint"
-    regression from Sprint 5."""
-    import asyncio
-    if region is None:
-        region = DEFAULT_REGION
-
-    system = (
-        "You are an EXPERT INTERIOR SPECIFICATION CONSULTANT. The user "
-        "has selected a specific region of their reference image and needs to "
-        "specify its material. You MUST reason in two steps:\n"
-        "  STEP 1 — OBJECT: The SELECTED CROP (IMAGE 2) is authoritative. "
-        "  Look carefully at what surface it actually shows. Use IMAGE 1 "
-        "  only as spatial context — never override the crop with scene "
-        "  guesses. If IMAGE 2 is a plain flat uniform surface with no "
-        "  visible hardware or joinery, it is almost always wall, ceiling "
-        "  or false-ceiling — NOT a wardrobe / vanity / cabinet just "
-        "  because those exist elsewhere in the scene. If IMAGE 2 clearly "
-        "  shows door edges, drawers, handles, hinges or panel joints, it "
-        "  is cabinetry. A soft cushioned horizontal surface with visible "
-        "  pillows, throws, upholstery seams or bolsters is a BENCH / "
-        "  OTTOMAN / SOFA SEAT — NOT a countertop, even when the crop "
-        "  itself looks flat and uniform. A translucent hanging fabric "
-        "  covering a window is a CURTAIN, not a wall. Choose object_type "
-        "  from: kitchen cabinet, wardrobe, tv unit, vanity, countertop, "
-        "  backsplash, built-in shelf, door, sofa, chair, bench, ottoman, "
-        "  table, bed, headboard, cushion, wall, floor, ceiling, "
-        "  false ceiling, feature panel, curtain, rug.\n"
-        "  STEP 2 — MATERIAL: THEN classify the material of that "
-        "  object's surface using the SELECTED crop (IMAGE 2). If the "
-        "  object is cabinetry (kitchen cabinet / wardrobe / tv unit / "
-        "  vanity), NEVER default to 'paint' unless the surface is "
-        "  visibly a PU-painted panel — cabinetry is almost always "
-        "  laminate, veneer or acrylic panel. If the object is wall or "
-        "  ceiling and the crop shows a plain flat surface with no wood "
-        "  grain / no stone veining / no tile grout, family = Paint. If "
-        "  the object is a sofa / chair / bench / ottoman / cushion / "
-        "  curtain / rug, the material is almost always Fabric — never "
-        "  Stone, Tile or Metal — even when the surface looks flat.\n"
-        "Reply with ONLY valid JSON, no markdown."
-    )
-
-    user_prompt = (
-        f"IMAGE 1 is the full reference scene. "
-        f"IMAGE 2 is the user's selected region at bbox "
-        f"[x={bbox[0]:.1f}%, y={bbox[1]:.1f}%, w={bbox[2]:.1f}%, h={bbox[3]:.1f}%].\n\n"
-        "Return exactly ONE row for the selected region:\n"
-        "{\n"
-        '  "summary": {"design_style": "...", "material_palette": "...", "key_finishes": "...", "sourcing_note": "..."},\n'
-        '  "rows": [{\n'
-        '    "zone": "short specification zone e.g. Kitchen base cabinet front",\n'
-        '    "group": "Wall | Floor | Ceiling | Furniture",\n'
-        '    "object_group": "Architectural Surface | Built-in Element | Furniture | Fixture",\n'
-        '    "object_type": "kitchen cabinet | wardrobe | tv unit | vanity | countertop | backsplash | built-in shelf | door | sofa | chair | bench | ottoman | table | bed | headboard | cushion | wall | floor | ceiling | false ceiling | feature panel | curtain | rug",\n'
-        '    "surface_description": "which surface of the object is selected",\n'
-        '    "material_family": "one of: ' + ", ".join(MATERIAL_FAMILIES) + '",\n'
-        '    "material_type": "concise finish description",\n'
-        '    "color": "short colour",\n'
-        '    "texture": "short texture",\n'
-        '    "finish": "short finish",\n'
-        '    "pattern": "short pattern description e.g. linear woodgrain / veining / plain solid",\n'
-        '    "gloss_level": "low | medium | high",\n'
-        '    "design_style": "short style label",\n'
-        '    "keywords": ["3-6 lowercase tags"],\n'
-        '    "confidence": 0,\n'
-        '    "object_confidence": 0,\n'
-        '    "material_confidence": 0\n'
-        "  }]\n"
-        "}\n"
-        "RULES:\n"
-        "- confidence, object_confidence, material_confidence are INTEGERS 0-100.\n"
-        "- If object_type is any cabinetry (kitchen cabinet / wardrobe / tv unit / vanity), do NOT set material_family='wall' or return 'paint' in material_type unless the visible finish is unmistakably PU-painted.\n"
-        "- If the selected region is a built-in cabinet, prefer material_family=wood/furniture and material_type=laminate/veneer/acrylic panel.\n"
-        "- Reply with ONLY the JSON object."
-    )
-
-    last_error = ""
-    for attempt in range(LLM_ANALYSIS_MAX_RETRIES + 1):
-        try:
-            chat = LlmChat(
-                api_key=EMERGENT_LLM_KEY,
-                session_id=f"region-{project_id}-{secrets.token_hex(4)}",
-                system_message=system,
-            ).with_model(LLM_PROVIDER_ANALYSIS, LLM_MODEL_ANALYSIS).with_params(temperature=0)
-            msg = UserMessage(
-                text=user_prompt,
-                file_contents=[
-                    ImageContent(image_base64=full_b64),
-                    ImageContent(image_base64=crop_b64),
-                ],
-            )
-            raw = await asyncio.wait_for(
-                chat.send_message(msg),
-                timeout=LLM_ANALYSIS_TIMEOUT_S,
-            )
-            parsed = _parse_json(raw)
-            cleaned = _validate_analysis_payload(parsed)
-            raw_rows = parsed.get("rows") or []
-            for i, r in enumerate(cleaned["rows"]):
-                src = raw_rows[i] if i < len(raw_rows) else {}
-                for k in ("object_group", "object_type", "surface_description",
-                          "object_confidence", "material_confidence"):
-                    v = src.get(k)
-                    if isinstance(v, str) and v.strip():
-                        r[k] = v.strip()[:120]
-                    elif isinstance(v, (int, float)):
-                        r[k] = int(round(float(v)))
-            return {
-                "rows": cleaned["rows"],
-                "summary": cleaned["summary"],
-                "generated_at": datetime.now(timezone.utc).isoformat(),
-                "version": f"real-openai-{LLM_MODEL_ANALYSIS}-region-object-aware",
-                "region": region,
-            }
-        except asyncio.TimeoutError:
-            logger.warning(f"object-aware region timeout attempt={attempt} project={project_id}")
-            if attempt < LLM_ANALYSIS_MAX_RETRIES:
-                await asyncio.sleep(0.5 * (3 ** attempt))
-                continue
-            raise HTTPException(status_code=504, detail="AI analysis timed out.")
-        except ValueError as ve:
-            last_error = f"schema: {ve}"
-            if attempt < LLM_ANALYSIS_MAX_RETRIES:
-                continue
-            raise HTTPException(status_code=502, detail=f"AI schema error: {last_error}")
-        except HTTPException:
-            raise
-        except Exception as e:
-            last_error = f"upstream: {type(e).__name__}: {e}"
-            logger.exception(f"object-aware region upstream-fail attempt={attempt} project={project_id}")
-            if attempt < LLM_ANALYSIS_MAX_RETRIES:
-                await asyncio.sleep(0.5 * (3 ** attempt))
-                continue
-            raise HTTPException(status_code=502, detail=f"AI service error: {last_error}")
-    raise HTTPException(status_code=500, detail="Unexpected region analysis state")
 
 
 # ============================================================================

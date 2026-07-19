@@ -29,6 +29,35 @@ Admin validation tool at `/admin/scene-test` AND the LIVE user-facing `POST /api
 
 ## 2026-02-27 (round 2) — Scene-mode is now the DEFAULT for full-image analysis ✅
 
+## 2026-02-01 (round 3) — P0 CROSS-FLOW CONSISTENCY FIX (paint vs plaster) ✅
+
+**Root cause fixed structurally.** The founder reported the same wall in the same photo returning different material readings depending on which flow analysed it (`/analyze` scene mode said "paint"; `/analyze-region` manual selector said "plaster" / "decor"). Investigation confirmed **three distinct LLM prompts** on three distinct code paths were classifying the same crop:
+
+1. `run_scene_region_analysis` → `classify_object_material` → `generate_swatch_dna` (used by full-image `/analyze`)
+2. `run_object_aware_region_analysis` (its own hand-authored "STEP 1 OBJECT / STEP 2 MATERIAL" prompt, used by `/analyze-region` mode=single with full+bbox)
+3. `run_real_analysis` (older whole-image prompt, used as a fallback in both paths)
+
+**Consolidation applied:**
+- New `run_consolidated_region_analysis(project_id, user_id, crop_b64, full_b64, bbox_pct)` in `server.py` routes ALL `/analyze-region` `mode=single` calls through the same SAM3 + `generate_swatch_dna` path the full-image `/analyze` flow uses.
+- Strategy: SAM3 Stage-A on the full image → find the SAM3 object with highest IoU vs the user's drawn rectangle (min 0.30) → run `classify_object_material` on that object's polygon-masked crop (identical to what the scene flow does). Fallback: if no SAM3 object overlaps, run `classify_object_material` on the user's raw rectangular crop with `label='unknown'`.
+- `run_object_aware_region_analysis` **deleted** — the SAM3 object cue in the new flow subsumes its "identify the object then classify" reasoning without needing a separate LLM prompt.
+- Version markers now distinguish paths clearly: `region-consolidated-sam3-dna-v1` (matched-object path) and `region-consolidated-rawcrop-dna-v1` (fallback path).
+
+**Real before/after evidence on the exact bedroom + wall region that exposed the bug:**
+
+| Flow | BEFORE consolidation | AFTER consolidation |
+|---|---|---|
+| `/analyze` (Flow A) | family=**Paint**, surface="A smooth, matte white wall paint..." | family=**Paint**, surface="a smooth, matte off-white paint..." |
+| `/analyze-region` (Flow B) | family=**decor**, surface="front surface of the art panel" (`region-object-aware`) | family=**Paint**, surface="a smooth, matte off-white wall paint..." (`region-consolidated-sam3-dna-v1`) |
+| Match? | **False** ❌ | **True** ✅ |
+
+**Permanent regression guard:** `tests/test_flow_consistency.py` — pytest integration test that runs the same bedroom image through both endpoints and asserts `material_family` matches for the same wall region. Also hard-fails if the response version ever contains `region-object-aware` (would signal a regression back to the old prompt). Test passes today on live SAM3 + LLM in ~26 s.
+
+**Regression check:** all 8 integration tests (including the new consistency test + the 7 room fixtures) pass. Unit-test count unchanged aside from the same 13 pre-existing failures we've been tracking since round 1 (also fail on `git stash` — not introduced by this session).
+
+
+
+
 ## 2026-02-01 (round 2) — Vocab expansion + project CRUD ✅
 
 Two follow-up items shipped after the cross-room smoke test surfaced the SAM3 vocab gap and after the user requested basic project-lifecycle controls:
