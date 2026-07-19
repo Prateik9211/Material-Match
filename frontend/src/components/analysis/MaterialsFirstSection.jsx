@@ -383,7 +383,7 @@ function BrainReasoning({ brain, index }) {
   );
 }
 
-function MaterialCard({ row, index, onAddToShortlist, shortlisted, onAddCatalogueToShortlist, shortlistedCatalogueIds, focused, onHoverCard }) {
+function MaterialCard({ row, index, onAddToShortlist, shortlisted, onAddCatalogueToShortlist, shortlistedCatalogueIds, focused, dimmed, onHoverCard }) {
   const [showMore, setShowMore] = useState(false);
   const [showAlts, setShowAlts] = useState(false);
   const cardRef = useRef(null);
@@ -426,8 +426,12 @@ function MaterialCard({ row, index, onAddToShortlist, shortlisted, onAddCatalogu
   return (
     <article
       ref={cardRef}
-      className={`bg-white border rounded-2xl overflow-hidden shadow-soft hover:shadow-hover transition-all ${
-        focused ? "border-charcoal ring-2 ring-charcoal/15 shadow-hover" : "border-stone-border-soft"
+      className={`bg-white border rounded-2xl overflow-hidden shadow-soft transition-all duration-300 ${
+        focused
+          ? "border-charcoal ring-4 ring-ochre/60 shadow-hover scale-[1.025] -translate-y-1 relative z-10"
+          : dimmed
+            ? "border-stone-border-soft opacity-40 blur-[0.5px] scale-[0.99]"
+            : "border-stone-border-soft hover:shadow-hover"
       }`}
       data-testid={`material-card-${index}`}
       onMouseEnter={() => onHoverCard && onHoverCard(index)}
@@ -685,6 +689,7 @@ export default function MaterialsFirstSection({ rows, onAddToShortlist, shortlis
                   onAddCatalogueToShortlist={onAddCatalogueToShortlist}
                   shortlistedCatalogueIds={shortlistedCatalogueIds}
                   focused={focusedIndex === i}
+                  dimmed={focusedIndex !== null && focusedIndex !== undefined && focusedIndex !== i}
                   onHoverCard={onHoverCard}
                 />
               ))}

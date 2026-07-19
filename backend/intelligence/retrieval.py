@@ -127,7 +127,14 @@ def attribute_similarity(qdna: dict, cdna: dict) -> dict:
         if cfam in equiv:
             family = 1.0
         elif q_conf < 0.7 and cfam in q_alts:
-            family = 1.0
+            # 2026-02-27 (round 7) — downgraded from 1.0 to 0.7.
+            # Treating an alt-family as full-match let cross-category
+            # results (laminate vs paint) score identically to same-
+            # family results on high BGE similarity, producing 88%
+            # laminate matches for confidently-classified matte wall
+            # paints.  0.7 keeps alt families in the ranking without
+            # putting them on equal footing with the actual family.
+            family = 0.7
         else:
             family = 0.3
     else:

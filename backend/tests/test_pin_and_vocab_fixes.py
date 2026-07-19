@@ -331,3 +331,140 @@ def test_attach_product_pins_noop_without_stage_a():
     assert "pin" not in products[0]      # never touched
     _attach_product_pins(products, {"objects": [], "image_size": {"width": 1000, "height": 1000}})
     assert "pin" not in products[0]
+
+
+# ---------------------------------------------------------------------------
+# 2026-02-27 (round 7) — Cross-family retrieval leak fix.
+# The DNA classifier's low-family-confidence + family_alternatives signal
+# must NOT override the Brain's object-locked category gate.  A confidently-
+# classified matte wall paint must NEVER get matched against a laminate at
+# 88% just because BGE thinks the descriptions are semantically similar.
+# ---------------------------------------------------------------------------
+def test_wall_object_lock_disables_widen():
+    """A wall row with object_type='wall', family='Paint' should route
+    only to Paints regardless of the DNA classifier's family_alternatives.
+    """
+    import server as _s
+    row = {
+        "object_type": "wall",
+        "material_family": "Paint",
+        "material_type": "matte wall paint",
+        "material_confidence": 82,
+        # The DNA classifier separately flagged this crop as ambiguous:
+        "family_confidence": 0.5,
+        "family_alternatives": ["Laminate", "Veneer"],
+        "visual_dna": {"family_confidence": 0.5,
+                       "family_alternatives": ["Laminate", "Veneer"]},
+        "color": "warm white", "color_hex": "#F1EBE0",
+    }
+    brain = _s.materialmatch_brain(row)
+    assert brain["allowed_categories"] == ["Paints"]
+    assert brain.get("object_locked") is True, \
+        "wall object routing must be marked object_locked=True"
+
+
+def test_object_locked_skips_widen_in_find_catalogue_matches():
+    """When object_locked=True is passed, widen block must NOT add
+    Laminates to the search pool even though family_confidence < 0.7."""
+    import server as _s
+    from unittest.mock import patch
+
+    row = {
+        "object_type": "wall",
+        "material_family": "Paint",
+        "family_confidence": 0.5,
+        "family_alternatives": ["Laminate"],
+        "visual_dna": {"family_confidence": 0.5,
+                       "family_alternatives": ["Laminate"],
+                       "material_family": "Paint"},
+    }
+    captured = {}
+
+    def _spy_retrieve(query_dna, ref_hashes, items, top_k=8):
+        captured["categories"] = {(it.get("category") or "").lower() for it in items}
+        return {"candidates": [], "meta": {}}
+
+    with patch("intelligence.pipeline.retrieve_matches", side_effect=_spy_retrieve):
+        _s._find_catalogue_matches(row, allowed_categories=["Paints"],
+                                    object_locked=True)
+    # Only Paints reached the retrieval — Laminates was NOT widened in.
+    assert "laminates" not in captured.get("categories", set()), \
+        f"widen leaked laminates in despite object_locked=True: {captured}"
+
+
+def test_object_locked_false_still_widens():
+    """Regression guard: when object_locked=False (isolated-swatch path),
+    the widen SHOULD still fire so genuinely ambiguous flat crops can
+    reach the correct family via family_alternatives."""
+    import server as _s
+    from unittest.mock import patch
+
+    row = {
+        "material_family": "Paint",
+        "family_confidence": 0.5,
+        "family_alternatives": ["Laminate"],
+        "visual_dna": {"family_confidence": 0.5,
+                       "family_alternatives": ["Laminate"],
+                       "material_family": "Paint"},
+    }
+    captured = {}
+
+    def _spy_retrieve(query_dna, ref_hashes, items, top_k=8):
+        captured["categories"] = {(it.get("category") or "").lower() for it in items}
+        return {"candidates": [], "meta": {}}
+
+    with patch("intelligence.pipeline.retrieve_matches", side_effect=_spy_retrieve):
+        _s._find_catalogue_matches(row, allowed_categories=["Paints"],
+                                    object_locked=False)
+    # object_locked=False → widen fires → laminates in pool.
+    assert "laminates" in captured.get("categories", set()), \
+        f"widen should still fire when object_locked=False: {captured}"
+
+
+def test_alt_family_similarity_downgraded_to_0_7():
+    """attribute_similarity for an alt-family match must be 0.7 (not 1.0)
+    so same-family matches at slightly weaker signals still outrank
+    cross-family semantic-similarity-only matches."""
+    from intelligence.retrieval import attribute_similarity
+    qdna = {"material_family": "paint",
+            "family_confidence": 0.5,
+            "family_alternatives": ["laminate"],
+            "primary_color": {"hex": "#F1EBE0"}}
+    cdna = {"material_family": "laminate",
+            "primary_color": {"hex": "#F1EBE0"}}
+    attr = attribute_similarity(qdna, cdna)
+    assert attr["family"] == 0.7, f"expected 0.7 got {attr['family']}"
+
+
+# ---------------------------------------------------------------------------
+# Round 8 — polygon-centroid pin preference (avoids "rug pin lands on book").
+# ---------------------------------------------------------------------------
+def test_dna_to_row_prefers_polygon_centroid_over_bbox_center():
+    """When a polygon is provided (≥3 vertices), the pin should use the
+    polygon CENTROID rather than the bbox centre — for large flat
+    surfaces (rug/floor) with objects placed on top, the centroid is
+    more likely to fall on visible material."""
+    from server import _dna_to_row
+    # Rug bbox is 1000×200 at (0, 800); centre = (500, 900).
+    # But we give a polygon that skews to the left third — centroid ≈ (250, 900).
+    polygon = [
+        {"x": 0,   "y": 800},
+        {"x": 500, "y": 810},
+        {"x": 500, "y": 990},
+        {"x": 0,   "y": 990},
+    ]
+    row = _dna_to_row(
+        dna={"material_family": "Fabric",
+             "primary_color": {"name": "wool", "hex": "#C0AC90"}},
+        object_label="rug",
+        object_confidence=0.7,
+        index=0,
+        bbox=[0, 800, 1000, 200],
+        polygon=polygon,
+        source="dna",
+        image_size=(1000, 1000),
+    )
+    # Polygon centroid: mean_x=(0+500+500+0)/4 = 250 → 25%; mean_y ≈ 897.5 → 89.75%
+    assert row["pin"]["x"] == 25.0
+    assert abs(row["pin"]["y"] - 89.8) < 0.5, row["pin"]
+    assert row["pin_source"] == "scene_polygon_centroid"

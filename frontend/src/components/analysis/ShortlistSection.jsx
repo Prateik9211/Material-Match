@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import { ListChecks, X, ExternalLink, BookOpen, ShoppingBag, Sparkles } from "lucide-react";
 
 const SOURCE_ICON = {
@@ -21,6 +21,18 @@ const SOURCE_LABEL = {
  * product suggestions or specification zones.
  */
 export default function ShortlistSection({ items, onRemove }) {
+  // Round 8 — click-to-enlarge lightbox for shortlisted swatch previews.
+  // Users wanted a proper preview before trusting a thumbnail; opens on
+  // click, dismisses on backdrop / X / ESC.
+  const [preview, setPreview] = useState(null);  // { src, name, hex, code }
+
+  useEffect(() => {
+    if (!preview) return;
+    const onKey = (e) => { if (e.key === "Escape") setPreview(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [preview]);
+
   if (!items || items.length === 0) {
     return (
       <section data-testid="shortlist-section">
@@ -74,9 +86,47 @@ export default function ShortlistSection({ items, onRemove }) {
               data-testid={`shortlist-item-${idx}`}
             >
               <div className="flex items-start gap-3 min-w-0 flex-1">
-                <div className="w-9 h-9 rounded-lg bg-stone-panel grid place-items-center flex-shrink-0 mt-0.5">
-                  <Icon className="w-4 h-4 text-charcoal" strokeWidth={1.5} />
-                </div>
+                {(() => {
+                  // Round 8 — swatch thumbnail (real image or hex block).
+                  // Click enlarges into the lightbox below.
+                  const swatchSrc = it.swatch_crop_b64
+                    ? (it.swatch_crop_b64.startsWith("data:")
+                        ? it.swatch_crop_b64
+                        : `data:image/jpeg;base64,${it.swatch_crop_b64}`)
+                    : null;
+                  const canEnlarge = !!(swatchSrc || it.color_hex);
+                  const onOpen = () => canEnlarge && setPreview({
+                    src: swatchSrc, name: it.name,
+                    hex: it.color_hex || null,
+                    code: it.material_code || null,
+                    zone: it.zone || null,
+                    match_percent: typeof it.match_percent === "number" ? it.match_percent : null,
+                  });
+                  if (swatchSrc) {
+                    return (
+                      <button type="button" onClick={onOpen}
+                        className="w-12 h-12 rounded-lg overflow-hidden border border-stone-border-soft flex-shrink-0 mt-0.5 hover:ring-2 hover:ring-charcoal/40 transition-all"
+                        data-testid={`shortlist-swatch-${idx}`}
+                        title="Click to enlarge">
+                        <img src={swatchSrc} alt="" className="w-full h-full object-cover" />
+                      </button>
+                    );
+                  }
+                  if (it.color_hex) {
+                    return (
+                      <button type="button" onClick={onOpen}
+                        className="w-12 h-12 rounded-lg border border-stone-border-soft flex-shrink-0 mt-0.5 hover:ring-2 hover:ring-charcoal/40 transition-all"
+                        style={{ backgroundColor: it.color_hex }}
+                        data-testid={`shortlist-swatch-${idx}`}
+                        title="Click to enlarge" />
+                    );
+                  }
+                  return (
+                    <div className="w-9 h-9 rounded-lg bg-stone-panel grid place-items-center flex-shrink-0 mt-0.5">
+                      <Icon className="w-4 h-4 text-charcoal" strokeWidth={1.5} />
+                    </div>
+                  );
+                })()}
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2 flex-wrap">
                     <span className="text-[10px] uppercase tracking-widest text-warm-grey font-semibold">
@@ -136,6 +186,58 @@ export default function ShortlistSection({ items, onRemove }) {
           );
         })}
       </div>
+      {/* Round 8 — Lightbox for enlarged swatch preview. */}
+      {preview && (
+        <div
+          className="fixed inset-0 z-50 bg-charcoal/80 grid place-items-center p-4 backdrop-blur-sm animate-fade-in-up"
+          onClick={() => setPreview(null)}
+          data-testid="shortlist-swatch-lightbox"
+        >
+          <div
+            className="bg-paper rounded-3xl shadow-hover w-full max-w-lg overflow-hidden border border-stone-border-soft"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-3 border-b border-stone-border-soft flex items-center justify-between bg-white">
+              <div className="text-overline">Swatch preview</div>
+              <button type="button" onClick={() => setPreview(null)}
+                className="p-1.5 rounded-full hover:bg-stone-panel"
+                data-testid="shortlist-lightbox-close" aria-label="Close">
+                <X className="w-4 h-4" strokeWidth={1.5} />
+              </button>
+            </div>
+            <div className="p-6">
+              {preview.src ? (
+                <img src={preview.src} alt={preview.name}
+                  className="w-full aspect-square object-cover rounded-2xl border border-stone-border-soft"
+                  data-testid="shortlist-lightbox-image" />
+              ) : (
+                <div className="w-full aspect-square rounded-2xl border border-stone-border-soft"
+                  style={{ backgroundColor: preview.hex || "#f5f2ec" }}
+                  data-testid="shortlist-lightbox-hex" />
+              )}
+              <div className="mt-4 space-y-1">
+                <div className="font-display text-xl font-semibold text-charcoal leading-tight">
+                  {preview.name}
+                </div>
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {preview.zone && (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-sand/40 text-charcoal">{preview.zone}</span>
+                  )}
+                  {preview.code && (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-stone-panel text-charcoal font-mono">Code · {preview.code}</span>
+                  )}
+                  {preview.hex && (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-stone-panel text-charcoal font-mono">{preview.hex}</span>
+                  )}
+                  {typeof preview.match_percent === "number" && (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-sage-soft text-sage font-mono">{preview.match_percent}% match</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

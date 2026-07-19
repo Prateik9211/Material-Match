@@ -186,6 +186,14 @@ export default function Analysis() {
     source: match.brand,
     category: match.material_family || match.category || "material",
     zone: row?.zone,
+    // Round 8 — carry the swatch preview (either the cropped catalogue
+    // image or a hex swatch) so ShortlistSection can render a
+    // click-to-enlarge preview instead of the founder-reported "too
+    // small to trust before shortlisting" thumbnail.
+    swatch_crop_b64: match.swatch_crop_b64 || null,
+    color_hex: match.color_hex || null,
+    material_code: match.material_code || null,
+    match_percent: match.match_percent || null,
     notes: [
       match.material_code ? `Code: ${match.material_code}` : "Code unavailable in current database",
       match.catalogue ? `Catalogue: ${match.catalogue}` : null,

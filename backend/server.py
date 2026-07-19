@@ -1605,7 +1605,8 @@ def _normalize_category(cat: str | None) -> str | None:
 
 def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 62,
                               allowed_categories: list | None = None,
-                              weights: dict | None = None) -> list:
+                              weights: dict | None = None,
+                              object_locked: bool = False) -> list:
     """Sprint 7 — Describe-Embed-Rerank retrieval stage.
 
     Pipeline: Brain category gate (hard filter) → pHash exact-loopback
@@ -1615,7 +1616,18 @@ def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 62,
     candidates lazily when the user selects a region.
 
     `weights` is accepted for call-site compatibility but unused: ranking
-    is owned by the intelligence package, not per-category weight tables."""
+    is owned by the intelligence package, not per-category weight tables.
+
+    2026-02-27 (round 7) — `object_locked=True` disables the low-DNA-
+    confidence "widen alts" heuristic below.  The Brain routed this row
+    via high-confidence object-aware detection (wall / ceiling / cabinet
+    / countertop / etc.), so the DNA classifier's separate low-family-
+    confidence signal must NOT override the Brain's category gate.
+    Without this, a matte white wall (Paint object-locked) would get
+    widened to include Laminates because DNA said "plain white panel
+    could plausibly be a laminate" — producing the trust-breaking
+    Paint-wall → 88%-laminate cross-category match reported in the
+    founder's wife's session on 2026-02-27."""
     from intelligence.dna import dna_from_query_row
     from intelligence.pipeline import retrieve_matches
 
@@ -1632,26 +1644,32 @@ def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 62,
         # catalogue partitions AND the `attribute_similarity` family
         # scorer treats them as full-family-match, so the correct answer
         # can win on colour / finish / pattern signals.
-        alts = row.get("family_alternatives") or []
-        fconf = float(row.get("family_confidence") or 1.0)
-        # LLM-classifier path (single-swatch / analyze-region fallback)
-        # attaches alts inside visual_dna rather than on the top-level
-        # row.  Look there too so pool widening fires for that path
-        # too — critical for isolated-crop uploads that never hit the
-        # hybrid scene classifier.
-        vdna = row.get("visual_dna") or {}
-        if not alts:
-            alts = vdna.get("family_alternatives") or []
-        if fconf >= 1.0 and vdna.get("family_confidence") is not None:
-            try:
-                fconf = float(vdna["family_confidence"])
-            except (TypeError, ValueError):
-                pass
-        if alts and fconf < 0.7:
-            for alt_fam in alts:
-                alt_cat = _normalize_category(alt_fam)
-                if alt_cat:
-                    allow_norm.add(alt_cat)
+        #
+        # 2026-02-27 (round 7) — SKIP this widen entirely when the Brain
+        # object-locked the category.  Object-aware detection has higher
+        # trust than the LLM's own family_confidence self-report on
+        # texture-poor crops.
+        if not object_locked:
+            alts = row.get("family_alternatives") or []
+            fconf = float(row.get("family_confidence") or 1.0)
+            # LLM-classifier path (single-swatch / analyze-region fallback)
+            # attaches alts inside visual_dna rather than on the top-level
+            # row.  Look there too so pool widening fires for that path
+            # too — critical for isolated-crop uploads that never hit the
+            # hybrid scene classifier.
+            vdna = row.get("visual_dna") or {}
+            if not alts:
+                alts = vdna.get("family_alternatives") or []
+            if fconf >= 1.0 and vdna.get("family_confidence") is not None:
+                try:
+                    fconf = float(vdna["family_confidence"])
+                except (TypeError, ValueError):
+                    pass
+            if alts and fconf < 0.7:
+                for alt_fam in alts:
+                    alt_cat = _normalize_category(alt_fam)
+                    if alt_cat:
+                        allow_norm.add(alt_cat)
         if not allow_norm:
             return []
     # Studio (uploaded PDF) records first — real user data outranks seed.
@@ -1855,6 +1873,12 @@ def _enrich_rows_with_catalogue(rows: list, top_k: int = 4) -> None:
                 row, top_k=top_k,
                 allowed_categories=brain["allowed_categories"] or [],
                 weights=brain["ranking_weights"],
+                # 2026-02-27 (round 7) — pass object-locked signal so
+                # retrieval skips the widen-on-low-DNA-confidence
+                # heuristic for object-aware architectural rows.  See
+                # `_find_catalogue_matches` docstring for the failure
+                # case this fixes.
+                object_locked=bool(brain.get("object_locked")),
             )
         if "alternative_systems" not in row:
             row["alternative_systems"] = _alternative_systems_for(row)
@@ -2745,6 +2769,13 @@ def materialmatch_brain(row: dict) -> dict:
             "excluded_libraries": [_LIBRARY_LABELS.get(c, c) for c in excluded],
             "ranking_weights": _RANKING_WEIGHTS.get(allowed[0], _RANKING_WEIGHTS["_default"]),
             "object_aware": True,
+            # 2026-02-27 (round 7) — object_locked signals to
+            # `_find_catalogue_matches` that this routing came from
+            # high-confidence object-aware detection, so the low-DNA-
+            # confidence "widen alts" heuristic must NOT fire.  Fixes
+            # matte-wall-paint being confidently matched against a
+            # laminate at 88%.
+            "object_locked": True,
         }
 
     if object_type in _CABINETRY_OBJECTS:
@@ -2780,6 +2811,7 @@ def materialmatch_brain(row: dict) -> dict:
             "excluded_libraries": [_LIBRARY_LABELS.get(c, c) for c in excluded],
             "ranking_weights": weights,
             "object_aware": True,
+            "object_locked": True,
         }
     if object_type in _COUNTERTOP_OBJECTS:
         # Sprint 8.1 — respect the canonical vision-DNA family when it
@@ -2809,6 +2841,7 @@ def materialmatch_brain(row: dict) -> dict:
             "excluded_libraries": [_LIBRARY_LABELS.get(c, c) for c in excluded],
             "ranking_weights": _RANKING_WEIGHTS.get(allowed[0], _RANKING_WEIGHTS["_default"]),
             "object_aware": True,
+            "object_locked": True,
         }
     if object_type in _BACKSPLASH_OBJECTS:
         allowed = ["Tiles", "Stone", "Laminates"]
@@ -2823,6 +2856,7 @@ def materialmatch_brain(row: dict) -> dict:
             "excluded_libraries": [_LIBRARY_LABELS.get(c, c) for c in excluded],
             "ranking_weights": _RANKING_WEIGHTS.get(allowed[0], _RANKING_WEIGHTS["_default"]),
             "object_aware": True,
+            "object_locked": True,
         }
     if object_type in _SOFA_OBJECTS or object_type in _UPHOLSTERED_FURNITURE:
         # Sprint 7.1 — headboards / beds / chairs can be upholstered fabric
@@ -2850,6 +2884,7 @@ def materialmatch_brain(row: dict) -> dict:
             "excluded_libraries": [_LIBRARY_LABELS.get(c, c) for c in excluded],
             "ranking_weights": _RANKING_WEIGHTS.get(allowed[0], _RANKING_WEIGHTS["_default"]),
             "object_aware": True,
+            "object_locked": True,
         }
     if object_type in _HARD_WALL_OBJECTS:
         allowed = ["Laminates", "Veneers", "Tiles", "Stone"]
@@ -2864,6 +2899,7 @@ def materialmatch_brain(row: dict) -> dict:
             "excluded_libraries": [_LIBRARY_LABELS.get(c, c) for c in excluded],
             "ranking_weights": _RANKING_WEIGHTS.get(allowed[0], _RANKING_WEIGHTS["_default"]),
             "object_aware": True,
+            "object_locked": True,
         }
 
     # 1. Application context (drives everything else).
@@ -3302,24 +3338,46 @@ def _dna_to_row(
     conf_pct = int(round(float(object_confidence) * 100))
     conf_pct = max(0, min(100, conf_pct))
 
-    # 2026-02-27 — deterministic pin from bbox centre.  Scene-mode rows
-    # ALWAYS have a bbox from SAM3, so every scene row can render a
-    # numbered pin (fixes the "some results have 0 pins" complaint —
-    # scene mode is no longer at the mercy of the LLM optionally
-    # emitting a `pin` field).
+    # 2026-02-27 — deterministic pin from bbox / polygon centroid.
+    # Scene-mode rows ALWAYS have a bbox from SAM3, so every scene row
+    # can render a pin.  When a polygon is present we prefer the
+    # polygon CENTROID (arithmetic mean of vertices) over the bbox
+    # centre — for large flat surfaces like rugs / floors where objects
+    # commonly sit on the material, the polygon centroid tends to fall
+    # on visible material rather than on an object placed on top.
+    # Round 8 fix for the founder-reported "rug pin landed on a book
+    # placed on the rug" issue.
     pin: dict | None = None
     pin_source: str | None = None
-    if bbox and image_size and image_size[0] and image_size[1]:
-        try:
-            bx, by, bw, bh = [float(v) for v in bbox]
-            W, H = float(image_size[0]), float(image_size[1])
-            cx_pct = ((bx + bw / 2.0) / W) * 100.0
-            cy_pct = ((by + bh / 2.0) / H) * 100.0
+    if image_size and image_size[0] and image_size[1]:
+        W, H = float(image_size[0]), float(image_size[1])
+        cx_px = cy_px = None
+        # Prefer polygon centroid when we have one (>= 3 vertices).
+        if polygon and isinstance(polygon, list) and len(polygon) >= 3:
+            try:
+                xs = [float(pt.get("x")) for pt in polygon if isinstance(pt, dict)]
+                ys = [float(pt.get("y")) for pt in polygon if isinstance(pt, dict)]
+                if len(xs) >= 3 and len(ys) >= 3:
+                    cx_px = sum(xs) / len(xs)
+                    cy_px = sum(ys) / len(ys)
+            except (TypeError, ValueError):
+                cx_px = cy_px = None
+        # Fall back to bbox centre.
+        if (cx_px is None or cy_px is None) and bbox:
+            try:
+                bx, by, bw, bh = [float(v) for v in bbox]
+                cx_px = bx + bw / 2.0
+                cy_px = by + bh / 2.0
+            except (TypeError, ValueError):
+                cx_px = cy_px = None
+        if cx_px is not None and cy_px is not None:
+            cx_pct = (cx_px / W) * 100.0
+            cy_pct = (cy_px / H) * 100.0
             if 0 <= cx_pct <= 100 and 0 <= cy_pct <= 100:
                 pin = {"x": round(cx_pct, 1), "y": round(cy_pct, 1)}
-                pin_source = "scene_bbox"
-        except (TypeError, ValueError):
-            pin = None
+                pin_source = ("scene_polygon_centroid"
+                              if polygon and len(polygon) >= 3
+                              else "scene_bbox")
 
     row: dict = {
         "zone": zone,

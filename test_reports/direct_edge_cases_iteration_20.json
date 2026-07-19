@@ -1,0 +1,93 @@
+[
+  {
+    "case": "wall Paint + alt Laminate",
+    "brain_allowed": [
+      "Paints"
+    ],
+    "object_locked": true,
+    "matches": [
+      {
+        "family": "Paint",
+        "category": "Paints",
+        "percent": 87,
+        "name": "Excel Off White"
+      },
+      {
+        "family": "Paint",
+        "category": "Paints",
+        "percent": 78,
+        "name": "Pearl Blossom"
+      },
+      {
+        "family": "Paint",
+        "category": "Paints",
+        "percent": 78,
+        "name": "Cotton White"
+      },
+      {
+        "family": "Paint",
+        "category": "Paints",
+        "percent": 78,
+        "name": "Impressions Warm White"
+      },
+      {
+        "family": "Paint",
+        "category": "Paints",
+        "percent": 76,
+        "name": "Velvet Antique White"
+      },
+      {
+        "family": "Paint",
+        "category": "Paints",
+        "percent": 75,
+        "name": "Velvet Almond White"
+      }
+    ]
+  },
+  {
+    "case": "object-locked wall Other/undefined + alt Laminate",
+    "brain_allowed": [
+      "Paints",
+      "Laminates"
+    ],
+    "object_locked": true,
+    "matches": [
+      {
+        "family": "Laminate",
+        "category": "Laminates",
+        "percent": 72,
+        "name": "Cotton White HPL"
+      },
+      {
+        "family": "Paint",
+        "category": "Paints",
+        "percent": 71,
+        "name": "Excel Off White"
+      },
+      {
+        "family": "Laminate",
+        "category": "Laminates",
+        "percent": 69,
+        "name": "Ivory Solid"
+      },
+      {
+        "family": "Laminate",
+        "category": "Laminates",
+        "percent": 69,
+        "name": "Cotton Solid 8110"
+      },
+      {
+        "family": "Laminate",
+        "category": "Laminates",
+        "percent": 68,
+        "name": "Warm Ivory Solid"
+      },
+      {
+        "family": "Laminate",
+        "category": "Laminates",
+        "percent": 67,
+        "name": "Cream Wave Solid"
+      }
+    ]
+  }
+]

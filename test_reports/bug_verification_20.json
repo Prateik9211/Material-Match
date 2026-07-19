@@ -1,0 +1,82 @@
+{
+  "verdict": "not_fixed",
+  "user_reported_bug": "Real user testing surfaced 4 issues: P0 catalogue accuracy regression where object-locked wall Paint / undefined family / flooring surfaces were matched to Laminates with high confidence; rug pin placement should prefer polygon centroid; hover highlight should be clearer and dim other cards; shortlisted swatches need click-to-enlarge lightbox.",
+  "summary": "No relevant testing skill found. Focused verification shows the core confident wall-paint -> laminate leak is fixed for object-locked Paint rows and live real-image analysis, but the overall bug set is not fixed: shortlisted catalogue swatches do not render a clickable swatch because the backend drops swatch fields, and an object-locked wall with undefined/Other family can still search/return Laminates above Paint.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/projects/{project_id}/shortlist",
+        "issue": "ShortlistItemCreate/add_shortlist_item do not persist swatch_crop_b64, color_hex, or material_code. Frontend sends these fields, but the saved shortlist item only contains name/source/match_percent/category/zone/notes/image_ref/external_url, so shortlisted catalogue swatches cannot render/enlarge.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "_find_catalogue_matches / materialmatch_brain",
+        "issue": "Edge case from the user report is still reproducible in direct backend testing: object_type='wall' with material_family='Other'/undefined and family_alternatives=['Laminate'] returns a top Laminate match (72%) ahead of a Paint match (71%) because Brain allows ['Paints','Laminates'] even while object_locked=True. This is lower than the originally reported 80%, but it still demonstrates the undefined-wall cross-family leak is not fully gated/penalized.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "ShortlistSection",
+        "issue": "After adding a catalogue recommendation to the shortlist, [data-testid='shortlist-swatch-0'] did not exist, so the lightbox could not be opened. Root cause is backend persistence dropping swatch/color fields, not the lightbox component itself.",
+        "selector": "[data-testid='shortlist-swatch-0']",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Analysis page catalogue recommendation -> Add recommendation to shortlist -> Shortlist swatch lightbox",
+        "issue": "UI click successfully adds an item, but the persisted shortlist item lacks swatch_crop_b64/color_hex/material_code; no clickable swatch button renders.",
+        "affected_selectors": [
+          "[data-testid='recommended-shortlist-btn-0-0']",
+          "[data-testid='shortlist-item-0']",
+          "[data-testid='shortlist-swatch-0']",
+          "[data-testid='shortlist-swatch-lightbox']"
+        ]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/pytest/pin_and_vocab_fixes_iteration_20.txt",
+    "/app/test_reports/backend_direct_iteration_20.json",
+    "/app/test_reports/api_real_image_iteration_20.json",
+    "/app/test_reports/direct_edge_cases_iteration_20.json",
+    "/app/test_reports/frontend_lightbox_seed_iteration_20.json",
+    "/app/test_reports/scripts/backend_direct_checks_iteration_20.py",
+    "/app/test_reports/scripts/api_real_image_iteration_20.py",
+    "/app/test_reports/scripts/seed_frontend_lightbox_iteration_20.py"
+  ],
+  "action_items": [
+    "Persist swatch_crop_b64, color_hex, and material_code in ShortlistItemCreate/add_shortlist_item and return them from GET /shortlist so the lightbox can render.",
+    "Tighten materialmatch_brain handling for object-locked wall/ceiling rows with material_family Other/undefined: do not let Laminates outrank Paints for plain matte wall surfaces, or return no confident match if the family remains genuinely ambiguous.",
+    "Add an explicit regression test for object_type='wall', material_family='Other', family_confidence<0.7, family_alternatives=['Laminate'] so undefined-family rows do not surface top laminate recommendations."
+  ],
+  "critical_code_review_comments": [
+    "frontend/src/pages/Analysis.jsx addCatalogueMatchToShortlist sends swatch_crop_b64/color_hex/material_code, but backend/server.py ShortlistItemCreate omits these fields and add_shortlist_item never stores them.",
+    "backend/server.py materialmatch_brain lines around the architectural painted surfaces route default unknown/Other wall surfaces to ['Paints','Laminates'] with object_locked=True; _find_catalogue_matches correctly skips low-confidence widen, but the initial Brain allow-list is already too broad for this user-reported undefined wall case."
+  ],
+  "updated_files": [
+    "/app/test_reports/bug_verification_20.json",
+    "/app/test_reports/iteration_20.json",
+    "/app/test_reports/backend_direct_iteration_20.json",
+    "/app/test_reports/api_real_image_iteration_20.json",
+    "/app/test_reports/direct_edge_cases_iteration_20.json",
+    "/app/test_reports/frontend_lightbox_seed_iteration_20.json",
+    "/app/test_reports/scripts/backend_direct_checks_iteration_20.py",
+    "/app/test_reports/scripts/api_real_image_iteration_20.py",
+    "/app/test_reports/scripts/seed_frontend_lightbox_iteration_20.py"
+  ],
+  "success_rate": {
+    "backend": "75%",
+    "frontend": "50%"
+  },
+  "seed_data_creation": "Created fresh API users/projects for real-image analysis and a seeded analysis project for shortlist lightbox UI verification. Test data only; no product code changed.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Pytest suite passed (22/22). Real Unsplash interior analysis on project 6a5c87ed40e9dc4ac971e05c returned 11 rows, pins on all rows, and object-locked ceiling/wall Paint rows only had Paint/Paints matches. Hover classes passed on real analysis UI. Shortlist lightbox failed after adding a catalogue match because no shortlist-swatch button rendered; API confirmed saved item lacks swatch/color/code fields. Direct edge case for object-locked wall Other/undefined still returns top Laminate 72% over Paint 71%.",
+  "rca_of_the_issue": "The main P0 widen-block fix works for confident object-locked Paint rows, but undefined wall handling remains too broad at Brain routing time. Separately, the frontend lightbox implementation cannot work end-to-end because the backend Pydantic model/API persistence silently discards the swatch fields the frontend sends."
+}
