@@ -1,0 +1,41 @@
+{
+  "verdict": "fixed",
+  "user_reported_bug": "Founder re-tested with the same bedroom photo from the original bug report — dark accent wall + wall art still not detected in the live app. Iteration 23 claimed 'fixed' but based only on unit tests (vocab-in-code assertions), never on a live image run. Investigation this round found: (1) `feature wall` DID fire in SAM3's raw output at 0.55–0.66 confidence — well above the 0.40 gate — but was being killed by the cross-class IoU dedup step because it overlaps almost-exactly with the plain `wall` detection at 0.83, so the higher-confidence `wall` wins. (2) `artwork`/`framed art`/`painting`/`picture frame` also fire strongly (0.75–0.96) and route to products by design (DETERMINISTIC_MATERIAL=None) — that's expected, not a bug. Fix: exempt semantic 'specialization' pairs (wall ↔ feature wall / accent wall / wainscot / paneled wainscoting / trim / backsplash; floor ↔ rug; bed ↔ headboard / pillow / cushion / mattress; sofa ↔ cushion / pillow) from cross-class IoU dedup so BOTH survive.",
+  "summary": "No relevant testing skill found. Focused backend retest verified the actual live /api/projects/{id}/analyze flow with the requested Unsplash bedroom photo, not just unit tests. The response used real-scene-hybrid-v1 with no scene_fallback, returned 15 rows and 37 Stage-A objects, including 3 feature wall rows and 3 feature wall scene_stage_a objects (confidences 0.640625, 0.62109375, 0.5546875). The 31-test regression file also passed, covering both the specialization-pair dedup exemption and unrelated sink/mirror cross-class dedup.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/feature_wall_live_iteration_25.py",
+    "/app/test_reports/feature_wall_live_iteration_25.json",
+    "/app/test_reports/feature_wall_live_response_iteration_25.json",
+    "/app/test_reports/pytest_feature_wall_iteration_25.log"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Inspected /app/backend/intelligence/scene_segmentation.py: filter_detections now defines _SPECIALIZATION_PAIRS and continues instead of clashing when overlapping cross-class labels are approved semantic specialization pairs, while unrelated cross-class overlaps still dedup."
+  ],
+  "updated_files": [
+    "/app/test_reports/feature_wall_live_iteration_25.py",
+    "/app/test_reports/feature_wall_live_iteration_25.json",
+    "/app/test_reports/feature_wall_live_response_iteration_25.json",
+    "/app/test_reports/pytest_feature_wall_iteration_25.log",
+    "/app/test_reports/bug_verification_25.json",
+    "/app/test_reports/iteration_25.json"
+  ],
+  "success_rate": {
+    "backend": "100%",
+    "frontend": "N/A - backend-only retest"
+  },
+  "seed_data_creation": "Created live QA project 6a5c9e647c61403b10d284db using admin@materialmatch.ai and uploaded the real Unsplash bedroom image /tmp/feature_wall_bedroom_1616486338812.jpg. No API/integration was MOCKED.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Skill search for 'SAM3 feature wall analyze endpoint image detection' returned no relevant testing skill. Live proof is in /app/test_reports/feature_wall_live_iteration_25.json: analyze_status_code=200, version=real-scene-hybrid-v1, scene_fallback=null, rows_feature_or_accent_wall_present=true, stage_a_feature_or_accent_wall_present=true. Pytest proof is in /app/test_reports/pytest_feature_wall_iteration_25.log: 31 passed.",
+  "rca_of_the_issue": "The reported failure was the cross-class IoU deduper treating an overlapping generic wall and semantic subtype feature wall as mutually exclusive, keeping the higher-confidence wall and dropping feature wall. Runtime evidence confirms the exemption now lets feature wall survive into both scene_stage_a and final analysis rows; artwork/framed art/picture frame also appear in Stage-A and remain product-routed as designed."
+}

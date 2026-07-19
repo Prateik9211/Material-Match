@@ -422,6 +422,31 @@ def filter_detections(
         kept = area_gated
     kept.sort(key=lambda d: float(d.get("confidence", 0)), reverse=True)
     out: list[dict] = []
+    # 2026-02-27 (round 10) — "Specialization" pairs are semantic
+    # subsets of a broader label (a feature/accent wall IS a wall; a
+    # wainscot IS a wall panel).  When both fire on similar regions,
+    # cross-class IoU dedup would kill the specialization because the
+    # generic label typically has higher confidence.  This lookup
+    # exempts these pairs from cross-class dedup so BOTH survive the
+    # filter — Stage B then handles them as separate zones.
+    _SPECIALIZATION_PAIRS: set[frozenset[str]] = {
+        frozenset({"wall", "feature wall"}),
+        frozenset({"wall", "accent wall"}),
+        frozenset({"wall", "wainscot"}),
+        frozenset({"wall", "paneled wainscoting"}),
+        frozenset({"wall", "trim"}),
+        frozenset({"wall", "backsplash"}),
+        frozenset({"floor", "rug"}),
+        frozenset({"bed", "headboard"}),
+        frozenset({"bed", "pillow"}),
+        frozenset({"bed", "cushion"}),
+        frozenset({"bed", "throw pillow"}),
+        frozenset({"bed", "mattress"}),
+        frozenset({"sofa", "cushion"}),
+        frozenset({"sofa", "pillow"}),
+        frozenset({"sofa", "throw pillow"}),
+    }
+
     for d in kept:
         if d.get("bbox") is None:
             out.append(d)
@@ -435,6 +460,14 @@ def filter_detections(
             if same_label and iou > iou_dedup:
                 clash = True; break
             if not same_label and iou > cross_class_iou:
+                # Specialization pairs (e.g. wall ↔ feature wall) are
+                # exempt — both survive so Stage B can classify the
+                # accent wall as its own zone even when it overlaps
+                # the parent wall's mask.
+                pair = frozenset({(k.get("label") or "").lower(),
+                                    (d.get("label") or "").lower()})
+                if pair in _SPECIALIZATION_PAIRS:
+                    continue
                 clash = True; break
         if not clash:
             out.append(d)

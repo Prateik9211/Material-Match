@@ -604,3 +604,52 @@ def test_wall_art_prompts_route_to_products_not_materials():
             f"{prompt!r} must be None (skip material) — got "
             f"{DETERMINISTIC_MATERIAL[prompt]!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Round 10 — specialization pairs must survive cross-class dedup.
+# Fixes the founder's real bedroom re-test where SAM3 fired
+# `feature wall` at 0.55 but it was killed by cross-class IoU dedup
+# vs a plain `wall` at 0.83 covering the same region.
+# ---------------------------------------------------------------------------
+def test_specialization_pair_wall_feature_wall_both_survive_dedup():
+    from intelligence.scene_segmentation import filter_detections
+    # Overlapping bboxes (IoU ~1.0), different labels.
+    dets = [
+        {"label": "wall",         "confidence": 0.83, "bbox": [0, 0, 800, 600]},
+        {"label": "feature wall", "confidence": 0.55, "bbox": [0, 0, 800, 600]},
+    ]
+    kept = filter_detections(dets, min_confidence=0.40)
+    labels = {d["label"] for d in kept}
+    assert "wall" in labels
+    assert "feature wall" in labels, (
+        f"feature wall was killed by cross-class dedup vs wall despite "
+        f"specialization-pair exemption; kept={labels}"
+    )
+
+
+def test_specialization_pair_bed_headboard_both_survive_dedup():
+    """Bed & headboard commonly share overlapping polygons on a
+    headboard-wall shot — both should survive."""
+    from intelligence.scene_segmentation import filter_detections
+    dets = [
+        {"label": "bed",       "confidence": 0.85, "bbox": [0, 200, 900, 600]},
+        {"label": "headboard", "confidence": 0.60, "bbox": [50, 210, 800, 590]},
+    ]
+    kept = filter_detections(dets, min_confidence=0.55)
+    assert "headboard" in {d["label"] for d in kept}
+
+
+def test_non_specialization_cross_class_still_deduped():
+    """Regression guard: unrelated cross-class overlaps (sink vs mirror,
+    both at same IoU) must still be deduped — the specialization
+    exemption must not accidentally let random cross-class overlaps
+    through."""
+    from intelligence.scene_segmentation import filter_detections
+    dets = [
+        {"label": "sink",   "confidence": 0.80, "bbox": [0, 0, 500, 500]},
+        {"label": "mirror", "confidence": 0.60, "bbox": [0, 0, 500, 500]},
+    ]
+    kept = filter_detections(dets, min_confidence=0.55, cross_class_iou=0.85)
+    assert len(kept) == 1, f"expected 1, got {[d['label'] for d in kept]}"
+    assert kept[0]["label"] == "sink"
