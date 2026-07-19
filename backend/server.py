@@ -1338,12 +1338,19 @@ async def real_analyze(project_id: str,
         )
 
     existing = doc.get("mock_analysis") or {}
-    if existing.get("version", "").startswith("real-") and existing.get("generated_at"):
+    # 2026-02-01 (round 4) — dedup MUST honour the caller's chosen
+    # library_scope. Otherwise a "Check Admin Library" click landing
+    # within LLM_ANALYSIS_DEDUP_WINDOW_S of a "Check My Catalogue" call
+    # returns the CACHED own-scope response, breaking the never-silently-
+    # merged rule.
+    if (existing.get("version", "").startswith("real-")
+            and existing.get("generated_at")
+            and (existing.get("library_scope") or "admin") == library_scope):
         try:
             gen_at = datetime.fromisoformat(existing["generated_at"].replace("Z", "+00:00"))
             age = (datetime.now(timezone.utc) - gen_at).total_seconds()
             if age < LLM_ANALYSIS_DEDUP_WINDOW_S:
-                logger.info(f"analyze dedup-hit project={project_id} age={age:.1f}s")
+                logger.info(f"analyze dedup-hit project={project_id} age={age:.1f}s scope={library_scope}")
                 return existing
         except Exception:
             pass
@@ -1439,6 +1446,11 @@ async def real_analyze(project_id: str,
             user_records=(await _load_user_catalogue_records(user["id"]))
                           if library_scope == "own" else None,
         )
+        # 2026-02-01 (round 4) — stamp the scope onto the persisted
+        # analysis so the UI surfaces the same choice on reload
+        # (button-highlight, "Regenerate · Admin Library" label, etc.).
+        if isinstance(analysis, dict):
+            analysis["library_scope"] = library_scope
     except HTTPException:
         day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         await db.usage_counters.update_one(

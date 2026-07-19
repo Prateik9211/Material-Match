@@ -29,7 +29,42 @@ Admin validation tool at `/admin/scene-test` AND the LIVE user-facing `POST /api
 
 ## 2026-02-27 (round 2) — Scene-mode is now the DEFAULT for full-image analysis ✅
 
-## 2026-02-01 (round 3) — P0 CROSS-FLOW CONSISTENCY FIX (paint vs plaster) ✅
+## 2026-02-01 (round 4) — SCOPE #1: USER-UPLOADABLE CATALOGUES (Phase A + B) ✅
+
+**Backend (Phase A):**
+* New endpoints under `/api/library/*`: `POST /library/uploads` (drag-drop supplier PDF), `GET /library/uploads` (list + quota), `GET /library/records` (list extracted records), `DELETE /library/uploads/{id}` (removes upload + all its records + PDF blob), `DELETE /library/records/{id}`.
+* Reuses the SAME `_run_studio_extraction` → `_extract_records_from_pdf` pipeline the admin Studio uses — no separate pipeline built.
+* Ownership: every user record + upload stamped with `catalogue_scope='user'` + `uploaded_by=<user_id>`. Never mixed into the admin/global catalogue.
+* Auto-publish (no review queue): user records land in `status='published'` directly — founder rule #3.
+* `library_scope` param wired end-to-end: `POST /analyze?library_scope=admin|own` (query) and `POST /analyze-region` payload field. Threads down through `_enrich_rows_with_catalogue` → `_find_catalogue_matches`. Corpus is chosen with a hard `if scope == 'own'` in retrieval — never silently merged.
+* Memory-safe scaling: `_STUDIO_INDEXED_RECORDS` in-memory cache filters to admin/legacy records only; user records are fetched on-demand per search via `_load_user_catalogue_records(uid)` (bounded by upload cap).
+* Abuse protection: `USER_LIBRARY_MAX_UPLOAD_BYTES=25 MB` (admin remains 150 MB); `USER_LIBRARY_MAX_UPLOADS=20` per user (HTTP 429 when reached); PDF-format probe rejects garbage before spawning the background task.
+* Dedup bug fixed: `/analyze` was returning cached results ignoring `library_scope`, so clicking "Check Admin Library" right after "Check My Catalogue" was returning the cached own-scope response. Fixed to include scope in the dedup key.
+
+**Frontend (Phase B):**
+* **`components/library/MyCatalogueSection.jsx`** — new drag-drop uploader with quota badge, status pills (processing/published/failed), file-size caps, per-upload delete-with-confirm, and 4-second poll while any upload is still extracting. Reuses tonight's project-delete confirmation pattern.
+* **`MaterialLibrary.jsx`** — replaced the legacy filename-aggregation "My Library" section with `<MyCatalogueSection />` backed by real catalogue records. Header CTA button now scroll-links to the uploader instead of navigating away.
+* **`Analysis.jsx`** — replaced the single "Generate specification" button with two side-by-side buttons: **"Check Admin Library"** and **"Check My Catalogue"** (`data-testid="analyse-admin-btn"` and `analyse-own-btn`). Currently-searched scope is filled/highlighted; the other is bordered. Button labels flip to "Regenerate · <Scope>" once an analysis exists. The chosen scope persists to `mock_analysis.library_scope` in the DB so it survives page reloads.
+* **`RegionSelector.jsx`** — accepts a `libraryScope` prop and passes it to `/analyze-region` so the manual "Select area of interest" flow searches the same library the parent scope buttons chose.
+* **Zero-results CTA** — when admin scope returns 0 catalogue matches across every row, a full-width ochre banner appears above the material rows with the two CTAs: **"Upload a supplier PDF"** (routes to `/library`) and **"Try My Catalogue instead"** (re-runs analysis with `scope=own`).
+
+**Real end-to-end evidence captured (no claims):**
+| Assertion | Result |
+|---|---|
+| Upload real PDF via `POST /api/library/uploads` | 200, status transitioned processing → published, 1 record extracted |
+| Record stamped `catalogue_scope='user'`, `uploaded_by=<uid>` in DB | ✅ confirmed |
+| `POST /analyze-region library_scope=admin` on tan crop | 4 admin matches (Advance, Merino, Uploaded catalogue admin uploads) — **zero user_upload_ids in results** |
+| `POST /analyze-region library_scope=own` on same tan crop | Only user records considered (0 hits for the specific query, expected — user's single record is a semantic weak match) |
+| `DELETE /api/library/uploads/{id}` | 200, removed upload + 1 record + PDF blob |
+| Analysis UI two-button choice | Screenshot shows "Check Admin Library" and "Check My Catalogue" side by side; correct one fills after click |
+| Persist scope through page reload | Screenshot after reload: DB `library_scope='own'` → "Regenerate · My Catalogue" filled |
+| Zero-results banner in admin scope | Screenshot: full ochre banner with "No matches in the Admin Library" title, two CTAs visible |
+| Dedup fix (scope-aware) | Backend logs show BOTH `scope=admin` and `scope=own` calls ran fresh; no dedup-hit between different scopes |
+| DELETE user upload from UI | Confirm dialog, DB cleanup, PDF blob removed |
+| Full integration test suite | 8/8 pass on live SAM3 + LLM (~37 s) |
+
+
+
 
 **Root cause fixed structurally.** The founder reported the same wall in the same photo returning different material readings depending on which flow analysed it (`/analyze` scene mode said "paint"; `/analyze-region` manual selector said "plaster" / "decor"). Investigation confirmed **three distinct LLM prompts** on three distinct code paths were classifying the same crop:
 
@@ -57,6 +92,10 @@ Admin validation tool at `/admin/scene-test` AND the LIVE user-facing `POST /api
 
 
 
+
+## 2026-02-01 (round 3) — P0 CROSS-FLOW CONSISTENCY FIX (paint vs plaster) ✅
+
+**Root cause fixed structurally.** The founder reported the same wall in the same photo returning different material readings depending on which flow analysed it (`/analyze` scene mode said "paint"; `/analyze-region` manual selector said "plaster" / "decor"). Three distinct LLM prompts on three distinct code paths were classifying the same crop. Consolidated `/analyze-region` (all modes) to route through the same `SAM3 → generate_swatch_dna` path as `/analyze`. `run_object_aware_region_analysis` deleted. New permanent regression guard: `tests/test_flow_consistency.py` — asserts identical `material_family` for the same wall region across both endpoints; passes live in ~26 s.
 
 ## 2026-02-01 (round 2) — Vocab expansion + project CRUD ✅
 

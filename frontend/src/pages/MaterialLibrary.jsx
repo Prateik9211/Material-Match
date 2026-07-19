@@ -4,6 +4,7 @@ import Header from "@/components/Header";
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
 import { BookOpen, Users, User, Layers, ArrowUpRight, Plus, Sparkles, Palette, Grid3x3, Trees, Mountain, Square, Blocks, Lightbulb, Wrench, Armchair, Shirt } from "lucide-react";
+import MyCatalogueSection from "@/components/library/MyCatalogueSection";
 
 function StatusPill({ status }) {
   const map = {
@@ -143,18 +144,13 @@ function MyItem({ item }) {
 
 export default function MaterialLibrary() {
   const [globalMeta, setGlobalMeta] = useState(null);
-  const [mine, setMine] = useState([]);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
   const load = useCallback(async () => {
     try {
-      const [g, m] = await Promise.all([
-        api.get("/library/global"),
-        api.get("/library/my"),
-      ]);
+      const g = await api.get("/library/global");
       setGlobalMeta(g.data);
-      setMine(m.data.items || []);
     } catch (e) {
       toast.error(formatApiError(e));
     } finally {
@@ -236,24 +232,19 @@ export default function MaterialLibrary() {
               </div>
             </LibrarySection>
 
-            {/* MY LIBRARY */}
+            {/* MY LIBRARY — real user-uploadable catalogues.
+                2026-02-01 (round 4): replaced the legacy /library/my
+                filename-aggregation with a genuine upload+extract flow
+                backed by ke_uploads/ke_records with catalogue_scope='user'. */}
             <LibrarySection
               number="02"
               icon={User}
-              title="My Library"
-              subtitle="Catalogues you've uploaded across your projects. Aggregated for quick reference."
-              status={mine.length > 0 ? "beta" : "coming_soon"}
+              title="My Uploaded Catalogues"
+              subtitle="Your private supplier PDFs. Uploaded once, extracted automatically, searchable across every project you create."
+              status="beta"
               testid="library-section-mine"
             >
-              {mine.length === 0 ? (
-                <div className="text-center py-8 text-sm text-warm-grey" data-testid="my-empty">
-                  You haven&apos;t uploaded any catalogues yet. Upload one via the Catalogue Match step inside any project.
-                </div>
-              ) : (
-                <div className="grid sm:grid-cols-2 gap-3" data-testid="my-list">
-                  {mine.map((it) => <MyItem key={it.id} item={it} />)}
-                </div>
-              )}
+              <MyCatalogueSection />
             </LibrarySection>
 
             {/* COMMUNITY LIBRARY */}

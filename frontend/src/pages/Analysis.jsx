@@ -7,7 +7,7 @@ import ShortlistSection from "@/components/analysis/ShortlistSection";
 import MaterialsFirstSection from "@/components/analysis/MaterialsFirstSection";
 import RegionSelector from "@/components/analysis/RegionSelector";
 import api, { formatApiError, useConfig } from "@/lib/api";
-import { ArrowLeft, Sparkles, RefreshCw, X, Focus, Layers, ImagePlus } from "lucide-react";
+import { ArrowLeft, Sparkles, RefreshCw, X, Focus, Layers, ImagePlus, BookOpen, User as UserIcon, UploadCloud } from "lucide-react";
 import { toast } from "sonner";
 
 function SummaryPanel({ summary, title, subtitle, ephemeral, onClear, cropPreview }) {
@@ -103,6 +103,18 @@ export default function Analysis() {
   const [focusedProductIndex, setFocusedProductIndex] = useState(null); // syncs product pins ↔ product cards
   const [replacing, setReplacing] = useState(false);
   const replaceInputRef = React.useRef(null);
+  // 2026-02-01 (round 4) — user-uploadable catalogues. Track which
+  // library the specification was generated against so the two-button
+  // scope choice can be surfaced honestly in the UI (never silently
+  // merged with the other scope).
+  const [libraryScope, setLibraryScope] = useState("admin");
+
+  // Sync libraryScope from the persisted analysis if the user returns
+  // to a project mid-flow.
+  useEffect(() => {
+    const persisted = project?.mock_analysis?.library_scope;
+    if (persisted === "admin" || persisted === "own") setLibraryScope(persisted);
+  }, [project?.mock_analysis?.library_scope]);
 
   const fetchProject = useCallback(async () => {
     try {
@@ -125,14 +137,26 @@ export default function Analysis() {
 
   useEffect(() => { fetchProject(); }, [fetchProject]);
 
-  const analyse = async () => {
+  const analyse = async (scope = "admin") => {
     setBusy(true);
     try {
-      const { data } = await api.post(`/projects/${id}/analyze`);
-      setProject((prev) => ({ ...(prev || {}), mock_analysis: data, status: "completed" }));
+      const { data } = await api.post(
+        `/projects/${id}/analyze`,
+        null,
+        { params: { library_scope: scope } },
+      );
+      // Stamp the scope onto the analysis payload so the UI can show
+      // which library the user chose for this run.
+      const stamped = { ...data, library_scope: scope };
+      setProject((prev) => ({ ...(prev || {}), mock_analysis: stamped, status: "completed" }));
+      setLibraryScope(scope);
       if (Array.isArray(data.products)) setProducts(data.products);
-      setRegionResult(null); // clear zone view on fresh full analysis
-      toast.success("Specification generated");
+      setRegionResult(null);
+      toast.success(
+        scope === "own"
+          ? "Specification generated against your uploaded catalogue"
+          : "Specification generated against the Admin Library"
+      );
     } catch (err) {
       toast.error(formatApiError(err));
     } finally {
@@ -345,13 +369,50 @@ export default function Analysis() {
                       )}
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
-                      <button onClick={analyse} disabled={busy}
-                        className="inline-flex items-center justify-center gap-2 bg-charcoal text-paper hover:bg-charcoal/85 rounded-full px-5 py-2.5 text-sm font-medium transition-colors disabled:opacity-60"
-                        data-testid="analyse-materials-btn">
-                        {hasAnalysis ? (
-                          <><RefreshCw className={`w-4 h-4 ${busy ? "animate-spin" : ""}`} strokeWidth={1.5} /> {busy ? "Reading zones…" : "Regenerate"}</>
+                      {/* 2026-02-01 (round 4) — two-button scope
+                          choice. Never silently merged (see
+                          server.py `_find_catalogue_matches`). The
+                          previously-used scope is highlighted so the
+                          user sees which library the current spec was
+                          built against. */}
+                      <button
+                        onClick={() => analyse("admin")}
+                        disabled={busy}
+                        className={`inline-flex items-center justify-center gap-2 rounded-full px-4 py-2.5 text-sm font-medium transition-colors disabled:opacity-60 ${
+                          hasAnalysis && libraryScope === "admin"
+                            ? "bg-charcoal text-paper hover:bg-charcoal/85"
+                            : "border border-charcoal text-charcoal hover:bg-charcoal hover:text-paper"
+                        }`}
+                        data-testid="analyse-admin-btn"
+                        title="Search the platform's global MaterialMatch library"
+                      >
+                        {busy && libraryScope === "admin" ? (
+                          <><RefreshCw className="w-4 h-4 animate-spin" strokeWidth={1.5} /> Reading…</>
                         ) : (
-                          <><Sparkles className={`w-4 h-4 ${busy ? "animate-pulse" : ""}`} strokeWidth={1.5} /> {busy ? "Reading zones…" : "Generate specification"}</>
+                          <>
+                            <BookOpen className="w-4 h-4" strokeWidth={1.5} />
+                            {hasAnalysis && libraryScope === "admin" ? "Regenerate · Admin Library" : "Check Admin Library"}
+                          </>
+                        )}
+                      </button>
+                      <button
+                        onClick={() => analyse("own")}
+                        disabled={busy}
+                        className={`inline-flex items-center justify-center gap-2 rounded-full px-4 py-2.5 text-sm font-medium transition-colors disabled:opacity-60 ${
+                          hasAnalysis && libraryScope === "own"
+                            ? "bg-charcoal text-paper hover:bg-charcoal/85"
+                            : "border border-charcoal text-charcoal hover:bg-charcoal hover:text-paper"
+                        }`}
+                        data-testid="analyse-own-btn"
+                        title="Search only the catalogues you've uploaded"
+                      >
+                        {busy && libraryScope === "own" ? (
+                          <><RefreshCw className="w-4 h-4 animate-spin" strokeWidth={1.5} /> Reading…</>
+                        ) : (
+                          <>
+                            <UserIcon className="w-4 h-4" strokeWidth={1.5} />
+                            {hasAnalysis && libraryScope === "own" ? "Regenerate · My Catalogue" : "Check My Catalogue"}
+                          </>
                         )}
                       </button>
                       <Link
@@ -399,6 +460,7 @@ export default function Analysis() {
                       productPins={productPins}
                       focusedProductIndex={focusedProductIndex}
                       onHoverProductPin={setFocusedProductIndex}
+                      libraryScope={libraryScope}
                     />
                   ) : (
                     <div className="aspect-video rounded-2xl bg-stone-panel border border-stone-border-soft grid place-items-center text-overline">
@@ -447,6 +509,51 @@ export default function Analysis() {
               </div>
 
               <div className="lg:col-span-7 space-y-8" data-testid="analysis-right-column">
+                {/* 2026-02-01 (round 4) — zero-results-in-admin-scope
+                    CTA. When the user searched Admin Library and every
+                    detected material row came back with an empty
+                    catalogue_matches list, prompt them to upload their
+                    own supplier PDF and try their private catalogue. */}
+                {hasAnalysis && libraryScope === "admin" && activeRows.length > 0 &&
+                  activeRows.every((r) => !(r?.catalogue_matches || []).length) && (
+                    <div
+                      className="bg-ochre-soft/50 border border-ochre/30 rounded-2xl p-5 flex items-start gap-4"
+                      data-testid="analysis-zero-admin-cta"
+                    >
+                      <div className="w-10 h-10 rounded-full bg-ochre/20 grid place-items-center flex-shrink-0">
+                        <UploadCloud className="w-5 h-5 text-ochre" strokeWidth={1.5} />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-display text-base font-semibold text-charcoal mb-1">
+                          No matches in the Admin Library
+                        </div>
+                        <p className="text-sm text-charcoal/80 mb-3">
+                          We couldn&apos;t find any strong matches in the platform library for the surfaces in this photo. Try uploading your own supplier PDF — we&apos;ll extract every swatch and re-search against just your catalogue.
+                        </p>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={() => navigate("/library")}
+                            className="inline-flex items-center gap-2 bg-charcoal text-paper hover:bg-charcoal/85 rounded-full px-4 py-2 text-sm font-medium transition-colors"
+                            data-testid="analysis-zero-upload-cta"
+                          >
+                            <UploadCloud className="w-4 h-4" strokeWidth={1.75} />
+                            Upload a supplier PDF
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => analyse("own")}
+                            disabled={busy}
+                            className="inline-flex items-center gap-2 border border-charcoal text-charcoal hover:bg-charcoal hover:text-paper rounded-full px-4 py-2 text-sm font-medium transition-colors disabled:opacity-60"
+                            data-testid="analysis-zero-try-own-cta"
+                          >
+                            <UserIcon className="w-4 h-4" strokeWidth={1.75} />
+                            Try My Catalogue instead
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 {/* Materials → Alternatives → Catalogue */}
                 {activeRows.length > 0 ? (
                   <MaterialsFirstSection
@@ -472,7 +579,7 @@ export default function Analysis() {
                     <Sparkles className="w-10 h-10 text-warm-grey mx-auto mb-4" strokeWidth={1.25} />
                     <h2 className="font-display text-2xl font-semibold mb-2 text-charcoal">No specification yet</h2>
                     <p className="text-sm text-warm-grey max-w-sm mx-auto">
-                      Hit <span className="font-medium text-charcoal">Generate specification</span> to detect surfaces, finishes and India sourcing guidance for this reference.
+                      Hit <span className="font-medium text-charcoal">Check Admin Library</span> or <span className="font-medium text-charcoal">Check My Catalogue</span> to detect surfaces, finishes and sourcing guidance for this reference.
                     </p>
                   </div>
                 )}

@@ -13,6 +13,7 @@ export default function RegionSelector({
   projectId, imgSrc, onAnalyzed,
   pins, focusedPinIndex, onHoverPin,
   productPins, focusedProductIndex, onHoverProductPin,
+  libraryScope = "admin",
 }) {
   const wrapRef = useRef(null);
   const imgRef = useRef(null);
@@ -86,6 +87,10 @@ export default function RegionSelector({
         note: "user-selected region",
         full_image_b64: fullB64,
         bbox: [rect.x, rect.y, rect.w, rect.h],
+        // 2026-02-01 (round 4) — inherit the parent Analysis page's
+        // admin-vs-own scope choice so manual region selection searches
+        // the same library the "Check ..." buttons used.
+        library_scope: libraryScope,
       });
       onAnalyzed({ rows: data.rows || [], summary: data.summary || {}, crop_data_url: dataUrl });
       toast.success(`Detected ${(data.rows || []).length} material${(data.rows || []).length === 1 ? "" : "s"} in your selection`);
