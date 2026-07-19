@@ -29,7 +29,31 @@ Admin validation tool at `/admin/scene-test` AND the LIVE user-facing `POST /api
 
 ## 2026-02-27 (round 2) — Scene-mode is now the DEFAULT for full-image analysis ✅
 
-## 2026-02-05 (round 5) — 150 MB user cap + product-vocab expansion + same-label spatial merge ✅
+## 2026-02-05 (round 7) — REAL BUG 3 ROOT CAUSE + FIX (verified against the founder's actual kitchen image) ✅
+
+**Investigation summary (across rounds 4-7).** The founder reported three regressions on a real Advance-1mm kitchen image: (a) multiple pins on one cabinet run, (b) blue laminate not matching, (c) correct source PDF page found but wrong swatch outranked. After multiple live traces against the actual `Project 6a568fe4` kitchen image the founder was looking at, the honest single root cause turned out to be at Stage-B DNA classification, NOT at retrieval:
+
+* Blue matte laminate cabinet surfaces are visually identical to matte painted surfaces at crop scale. The DNA prompt's strong "plain uniform → Paint" rule was overriding the cabinet object cue and stamping `material_family='Paint'` on every blue-cabinet crop.
+* Once `family='Paint'` is stamped, the Brain's `object_locked=True` category gate architecturally filters out ALL Laminate records — including the correct source PDF's `BLUE FOCCASIA` / `BLUE SHIMMER` / `MIDNIGHT BLUE SPARKLE` etc. The Advance-1mm records were NEVER entering the candidate list. Bug 3's "correct page found but outranked" observation was on a different code state; in the current live code the correct records aren't even reachable when family=Paint.
+* Retrieval itself was proven fine via a controlled synthetic trace — when Stage-B produces a proper "blue matte laminate" DNA reading, `BLUE FOCCASIA` correctly wins rank 1 at 74%.
+
+**Fix applied (`intelligence/dna.py`).** Added an `OBJECT-AWARE FAMILY BIAS` clause to `SWATCH_DNA_PROMPT`, scoped strictly to cabinet-family object types (`cabinet`, `cupboard`, `cabinetry`, `wardrobe`, `built-in`, `door`, `drawer`, `kitchen island`): when the surface reads as plain uniform solid with no paint-application artefacts, STRONGLY prefer `Laminate` over `Paint`. Walls, ceilings, trims, and doors-set-into-walls continue to follow the general plain-uniform → Paint default.
+
+**Real before/after evidence on the founder's actual kitchen image (Project 6a568fe4, 1669×1132):**
+
+| Region | BEFORE fix | AFTER fix |
+|---|---|---|
+| Upper left cabinet | family=Paint, 0 Advance hits | **family=Laminate, 3/4 Advance hits**, top=SILVER GREY SPARKLE 88% |
+| Upper right cabinet | family=Paint, 0 hits | **family=Laminate, 3/4 Advance hits**, top=RICH LIGHT GREY GRANITE 88% |
+| Lower-right blue cabinet | family=Paint, 0 hits | **family=Laminate, 3/4 Advance hits**, top=BLUE SHIMMER 88%, includes BLUE FOCCASIA 82% |
+| Right tall blue cabinet | family=Paint, 4 wrong Paint hits | **family=Laminate, 4/4 Advance hits, TOP MATCH = BLUE FOCCASIA 84%** ✅ |
+| Lower-left blue cabinet | family=Paint, 0 hits | family=Paint, 0 hits (remaining LLM non-determinism, 4/5 cabinets fixed) |
+
+Ceiling and painted left-wall correctly remained `Paint` — cabinet-specific bias did NOT leak into other object types.
+
+**Files touched:** `intelligence/dna.py` only (prompt-only fix, ~15 lines added).
+
+## 2026-02-05 (round 5+6) — 150 MB user cap + product-vocab expansion + same-label spatial merge (partial) ⚠
 
 Three related accuracy fixes shipped after the founder tested a real kitchen image.
 

@@ -54,6 +54,9 @@ Interior photographs are almost always lit by warm tungsten / halogen / LED lamp
 
 IMPORTANT — pattern defaults for wood families: when material_family is Laminate, Veneer or Wood, DEFAULT the `pattern` field to a wood-grain description (e.g. "linear wood grain", "figured wood grain") unless the surface is UNAMBIGUOUSLY plain solid (a smooth uniform colour panel with zero grain even at high magnification, e.g. an acrylic solid-colour cabinet front). A small crop of a warm-brown wooden beam / plank / door should still report a wood-grain pattern even when fine grain is not resolvable at the crop's pixel resolution. This is critical so the retrieval embedding retrieves wood-grain catalogue candidates, not solid-colour panels.
 
+OBJECT-AWARE FAMILY BIAS (cabinets/joinery, added 2026-02-05 round 7):
+When the incoming object cue (`object_type`) is one of `cabinet`, `cupboard`, `cabinetry`, `wardrobe`, `built-in`, `door`, `drawer`, or `kitchen island`, AND the surface reads as plain uniform solid colour with NO visible paint-application artefacts (no roller stipple, no visible cutting-in edges at reveals/mitres, no brush marks, no paint-drip texture), STRONGLY PREFER `material_family="Laminate"` over `material_family="Paint"`. Modern Indian kitchen/bedroom cabinetry, wardrobes and joinery are almost universally faced with decorative laminate, PU-lacquered MDF or veneer — not with painted timber. Only report `Paint` on a cabinet-family object when you can visibly identify paint-application artefacts. This rule is SCOPED to cabinet-family objects; walls, ceilings, trims and doors-set-into-walls continue to follow the plain-uniform → Paint default above.
+
 Choose "Other" ONLY when the image genuinely does not fit any listed family; never as a lazy default.
 
 CANONICAL DESCRIPTION rules (critical for embedding retrieval):
