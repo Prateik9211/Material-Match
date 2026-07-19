@@ -65,8 +65,13 @@ def test_wide_parent_swallows_child_doors():
     assert hh == pytest_isclose(411.0 - 349.0)
     # Anchor should be the highest-confidence member (d0 at 0.75).
     assert m["confidence"] == 0.75
-    # Merged polygons are misleading — must be dropped.
-    assert "polygon" not in m or m.get("polygon") is None
+    # 2026-02-05 (round 6) — polygon MUST be preserved (round 5 dropped
+    # it; that caused a regression where the wide hull crop
+    # misclassified as Paint). The anchor's original bbox is tucked
+    # onto the merged detection so Stage-B can crop tight per-door
+    # for accurate material classification while pin placement still
+    # uses the hull.
+    assert m.get("anchor_bbox") == [551.0, 349.0, 42.0, 62.0]
 
 
 def test_adjacent_row_chain_without_parent():

@@ -3621,9 +3621,20 @@ async def run_scene_region_analysis(
 
     # 3) Stage B — per-object polygon-masked DNA classification.  Run in
     #    parallel; each call is network-bound so gather cuts wall-clock.
+    #
+    # 2026-02-05 (round 6) — for merge-clustered detections, crop from
+    # the ANCHOR'S ORIGINAL bbox rather than the hull. The hull can be
+    # a wide-thin strip (e.g. a whole cabinet run) that makes the DNA
+    # classifier see a horizontal band and misclassify as Paint. The
+    # anchor bbox is the single highest-confidence per-door detection
+    # from the cluster — a clean tight crop the classifier can reason
+    # about accurately. Non-merged detections have no `anchor_bbox`,
+    # so they crop from their own bbox as before (unchanged).
     stage_b_tasks = [
         classify_object_material(
-            scene_img, obj["bbox"], obj["label"], EMERGENT_LLM_KEY,
+            scene_img,
+            obj.get("anchor_bbox") or obj["bbox"],
+            obj["label"], EMERGENT_LLM_KEY,
             polygon=obj.get("polygon"),
             object_confidence=float(obj.get("confidence", 0.0)),
         )
@@ -3668,8 +3679,12 @@ async def run_scene_region_analysis(
         # Build the polygon-masked crop for downstream rerank — same
         # crop the DNA classifier saw, so we're comparing apples-to-apples
         # against the catalogue swatch it was matched against.
+        # 2026-02-05 (round 6) — matches the Stage-B crop above: use
+        # anchor_bbox when the detection is a merge cluster so the
+        # rerank crop is a tight per-door crop, not the wide hull.
         try:
-            crop, (x0, y0, x1, y1) = _crop_to_bbox(scene_img, list(obj["bbox"]))
+            crop_bbox = obj.get("anchor_bbox") or obj["bbox"]
+            crop, (x0, y0, x1, y1) = _crop_to_bbox(scene_img, list(crop_bbox))
             if obj.get("polygon") and len(obj["polygon"]) >= 3:
                 crop = _apply_polygon_mask(crop, obj["polygon"], (x0, y0))
             per_object_crops[row_index] = _crop_to_base64(crop)

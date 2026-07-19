@@ -682,10 +682,24 @@ def _merge_same_label_zones(detections: list[dict]) -> list[dict]:
             members.sort(key=lambda m: float(m.get("confidence", 0)), reverse=True)
             anchor = dict(members[0])
             hull = _hull_bbox([m["bbox"] for m in members])
+            # 2026-02-05 (round 6) — PRESERVE the anchor's original
+            # polygon (do NOT drop it as round 5 did). Rationale from
+            # live regression: the hull of 5 cabinet doors is a
+            # wide-thin strip; Stage-B `generate_swatch_dna` cropping
+            # that shape sees a horizontal band and confidently
+            # classifies as PAINT — losing the "blue laminate
+            # cabinet" reading a per-door polygon crop produced.
+            # By keeping the highest-confidence source polygon,
+            # Stage-B still crops one tight cabinet door (accurate
+            # material classification) while the hull bbox drives
+            # pin placement (visual "one zone" for the user). We also
+            # tuck the original per-door bbox onto the anchor so
+            # downstream code that needs the anchor's true footprint
+            # (e.g. crop-origin math) can find it.
+            anchor["anchor_bbox"] = list(members[0]["bbox"])
             anchor["bbox"] = hull
-            # A merged polygon is misleading — drop it so Stage B
-            # falls back to the bounding box mask.
-            anchor.pop("polygon", None)
+            # `polygon` intentionally left as the anchor's original
+            # polygon (via dict(members[0]) above) — do NOT pop.
             anchor["merged_from"] = len(members)
             anchor["merged_labels"] = [m.get("label") for m in members]
             merged_out.append(anchor)
