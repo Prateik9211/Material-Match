@@ -110,6 +110,18 @@ Focused material card now gets `scale-[1.025] ring-4 ring-ochre/60 shadow-hover 
 ### P1 — Click-to-enlarge shortlist swatch (lightbox)
 `ShortlistSection` now renders each item's swatch as a thumbnail button (image or hex block); click opens a full-modal lightbox with the enlarged swatch, name, zone, code, hex, and match %. Backend: `ShortlistItemCreate` extended with `swatch_crop_b64`, `color_hex`, `material_code` fields; `Analysis.jsx addCatalogueMatchToShortlist` propagates these from the catalogue_matches entry.
 
+## 2026-02-27 (round 9) — Real-user testing findings ✅
+
+### Investigation-only (awaiting founder call)
+- **#1 · Advance UNIQUE Tile mismatch**: Direct DB lookup — record `d868ead7` is genuinely tagged `category=Tile, material_family=Tile` while the same product appears 4 other times correctly tagged `Laminates/Laminate`. Advance brand has 218 records: 198 Laminates, 13 Stone, 4 Fabric, 1 Stone/Wood mismatch, and the 2 Tile mislabels. **Data-quality bug, not pipeline.** Waiting on founder call for one-off Studio metadata correction.
+- **#3 · Ceiling terracotta color**: `_apply_polygon_mask` (scene_segmentation.py:450) correctly isolates polygon-interior pixels; the DNA prompt reads observed pixel colors as-is with no white-balance normalization. **Likely legitimate ambient-light influence** (warm accent lighting spilling on ceiling), not a bbox capture error. Recommend a one-line DNA-prompt hint to normalize warm/cool cross-surface tint — waiting on founder call.
+
+### Implemented
+- **#2 · Missing accent-wall + wall-art detections** — added `"feature wall"`, `"accent wall"` to `ARCHITECTURAL_VOCAB` with 0.40 confidence override. Added `"wall art"`, `"framed art"`, `"artwork"`, `"painting"`, `"picture frame"` with `DETERMINISTIC_MATERIAL = None` so they skip material classification and route to products (same pattern as cushion/pillow/plant).
+- **#4 · Preview button** — replaced the tiny admin-gated "View source page" link on both `CatalogueMatchRow` and `RecommendedCard` with a prominent pill-styled "Preview" button (eye icon). Opens a lightbox reusing the exact same swatch pattern as `ShortlistSection` (uses `match.swatch_crop_b64` / `match.color_hex` directly — no backend calls, no admin gate). Wrapped in `createPortal(..., document.body)` so it escapes the transformed `MaterialCard` ancestor and remains a true full-viewport overlay with working backdrop-click / ESC / close-button dismissal.
+
+**Regression suite**: 28/28 pytest passing. Bug testing agent iteration 24 verdict **fixed** — frontend 100%, overlay confirmed at `{x:0,y:0,w:1920,h:1080}` when opened from a hovered/focused card, backdrop / ESC / close button all close, image + hex branches both render, zero backend requests during preview open.
+
 ## 2026-02-27 (round 3) — Hover-to-highlight ✅ (frontend-only, tiny)
 
 Small frontend polish: hovering a material card on the right column glows the matching numbered pin on the reference image, and hovering a pin on the image highlights the matching card (auto-scrolling it into view if off-screen). 90% of the plumbing was already there from the split-layout work — the components had `focusedIndex` state, `onHoverPin`, `onHoverCard`, and the pin/card styling both respected a `focused` prop. Two remaining gaps closed:
