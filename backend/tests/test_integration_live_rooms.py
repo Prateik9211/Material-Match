@@ -69,16 +69,12 @@ from intelligence.scene_segmentation import detect_objects, filter_detections  #
 # `expect_any` groups are tuned to the labels SAM3 actually returns
 # for each specific image.
 #
-# HONEST VOCAB CAVEAT FOR DINING & OFFICE: `ARCHITECTURAL_VOCAB`
-# (see `intelligence/scene_segmentation.py`) does NOT include
-# `dining table`, `chair`, `desk` or `office chair`. That means
-# SAM3 cannot directly identify the defining furniture of a dining
-# room or a private office — those rooms can only be characterised
-# here by their architectural surfaces plus secondary décor (rug,
-# cushion, framed art, plant, curtain, cabinet, shelf). This is a
-# P2 product finding worth logging: adding these labels to the vocab
-# would let the Analysis UI surface dining tables and desks as their
-# own pins instead of dropping them.
+# HONEST VOCAB CAVEAT: `ARCHITECTURAL_VOCAB` (see
+# `intelligence/scene_segmentation.py`) as of 2026-02-01 includes
+# `dining table`, `chair`, `desk` and `office chair` (added in the same
+# session to close a gap this test surfaced). Dining and office tests
+# below REQUIRE at least one of those new labels to fire on their
+# respective images.
 # ---------------------------------------------------------------------------
 FIXTURE_DIR = BACKEND_DIR / "tests" / "fixtures" / "live_rooms"
 FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
@@ -181,41 +177,46 @@ LIVE_INTERIOR_IMAGES = [
     },
     # -- DINING ------------------------------------------------------------
     {
-        "slug": "dining_surfaces_and_decor",
-        # Interior with dining/lounge composition. SAM3 cannot detect a
-        # dining table itself (no `table` in vocab), so this test asserts
-        # only on the architectural surfaces plus the décor SAM3 CAN
-        # see. Live-probed 2026-02-01: 19 filtered detections including
-        # wall, ceiling, floor, feature wall, curtain, rug, framed art.
+        "slug": "dining_chair_and_decor",
+        # Interior with dining-table composition and dining chairs.
+        # Live-probed 2026-02-01 (after adding `dining table`/`chair`/
+        # `desk`/`office chair` to `ARCHITECTURAL_VOCAB`): 30 filtered
+        # detections including `chair`, wall, ceiling, floor, feature
+        # wall, curtain, framed art, rug, cushion, plant.
         "url": (
-            "https://images.unsplash.com/photo-1583847268964-b28dc8f51f92"
+            "https://images.unsplash.com/photo-1615873968403-89e068629265"
             "?fm=jpg&w=1400&q=80"
         ),
         "expect_any": [
             {"wall", "ceiling", "floor"},
-            # Décor — at least one must appear. This is the honest
-            # ceiling of what SAM3 can currently see for a dining room.
+            # Décor — at least one must appear
             {"rug", "framed art", "artwork", "picture frame", "curtain",
              "plant", "feature wall", "accent wall"},
+            # NEW 2026-02-01: at least one of the new dining/office
+            # vocab entries MUST fire. Locks in the vocab expansion
+            # against future regressions.
+            {"chair", "dining table", "desk"},
         ],
     },
     # -- OFFICE / STUDY ----------------------------------------------------
     {
-        "slug": "office_shelves_cabinet",
-        # Office / study with built-in shelving + cabinetry. SAM3 has
-        # no `desk` or `office chair` label, so this test asserts on
-        # shelf + cabinet (both of which SAM3 CAN see and which are
-        # signature office fitouts) plus architectural surfaces.
-        # Live-probed 2026-02-01: 22 filtered detections including
-        # cabinet, ceiling, countertop, floor, shelf, feature wall, wall.
+        "slug": "office_desk_chair_shelf",
+        # Home office / study — visible work desk with an office chair,
+        # bookshelf, cabinet, area rug. Live-probed 2026-02-01: 17
+        # filtered detections including `desk` and `chair` (the two
+        # new vocab entries this shot exercises), plus cabinet, shelf,
+        # floor, wall, rug, sofa.
         "url": (
-            "https://images.unsplash.com/photo-1497366216548-37526070297c"
+            "https://images.unsplash.com/photo-1524758631624-e2822e304c36"
             "?fm=jpg&w=1400&q=80"
         ),
         "expect_any": [
-            {"wall", "ceiling", "floor"},
-            # office-signature joinery — cabinet or shelf must appear
+            {"wall", "floor"},
+            # Office-signature joinery — cabinet or shelf must appear
             {"cabinet", "shelf"},
+            # NEW 2026-02-01: at least one desk-or-chair label MUST
+            # fire. This is the whole reason the vocab was expanded.
+            {"desk", "chair", "office chair"},
         ],
     },
 ]

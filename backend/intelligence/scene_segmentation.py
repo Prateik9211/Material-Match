@@ -92,6 +92,13 @@ ARCHITECTURAL_VOCAB: tuple[str, ...] = (
     "cushion", "pillow", "throw pillow", "mattress",
     "feature wall", "accent wall",
     "wall art", "framed art", "artwork", "painting", "picture frame",
+    # 2026-02-01 (round 10) — dining / office defining furniture.
+    # Cross-room live smoke test surfaced that SAM3 was structurally
+    # blind to dining tables and desks. Without these entries the
+    # Analysis UI could never place a pin on the actual dining table
+    # or work desk. See tests/test_integration_live_rooms.py for the
+    # regression case that forced adding them.
+    "dining table", "chair", "desk", "office chair",
 )
 
 
