@@ -120,7 +120,17 @@ Focused material card now gets `scale-[1.025] ring-4 ring-ochre/60 shadow-hover 
 - **#2 · Missing accent-wall + wall-art detections** — added `"feature wall"`, `"accent wall"` to `ARCHITECTURAL_VOCAB` with 0.40 confidence override. Added `"wall art"`, `"framed art"`, `"artwork"`, `"painting"`, `"picture frame"` with `DETERMINISTIC_MATERIAL = None` so they skip material classification and route to products (same pattern as cushion/pillow/plant).
 - **#4 · Preview button** — replaced the tiny admin-gated "View source page" link on both `CatalogueMatchRow` and `RecommendedCard` with a prominent pill-styled "Preview" button (eye icon). Opens a lightbox reusing the exact same swatch pattern as `ShortlistSection` (uses `match.swatch_crop_b64` / `match.color_hex` directly — no backend calls, no admin gate). Wrapped in `createPortal(..., document.body)` so it escapes the transformed `MaterialCard` ancestor and remains a true full-viewport overlay with working backdrop-click / ESC / close-button dismissal.
 
-**Regression suite**: 28/28 pytest passing. Bug testing agent iteration 24 verdict **fixed** — frontend 100%, overlay confirmed at `{x:0,y:0,w:1920,h:1080}` when opened from a hovered/focused card, backdrop / ESC / close button all close, image + hex branches both render, zero backend requests during preview open.
+**Regression suite**: 31/31 pytest passing. Bug testing agent iteration 24 verdict **fixed** — frontend 100%, overlay confirmed at `{x:0,y:0,w:1920,h:1080}` when opened from a hovered/focused card, backdrop / ESC / close button all close, image + hex branches both render, zero backend requests during preview open.
+
+## 2026-02-27 (round 10) — Accent-wall detection actually working on live images ✅
+
+**Root cause of the "iteration 23 fix didn't work live"**: iteration 23's "fixed" verdict was pytest-only (vocab-in-code assertions). Honest re-investigation with real SAM3 output found the actual gap — `feature wall` fired strongly in raw output (0.55–0.66) but was killed by cross-class IoU dedup against the plain `wall` mask (0.83, same bbox).
+
+**Fix**: added `_SPECIALIZATION_PAIRS` exemption to `filter_detections` — semantic specialization pairs (`wall ↔ feature wall / accent wall / wainscot / paneled wainscoting / trim / backsplash`, `floor ↔ rug`, `bed ↔ headboard / pillow / cushion / throw pillow / mattress`, `sofa ↔ cushion / pillow / throw pillow`) both survive dedup instead of the higher-confidence generic killing the more-specific one. Non-specialization cross-class overlaps still get deduped as before.
+
+**Live proof (bug testing agent iteration 25)**: `/api/projects/{id}/analyze` on a real bedroom image returned **3 `feature wall` rows** + 3 matching `scene_stage_a.objects` entries with `version=real-scene-hybrid-v1`. 31/31 pytest passes.
+
+**Also confirmed**: `artwork` / `framed art` / `painting` / `picture frame` all fire at 0.75–0.96 confidence and DO survive filter — they correctly route to the products pipeline (via `DETERMINISTIC_MATERIAL=None`), not materials. Users see them in the Products & Fixtures section by design.
 
 ## 2026-02-27 (round 3) — Hover-to-highlight ✅ (frontend-only, tiny)
 
