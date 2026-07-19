@@ -83,6 +83,33 @@ Reuses the existing modal chrome (timeline, play/pause, chapter markers, prev/ne
 
 **Live-verified** (four screenshots, one per chapter): pins + detection cards + "Searching…" indicator + real match cards render correctly per stage. Navigation, chapter-marker jump, keyboard shortcuts, close (X), and both footer CTAs work.
 
+## 2026-02-27 (round 7 + 8) — Founder's-wife session bug fixes ✅
+
+Four issues surfaced during real user testing. All fixed and verified by the bug testing agent (100% backend + 100% frontend, 26/26 pytest passing — see `/app/test_reports/iteration_22.json`).
+
+### P0 — Cross-category catalogue matching regression (trust-critical)
+
+**Root causes:**
+1. `_find_catalogue_matches` ran its "widen allowed_categories on low DNA family confidence" block unconditionally, even when the Brain had object-locked the category via high-confidence architectural routing (walls, cabinets, countertops, floors).
+2. `attribute_similarity` gave `family = 1.0` for alt-family matches — making cross-family results score identically to same-family on strong BGE similarity.
+3. Wall/ceiling with `Other`/undefined family defaulted to `['Paints', 'Laminates']` — the Laminates leg let cross-family matches win.
+4. Legacy flooring `materialmatch_brain` path never emitted `object_locked` — Tile floors widened into Laminates via the DNA alt-family signal.
+
+**Fixes:**
+- Brain now emits `object_locked=True` for all object-aware routes (walls, ceilings, cabinets, countertops, backsplash, sofa/upholstered, hard-wall, and the legacy `app_ctx` set: flooring/countertop/curtain/rug/bedding/furniture upholstery/lighting/hardware/feature wall/headboard wall/bathroom wet wall/kitchen wall).
+- `_find_catalogue_matches(object_locked=True)` SKIPS the widen block entirely — Brain gate wins.
+- `attribute_similarity` alt-family match downgraded from 1.0 → 0.7 so same-family matches at weaker signals still outrank cross-family semantic-similarity-only matches.
+- Wall/ceiling unknown-family default narrowed from `['Paints','Laminates']` → `['Paints']` only. Self-consistency widen via `material_type` free-text (e.g. "warm oak laminate panel") still fires.
+
+### P1 — Pin placement (rug pin landed on book)
+`_dna_to_row` now prefers the **polygon CENTROID** over bbox centre when a polygon with ≥3 vertices is available. Marked `pin_source='scene_polygon_centroid'`. For large flat surfaces (rugs, floors) with objects sitting on top, the centroid tends to fall on visible material rather than an obscuring object.
+
+### P1 — Hover highlight too subtle
+Focused material card now gets `scale-[1.025] ring-4 ring-ochre/60 shadow-hover -translate-y-1` AND non-focused cards while any card is focused get `opacity-40 blur-[0.5px] scale-[0.99]` — an unmistakable float + dim-others effect.
+
+### P1 — Click-to-enlarge shortlist swatch (lightbox)
+`ShortlistSection` now renders each item's swatch as a thumbnail button (image or hex block); click opens a full-modal lightbox with the enlarged swatch, name, zone, code, hex, and match %. Backend: `ShortlistItemCreate` extended with `swatch_crop_b64`, `color_hex`, `material_code` fields; `Analysis.jsx addCatalogueMatchToShortlist` propagates these from the catalogue_matches entry.
+
 ## 2026-02-27 (round 3) — Hover-to-highlight ✅ (frontend-only, tiny)
 
 Small frontend polish: hovering a material card on the right column glows the matching numbered pin on the reference image, and hovering a pin on the image highlights the matching card (auto-scrolling it into view if off-screen). 90% of the plumbing was already there from the split-layout work — the components had `focusedIndex` state, `onHoverPin`, `onHoverCard`, and the pin/card styling both respected a `focused` prop. Two remaining gaps closed:
