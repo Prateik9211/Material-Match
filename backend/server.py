@@ -2742,9 +2742,16 @@ def materialmatch_brain(row: dict) -> dict:
         elif canon == "Stone":
             allowed = ["Stone", "Tiles"]
         else:
-            # Unknown / Other — default to Paints for wall/ceiling but
-            # keep Laminates as a fallback in case it's a plain wood panel.
-            allowed = ["Paints", "Laminates"]
+            # Unknown / Other — wall & ceiling surfaces are
+            # overwhelmingly paint in practice.  Round 7 fix for the
+            # founder-reported "wall with Other/undefined family
+            # confidently matched an 80% laminate" bug: default to
+            # Paints ONLY so an unknown wall can't cross-match into
+            # laminates via the DNA classifier's alt suggestions.
+            # The self-consistency widen below can still promote
+            # Laminates in when the analyser's own `material_type`
+            # free-text explicitly names laminate/wood/veneer/etc.
+            allowed = ["Paints"]
         # Sprint 8.2 — self-consistency widen: when the analyser's own
         # `material_type` free-text names a canonical family that the
         # picked family didn't cover (e.g. classifier said material_type=
@@ -6737,6 +6744,13 @@ class ShortlistItemCreate(BaseModel):
     notes: Optional[str] = ""
     image_ref: Optional[str] = ""  # optional image reference (URL or catalogue page)
     external_url: Optional[str] = ""
+    # Round 8 — preview swatch for the click-to-enlarge lightbox.
+    # Frontend `addCatalogueMatchToShortlist` propagates these from the
+    # catalogue_matches entry.  All optional — custom / product items
+    # legitimately have none of them.
+    swatch_crop_b64: Optional[str] = None
+    color_hex: Optional[str] = None
+    material_code: Optional[str] = None
 
 
 @api_router.get("/projects/{project_id}/shortlist")
@@ -6775,6 +6789,13 @@ async def add_shortlist_item(project_id: str, payload: ShortlistItemCreate,
         "notes": (payload.notes or "").strip(),
         "image_ref": (payload.image_ref or "").strip(),
         "external_url": (payload.external_url or "").strip(),
+        # Round 8 — swatch preview fields for the shortlist lightbox.
+        # Persist as-is (base64 payloads can be large but we already
+        # store base64 reference images on the project doc, so this
+        # doesn't change the storage tier).
+        "swatch_crop_b64": payload.swatch_crop_b64 or None,
+        "color_hex": (payload.color_hex or "").strip() or None,
+        "material_code": (payload.material_code or "").strip() or None,
         "added_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.projects.update_one(

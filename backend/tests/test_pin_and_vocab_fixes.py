@@ -468,3 +468,63 @@ def test_dna_to_row_prefers_polygon_centroid_over_bbox_center():
     assert row["pin"]["x"] == 25.0
     assert abs(row["pin"]["y"] - 89.8) < 0.5, row["pin"]
     assert row["pin_source"] == "scene_polygon_centroid"
+
+
+# ---------------------------------------------------------------------------
+# Round 8 (retest) — Wall + Other/undefined family must NOT surface a
+# confident Laminate match.  Regression for the second issue found by
+# the bug testing agent: even with object_locked=True, the Brain's
+# fallback for unknown family widened allowed=['Paints','Laminates'],
+# which let Laminates outrank Paints on strong color/finish matches.
+# Fix: default to Paints only for unknown-family walls/ceilings.
+# ---------------------------------------------------------------------------
+def test_wall_unknown_family_defaults_to_paints_only():
+    """Even when material_family is missing / Other, an object-locked
+    wall row should NOT include Laminates in the initial allow-list.
+    """
+    import server as _s
+    for missing_fam in (None, "", "Other", "Unknown"):
+        row = {"object_type": "wall",
+               "material_family": missing_fam,
+               "material_type": "smooth surface",
+               "material_confidence": 60}
+        brain = _s.materialmatch_brain(row)
+        assert brain["object_locked"] is True
+        assert brain["allowed_categories"] == ["Paints"], (
+            f"unknown-family wall (family={missing_fam!r}) must default "
+            f"to ['Paints'] only, got {brain['allowed_categories']}"
+        )
+
+
+def test_wall_unknown_family_widens_only_via_material_type_selfconsistency():
+    """The self-consistency widen (based on material_type free-text)
+    MUST still fire for the wall case — a wall row whose material_type
+    literally says 'laminate panel' should legitimately widen to
+    include Laminates."""
+    import server as _s
+    row = {"object_type": "wall",
+           "material_family": None,
+           "material_type": "warm oak laminate panel",
+           "material_confidence": 65}
+    brain = _s.materialmatch_brain(row)
+    assert "Paints" in brain["allowed_categories"]
+    assert "Laminates" in brain["allowed_categories"], (
+        "material_type 'laminate panel' should still widen the "
+        "allow-list to include Laminates via self-consistency"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Round 8 (retest) — Shortlist API must persist and return swatch_crop_b64,
+# color_hex, and material_code so the lightbox can render.
+# ---------------------------------------------------------------------------
+def test_shortlist_item_persists_swatch_fields():
+    """ShortlistItemCreate must accept and add_shortlist_item must
+    persist swatch_crop_b64, color_hex, material_code."""
+    import server as _s
+    fields = _s.ShortlistItemCreate.model_fields
+    for f in ("swatch_crop_b64", "color_hex", "material_code"):
+        assert f in fields, (
+            f"ShortlistItemCreate is missing {f!r} — the click-to-"
+            f"enlarge lightbox cannot render without this field"
+        )

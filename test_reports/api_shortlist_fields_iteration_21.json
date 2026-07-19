@@ -1,0 +1,85 @@
+{
+  "email": "qa-shortlist-fields-1784450150@materialmatch.ai",
+  "steps": [
+    {
+      "name": "register fresh user",
+      "ok": true,
+      "data": {
+        "status": 200
+      }
+    },
+    {
+      "name": "create project",
+      "ok": true,
+      "data": {
+        "status": 200
+      }
+    },
+    {
+      "name": "POST shortlist accepts and returns swatch fields",
+      "ok": true,
+      "data": {
+        "status": 200,
+        "response": {
+          "id": "48684579d39ec8da",
+          "name": "QA Paints \u00b7 Warm White 101",
+          "source_type": "spec",
+          "source": "QA Paints",
+          "match_percent": 88,
+          "category": "Paints",
+          "zone": "Wall \u00b7 QA region",
+          "notes": "Code: WW-101",
+          "image_ref": "",
+          "external_url": "",
+          "swatch_crop_b64": "dGVzdC1zd2F0Y2g=",
+          "color_hex": "#F1EBE0",
+          "material_code": "WW-101",
+          "added_at": "2026-07-19T08:35:50.640536+00:00"
+        }
+      }
+    },
+    {
+      "name": "GET shortlist returns saved item",
+      "ok": true,
+      "data": {
+        "status": 200,
+        "count": 1
+      }
+    }
+  ],
+  "violations": [],
+  "project_id": "6a5c8c6671b60f4f5ce18ae8",
+  "created": {
+    "id": "48684579d39ec8da",
+    "name": "QA Paints \u00b7 Warm White 101",
+    "source_type": "spec",
+    "source": "QA Paints",
+    "match_percent": 88,
+    "category": "Paints",
+    "zone": "Wall \u00b7 QA region",
+    "notes": "Code: WW-101",
+    "image_ref": "",
+    "external_url": "",
+    "swatch_crop_b64": "dGVzdC1zd2F0Y2g=",
+    "color_hex": "#F1EBE0",
+    "material_code": "WW-101",
+    "added_at": "2026-07-19T08:35:50.640536+00:00"
+  },
+  "get_found": {
+    "id": "48684579d39ec8da",
+    "name": "QA Paints \u00b7 Warm White 101",
+    "source_type": "spec",
+    "source": "QA Paints",
+    "match_percent": 88,
+    "category": "Paints",
+    "zone": "Wall \u00b7 QA region",
+    "notes": "Code: WW-101",
+    "image_ref": "",
+    "external_url": "",
+    "swatch_crop_b64": "dGVzdC1zd2F0Y2g=",
+    "color_hex": "#F1EBE0",
+    "material_code": "WW-101",
+    "added_at": "2026-07-19T08:35:50.640536+00:00"
+  },
+  "passed": true
+}

@@ -1,0 +1,66 @@
+{
+  "verdict": "not_fixed",
+  "user_reported_bug": "Real user testing (founder's wife, fresh account, real usage) surfaced 4 issues. P0: A wall correctly identified as 'matte wall paint' was matched against LAMINATE catalogue at 88% confidence, not paint. A separate region with family 'Other'/undefined still confidently served 80% laminate. Flooring matched laminate instead of tile/stone. Root cause is family-alternatives widen firing even when family is confidently known via object-lock. Correct behavior: object_locked=True must NEVER widen; alt-family similarity must be penalized (0.7 not 1.0); Other/undefined wall must default to Paints only, not Paints+Laminates. P1: rug pin lands on book on rug \u2014 use polygon centroid. P1: hover highlight too subtle \u2014 scale + glow + dim others. P1: click-to-enlarge lightbox for shortlisted swatches.",
+  "summary": "No relevant testing skill found. Focused retest verified the two follow-up fixes pass (Other/undefined wall now locks to Paints only; shortlist swatch fields persist and render in the lightbox), pytest has 25/25 passing, real-image wall/ceiling rows did not leak Laminates, polygon centroid and hover/lightbox UI passed. However the original flooring part is still not fixed: a Tile floor row with low-confidence Laminate alternative widens into Laminates because floor routing is not object_locked, returning Laminate catalogue matches alongside Tiles.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "materialmatch_brain / _find_catalogue_matches",
+        "issue": "Tile flooring edge case still leaks Laminate catalogue matches. Direct row object_type='floor', material_family='Tile', material_type='ivory stone tile floor', family_confidence=0.5, family_alternatives=['Laminate'] has Brain allowed_categories=['Tiles','Stone'] but object_locked is missing/False; _find_catalogue_matches widens retrieval to Laminates and returns Laminate matches at 79%, 78%, 62%, 62%, 61%. This violates the reported 'flooring matched laminate instead of tile/stone' fix requirement for Tile/Stone floors.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/pytest/pin_and_vocab_fixes_iteration_21.txt",
+    "/app/test_reports/backend_direct_iteration_21.json",
+    "/app/test_reports/api_shortlist_fields_iteration_21.json",
+    "/app/test_reports/api_real_image_iteration_21.json",
+    "/app/test_reports/flooring_edge_iteration_21.json",
+    "/app/test_reports/frontend_lightbox_seed_iteration_21.json",
+    "/app/test_reports/scripts/backend_direct_checks_iteration_21.py",
+    "/app/test_reports/scripts/api_shortlist_fields_iteration_21.py",
+    "/app/test_reports/scripts/api_real_image_iteration_21.py",
+    "/app/test_reports/scripts/flooring_edge_iteration_21.py",
+    "/app/test_reports/scripts/seed_frontend_lightbox_iteration_21.py"
+  ],
+  "action_items": [
+    "Object-lock floor routing when object_type='floor' and material_family is confidently Tile/Stone/Wood, or otherwise pass object_locked=True / suppress alt-family widen for Tile/Stone flooring rows so Laminates cannot enter the retrieval pool unless the floor is explicitly wood/laminate-routed.",
+    "Add a regression test for object_type='floor', material_family='Tile', family_confidence<0.7, family_alternatives=['Laminate'] asserting retrieval categories exclude Laminates/Veneers and returned matches stay Tiles/Stone.",
+    "Align Brain flooring reasoning text with actual allowed categories; it currently says flooring searches Laminates/Veneers even when allowed_categories is ['Tiles','Stone']."
+  ],
+  "critical_code_review_comments": [
+    "backend/server.py materialmatch_brain handles object-locked walls/ceilings but not floors. Flooring uses legacy app_ctx='flooring' route with object_locked unset, so _find_catalogue_matches low-confidence family_alternatives widen can still add Laminates even when Brain allowed_categories is ['Tiles','Stone'].",
+    "backend/server.py _CATEGORY_LIBRARIES maps Stone/Marble to ['Stone','Tiles','Laminates']; that may be legitimate for feature walls/countertops, but floor-specific Tile/Stone routing needs a hard gate or lock to avoid the user-reported floor->laminate regression."
+  ],
+  "updated_files": [
+    "/app/test_reports/bug_verification_21.json",
+    "/app/test_reports/iteration_21.json",
+    "/app/test_reports/pytest/pin_and_vocab_fixes_iteration_21.txt",
+    "/app/test_reports/backend_direct_iteration_21.json",
+    "/app/test_reports/api_shortlist_fields_iteration_21.json",
+    "/app/test_reports/api_real_image_iteration_21.json",
+    "/app/test_reports/flooring_edge_iteration_21.json",
+    "/app/test_reports/frontend_lightbox_seed_iteration_21.json",
+    "/app/test_reports/scripts/backend_direct_checks_iteration_21.py",
+    "/app/test_reports/scripts/api_shortlist_fields_iteration_21.py",
+    "/app/test_reports/scripts/api_real_image_iteration_21.py",
+    "/app/test_reports/scripts/flooring_edge_iteration_21.py",
+    "/app/test_reports/scripts/seed_frontend_lightbox_iteration_21.py"
+  ],
+  "success_rate": {
+    "backend": "86%",
+    "frontend": "100%"
+  },
+  "seed_data_creation": "Created fresh API users/projects for shortlist persistence, real-image analysis, and a seeded analysis project for hover/lightbox UI verification. No product code changed.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Skill search returned no relevant testing skill. Pytest /app/backend/tests/test_pin_and_vocab_fixes.py passed 25/25. Direct backend checks passed for wall unknown-family Paints-only default, material_type self-consistency widen, object_locked True/False retrieval behavior, alt-family 0.7, polygon centroid, and ShortlistItemCreate fields. API shortlist POST/GET persisted swatch_crop_b64/color_hex/material_code. Real image project 6a5c8be0ecfc93ca337dc647 returned 11 rows; wall/ceiling rows only had Paint/Paints matches, floor row was classified Laminate so did not disprove Tile/Stone floor edge. Browser preview test on project 6a5c8c6771b60f4f5ce18aea passed hover classes, add recommendation to shortlist, swatch appears, lightbox opens with image, closes by X and ESC. Remaining failing artifact is /app/test_reports/flooring_edge_iteration_21.json.",
+  "rca_of_the_issue": "The follow-up wall and shortlist fixes are correct, but the original P0 flooring symptom remains in a related route. Floor rows do not receive object_locked=True, so _find_catalogue_matches still applies the low-family-confidence family_alternatives widen. For a Tile floor with Laminate alternative, retrieval includes Laminates despite Brain initially allowing only Tiles/Stone, producing visible Laminate recommendations."
+}

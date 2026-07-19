@@ -1,0 +1,148 @@
+{
+  "checks": [
+    {
+      "name": "wall/ceiling unknown-family defaults to Paints only with object_locked=True",
+      "passed": true,
+      "details": {
+        "results": [
+          {
+            "family": null,
+            "allowed": [
+              "Paints"
+            ],
+            "locked": true
+          },
+          {
+            "family": "",
+            "allowed": [
+              "Paints"
+            ],
+            "locked": true
+          },
+          {
+            "family": "Other",
+            "allowed": [
+              "Paints"
+            ],
+            "locked": true
+          },
+          {
+            "family": "Unknown",
+            "allowed": [
+              "Paints"
+            ],
+            "locked": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "material_type self-consistency widen still allows Laminates when text says laminate",
+      "passed": true,
+      "details": {
+        "brain": {
+          "object_locked": true,
+          "allowed_categories": [
+            "Paints",
+            "Laminates",
+            "Veneers"
+          ]
+        }
+      }
+    },
+    {
+      "name": "_find_catalogue_matches skips widen when object_locked=True",
+      "passed": true,
+      "details": {
+        "retrieval_categories": [
+          "Paints"
+        ]
+      }
+    },
+    {
+      "name": "_find_catalogue_matches still widens when object_locked=False",
+      "passed": true,
+      "details": {
+        "retrieval_categories": [
+          "Laminates",
+          "Paints",
+          "Veneers"
+        ]
+      }
+    },
+    {
+      "name": "unmocked Other wall catalogue search returns only Paints",
+      "passed": true,
+      "details": {
+        "allowed": [
+          "Paints"
+        ],
+        "matches": [
+          {
+            "name": "Impressions Warm White",
+            "category": "Paints",
+            "percent": 74
+          },
+          {
+            "name": "Excel Off White",
+            "category": "Paints",
+            "percent": 67
+          },
+          {
+            "name": "Warm Ivory",
+            "category": "Paints",
+            "percent": 67
+          },
+          {
+            "name": "Cotton White",
+            "category": "Paints",
+            "percent": 66
+          },
+          {
+            "name": "Velvet Warm Ivory",
+            "category": "Paints",
+            "percent": 66
+          }
+        ],
+        "bad": []
+      }
+    },
+    {
+      "name": "attribute_similarity alt-family penalty is 0.7",
+      "passed": true,
+      "details": {
+        "attribute_similarity": {
+          "family": 0.7,
+          "color": 1.0,
+          "texture": 0.5,
+          "pattern": 0.5,
+          "finish": 0.5,
+          "overall": 0.7249999999999999
+        }
+      }
+    },
+    {
+      "name": "_dna_to_row prefers polygon centroid over bbox center",
+      "passed": true,
+      "details": {
+        "pin": {
+          "x": 25.0,
+          "y": 90.0
+        },
+        "pin_source": "scene_polygon_centroid"
+      }
+    },
+    {
+      "name": "ShortlistItemCreate includes swatch_crop_b64/color_hex/material_code",
+      "passed": true,
+      "details": {
+        "present": [
+          "swatch_crop_b64",
+          "color_hex",
+          "material_code"
+        ]
+      }
+    }
+  ],
+  "all_passed": true
+}

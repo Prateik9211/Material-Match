@@ -1,0 +1,485 @@
+{
+  "email": "qa-real-iter21-1784450157@materialmatch.ai",
+  "steps": [
+    {
+      "name": "fresh user registration",
+      "ok": true,
+      "data": {
+        "status": 200
+      }
+    },
+    {
+      "name": "create project",
+      "ok": true,
+      "data": {
+        "status": 200
+      }
+    },
+    {
+      "name": "upload real interior reference",
+      "ok": true,
+      "data": {
+        "status": 200,
+        "response": {
+          "ok": true,
+          "mime": "image/jpeg",
+          "size": 302756
+        }
+      }
+    },
+    {
+      "name": "POST /projects/{id}/analyze returns 200",
+      "ok": true,
+      "data": {
+        "status": 200,
+        "elapsed_s": 73.8,
+        "body": null
+      }
+    },
+    {
+      "name": "analysis has rows",
+      "ok": true,
+      "data": {
+        "version": "real-scene-hybrid-v1",
+        "scene_fallback": null,
+        "row_count": 11,
+        "product_count": 5
+      }
+    },
+    {
+      "name": "all wall/ceiling rows returned only Paint/Paints matches",
+      "ok": true,
+      "data": {
+        "wallish_rows": [
+          {
+            "i": 0,
+            "zone": "Ceiling \u00b7 region 1",
+            "group": "Ceiling",
+            "object_type": "ceiling",
+            "material_family": "Paint",
+            "material_type": "smooth painted surface",
+            "brain_allowed": [
+              "Paints"
+            ],
+            "brain_object_locked": true,
+            "searched_categories": [
+              "Paints"
+            ],
+            "match_categories": [
+              "Paints",
+              "Paints",
+              "Paints",
+              "Paints"
+            ],
+            "match_families": [
+              "Paint",
+              "Paint",
+              "Paint",
+              "Paint"
+            ],
+            "match_percents": [
+              88,
+              77,
+              76,
+              75
+            ],
+            "pin_source": "scene_polygon_centroid"
+          },
+          {
+            "i": 9,
+            "zone": "Wall \u00b7 region 10",
+            "group": "Wall",
+            "object_type": "wall",
+            "material_family": "Paint",
+            "material_type": "matte wall paint",
+            "brain_allowed": [
+              "Paints"
+            ],
+            "brain_object_locked": true,
+            "searched_categories": [
+              "Paints"
+            ],
+            "match_categories": [
+              "Paints",
+              "Paints",
+              "Paints",
+              "Paints"
+            ],
+            "match_families": [
+              "Paint",
+              "Paint",
+              "Paint",
+              "Paint"
+            ],
+            "match_percents": [
+              79,
+              79,
+              78,
+              78
+            ],
+            "pin_source": "scene_polygon_centroid"
+          },
+          {
+            "i": 10,
+            "zone": "Wall \u00b7 region 11",
+            "group": "Wall",
+            "object_type": "wall",
+            "material_family": "Metal",
+            "material_type": "smooth black metal panel",
+            "brain_allowed": [
+              "Paints"
+            ],
+            "brain_object_locked": true,
+            "searched_categories": [
+              "Paints"
+            ],
+            "match_categories": [],
+            "match_families": [],
+            "match_percents": [],
+            "pin_source": "scene_polygon_centroid"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Tile/Stone flooring rows did not return Laminate/Veneer matches",
+      "ok": true,
+      "data": {
+        "floor_rows": [
+          {
+            "i": 2,
+            "zone": "Rug \u00b7 region 3",
+            "group": "Floor",
+            "object_type": "rug",
+            "material_family": "Fabric",
+            "material_type": "woven textile",
+            "brain_allowed": [
+              "Fabric"
+            ],
+            "brain_object_locked": null,
+            "searched_categories": [
+              "Fabric"
+            ],
+            "match_categories": [],
+            "match_families": [],
+            "match_percents": [],
+            "pin_source": "scene_polygon_centroid"
+          },
+          {
+            "i": 4,
+            "zone": "Floor \u00b7 region 5",
+            "group": "Floor",
+            "object_type": "floor",
+            "material_family": "Laminate",
+            "material_type": "linear wood grain laminate",
+            "brain_allowed": [
+              "Laminates",
+              "Veneers"
+            ],
+            "brain_object_locked": null,
+            "searched_categories": [
+              "Laminates",
+              "Veneers"
+            ],
+            "match_categories": [
+              "Laminate",
+              "Laminate",
+              "Laminate",
+              "Laminate"
+            ],
+            "match_families": [
+              "Laminate",
+              "Laminate",
+              "Laminate",
+              "Laminate"
+            ],
+            "match_percents": [
+              88,
+              88,
+              88,
+              88
+            ],
+            "pin_source": "scene_polygon_centroid"
+          }
+        ]
+      }
+    }
+  ],
+  "violations": [],
+  "warnings": [],
+  "project_id": "6a5c8c6d71b60f4f5ce18aec",
+  "analysis_meta": {
+    "version": "real-scene-hybrid-v1",
+    "scene_fallback": null,
+    "row_count": 11,
+    "product_count": 5
+  },
+  "rows_summary": [
+    {
+      "i": 0,
+      "zone": "Ceiling \u00b7 region 1",
+      "group": "Ceiling",
+      "object_type": "ceiling",
+      "material_family": "Paint",
+      "material_type": "smooth painted surface",
+      "brain_allowed": [
+        "Paints"
+      ],
+      "brain_object_locked": true,
+      "searched_categories": [
+        "Paints"
+      ],
+      "match_categories": [
+        "Paints",
+        "Paints",
+        "Paints",
+        "Paints"
+      ],
+      "match_families": [
+        "Paint",
+        "Paint",
+        "Paint",
+        "Paint"
+      ],
+      "match_percents": [
+        88,
+        77,
+        76,
+        75
+      ],
+      "pin_source": "scene_polygon_centroid"
+    },
+    {
+      "i": 1,
+      "zone": "Headboard \u00b7 region 2",
+      "group": "Furniture",
+      "object_type": "headboard",
+      "material_family": "Fabric",
+      "material_type": "upholstered fabric",
+      "brain_allowed": [
+        "Fabric"
+      ],
+      "brain_object_locked": true,
+      "searched_categories": [
+        "Fabric"
+      ],
+      "match_categories": [
+        "Fabric",
+        "Fabric"
+      ],
+      "match_families": [
+        "Fabric",
+        "Fabric"
+      ],
+      "match_percents": [
+        62,
+        62
+      ],
+      "pin_source": "scene_polygon_centroid"
+    },
+    {
+      "i": 2,
+      "zone": "Rug \u00b7 region 3",
+      "group": "Floor",
+      "object_type": "rug",
+      "material_family": "Fabric",
+      "material_type": "woven textile",
+      "brain_allowed": [
+        "Fabric"
+      ],
+      "brain_object_locked": null,
+      "searched_categories": [
+        "Fabric"
+      ],
+      "match_categories": [],
+      "match_families": [],
+      "match_percents": [],
+      "pin_source": "scene_polygon_centroid"
+    },
+    {
+      "i": 3,
+      "zone": "Nightstand \u00b7 region 4",
+      "group": "Furniture",
+      "object_type": "nightstand",
+      "material_family": "Paint",
+      "material_type": "smooth painted surface",
+      "brain_allowed": [
+        "Veneers"
+      ],
+      "brain_object_locked": null,
+      "searched_categories": [
+        "Veneers"
+      ],
+      "match_categories": [],
+      "match_families": [],
+      "match_percents": [],
+      "pin_source": "scene_polygon_centroid"
+    },
+    {
+      "i": 4,
+      "zone": "Floor \u00b7 region 5",
+      "group": "Floor",
+      "object_type": "floor",
+      "material_family": "Laminate",
+      "material_type": "linear wood grain laminate",
+      "brain_allowed": [
+        "Laminates",
+        "Veneers"
+      ],
+      "brain_object_locked": null,
+      "searched_categories": [
+        "Laminates",
+        "Veneers"
+      ],
+      "match_categories": [
+        "Laminate",
+        "Laminate",
+        "Laminate",
+        "Laminate"
+      ],
+      "match_families": [
+        "Laminate",
+        "Laminate",
+        "Laminate",
+        "Laminate"
+      ],
+      "match_percents": [
+        88,
+        88,
+        88,
+        88
+      ],
+      "pin_source": "scene_polygon_centroid"
+    },
+    {
+      "i": 5,
+      "zone": "Curtain \u00b7 region 6",
+      "group": "Furniture",
+      "object_type": "curtain",
+      "material_family": "Fabric",
+      "material_type": "soft draped fabric",
+      "brain_allowed": [
+        "Fabric"
+      ],
+      "brain_object_locked": null,
+      "searched_categories": [
+        "Fabric"
+      ],
+      "match_categories": [],
+      "match_families": [],
+      "match_percents": [],
+      "pin_source": "scene_polygon_centroid"
+    },
+    {
+      "i": 6,
+      "zone": "Curtain \u00b7 region 7",
+      "group": "Furniture",
+      "object_type": "curtain",
+      "material_family": "Fabric",
+      "material_type": "soft draped fabric",
+      "brain_allowed": [
+        "Fabric"
+      ],
+      "brain_object_locked": null,
+      "searched_categories": [
+        "Fabric"
+      ],
+      "match_categories": [],
+      "match_families": [],
+      "match_percents": [],
+      "pin_source": "scene_polygon_centroid"
+    },
+    {
+      "i": 7,
+      "zone": "Curtain \u00b7 region 8",
+      "group": "Furniture",
+      "object_type": "curtain",
+      "material_family": "Fabric",
+      "material_type": "soft draped fabric",
+      "brain_allowed": [
+        "Fabric"
+      ],
+      "brain_object_locked": null,
+      "searched_categories": [
+        "Fabric"
+      ],
+      "match_categories": [],
+      "match_families": [],
+      "match_percents": [],
+      "pin_source": "scene_polygon_centroid"
+    },
+    {
+      "i": 8,
+      "zone": "Bed \u00b7 region 9",
+      "group": "Furniture",
+      "object_type": "bed",
+      "material_family": "Fabric",
+      "material_type": "textured upholstery fabric",
+      "brain_allowed": [
+        "Fabric"
+      ],
+      "brain_object_locked": true,
+      "searched_categories": [
+        "Fabric"
+      ],
+      "match_categories": [],
+      "match_families": [],
+      "match_percents": [],
+      "pin_source": "scene_polygon_centroid"
+    },
+    {
+      "i": 9,
+      "zone": "Wall \u00b7 region 10",
+      "group": "Wall",
+      "object_type": "wall",
+      "material_family": "Paint",
+      "material_type": "matte wall paint",
+      "brain_allowed": [
+        "Paints"
+      ],
+      "brain_object_locked": true,
+      "searched_categories": [
+        "Paints"
+      ],
+      "match_categories": [
+        "Paints",
+        "Paints",
+        "Paints",
+        "Paints"
+      ],
+      "match_families": [
+        "Paint",
+        "Paint",
+        "Paint",
+        "Paint"
+      ],
+      "match_percents": [
+        79,
+        79,
+        78,
+        78
+      ],
+      "pin_source": "scene_polygon_centroid"
+    },
+    {
+      "i": 10,
+      "zone": "Wall \u00b7 region 11",
+      "group": "Wall",
+      "object_type": "wall",
+      "material_family": "Metal",
+      "material_type": "smooth black metal panel",
+      "brain_allowed": [
+        "Paints"
+      ],
+      "brain_object_locked": true,
+      "searched_categories": [
+        "Paints"
+      ],
+      "match_categories": [],
+      "match_families": [],
+      "match_percents": [],
+      "pin_source": "scene_polygon_centroid"
+    }
+  ],
+  "passed": true
+}
