@@ -108,6 +108,60 @@ Founder provided `SERPAPI_KEY` (added to `backend/.env`, key valid, Free Plan 25
 | Right tall blue cabinet | family=Paint, 4 wrong Paint hits | **family=Laminate, 4/4 Advance hits, TOP MATCH = BLUE FOCCASIA 84%** ✅ |
 | Lower-left blue cabinet | family=Paint, 0 hits | family=Paint, 0 hits (remaining LLM non-determinism, 4/5 cabinets fixed) |
 
+## 2026-02-08 — Visual similar-items search integration (SerpApi Google Lens, LIVE) ✅
+Founder approved after feasibility testing. Purely additive to the existing Products & Fixtures section — the catalogue-material pipeline is untouched.
+
+**Backend:**
+- New module `/app/backend/intelligence/product_search.py` (~330 LOC): quality gate + crop prep + SerpApi Google Lens client + result normalisation + shoppable-source filter.
+- New endpoint `POST /api/projects/{project_id}/products/{product_id}/similar` — auth-guarded, uses the product's SAM3 bbox to crop the reference photo, runs it through the gate, hits Google Lens (via SerpApi) if it passes, caches the result for 30 days.
+- New public endpoint `GET /api/product_search/crop/{sha}.jpg` — content-addressed (SHA-256), no auth needed; required because Google Lens fetches images by URL, not base64.
+- New MongoDB collections: `product_search_cache`, `product_search_crops`, `product_search_usage`.
+- `_attach_product_pins` now also stores `sam3_bbox`, `sam3_confidence`, `sam3_label`, `image_size` on each product so the crop can be reconstructed later.
+
+**Quality gate rules (all tuned against 2026-02-08 feasibility findings):**
+- Missing/empty bbox → skip (no location to crop)
+- min side < 60 px → skip (too little detail even after 400-px upscale)
+- max side > 900 px → skip (crop drags in too much context)
+- max/min aspect ratio > 3.5 → skip (pendant_light disaster case aspect 8.7 rejected; horizontal sofa strips at 3.36 pass)
+- SAM3 confidence < 0.6 → skip
+- Category not in {furniture, lighting, plant-planter, decor, fixture, electronics, other} AND product name lacks a strong product token → skip
+- Silent failure — never surfaces "no result" to the user; the section simply doesn't render.
+
+**Result post-filter:**
+- Drop banned hosts (YouTube, Behance, Pinterest, blogs, 3D-model sites) — these dominated garbage crops in feasibility.
+- Keep only "shoppable" links (Indian retailers + major global retailers + shop/store/furniture source hints).
+- Rank Indian retailers first, then priced items, then original order.
+- `country=in` DELIBERATELY not passed to Google Lens — feasibility confirmed the India filter returns 0 matches on ~40% of valid queries. We fetch globally and re-rank.
+
+**Cost control:**
+- `PRODUCT_SEARCH_MONTHLY_CAP=240` (leaves 10-search buffer on the 250-free-search plan).
+- Content-addressed crop cache with 30-day TTL — re-viewing an analysis is FREE, no repeat spend.
+- Quota exhaustion returns `similar_items: []` + `quota_exhausted: true` (UI silently hides).
+
+**Frontend:**
+- New `SimilarItems.jsx` (~150 LOC) mounts on each ProductCard, fetches on view, silently omits itself when gate fails / empty / errored.
+- Header always reads "Similar items · visually similar, not exact match" (founder-required honest UX framing).
+- `ProductsSection.jsx` heading copy updated to make the same guarantee: "Each detected item shows visually-similar listings — not exact SKU matches."
+
+**End-to-end validation:**
+- Feasibility crops (proof of good results): chair → 6 items ranked (Target $350, Article $449, Etsy $675, Walmart $2,299…), planter → 6 items (Walmart Accreate $53, Target COZONY $60…), table lamp → 6 items (Walmart Emerson $144, West Elm $399…).
+- Gate correctly REJECTS pendant_light (aspect 8.70 → skipped, no credit spent).
+- Founder's real Bedroom2 project: 4/6 products correctly gated (bed too_large, sconce/plates no_bbox, rug category_excluded), 2/6 pass gate → API called → 0 shoppable results (Google Lens genuinely has no matches for those dark wide-shot crops → correct, honest silent behaviour).
+- Cache proof: re-request of same product returns `cached: true` + `quota_used_this_month` unchanged.
+
+**Tests (all passing):**
+- `tests/test_product_search_gate.py` (18 tests): every gate rule + 5 feasibility-anchored cases + crop prep + cache key + shoppable filter.
+- `tests/test_similar_endpoint.py` (3 tests): gate-skip + cache-hit + quota-exhaustion, against the live backend.
+
+**Files touched:**
+- New: `backend/intelligence/product_search.py`, `backend/tests/test_product_search_gate.py`, `backend/tests/test_similar_endpoint.py`, `frontend/src/components/analysis/SimilarItems.jsx`.
+- Modified: `backend/server.py` (endpoints + `_attach_product_pins` bbox storage + `PRODUCT_SEARCH_MONTHLY_CAP` + `_ps_*` helpers), `frontend/src/components/analysis/ProductsSection.jsx` (wires in SimilarItems), `frontend/src/pages/Analysis.jsx` (passes `projectId`).
+- `SERPAPI_KEY` in `backend/.env`.
+
+**Honest known limitation surfaced during testing (documented for founder):** Google Lens's Indian shopping index is sparse for wide-angle room-scale reference photos where individual products are small (~100-300 px) and in ambient lighting. Feasibility test crops (photographed close-up, well-lit, product-forward) return dozens of shoppable listings. Real-world designer moodboards return fewer results per product. The current UI handles this gracefully by silently omitting the section for empty results — better nothing than junk. If per-product hit rate becomes a problem in production, the natural next step is to send the LLM-generated product `search_keywords` as a Google Shopping text-search fallback when Google Lens returns empty.
+
+
+
 Ceiling and painted left-wall correctly remained `Paint` — cabinet-specific bias did NOT leak into other object types.
 
 **Files touched:** `intelligence/dna.py` only (prompt-only fix, ~15 lines added).

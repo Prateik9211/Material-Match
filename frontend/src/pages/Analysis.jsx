@@ -587,6 +587,7 @@ export default function Analysis() {
                 {/* Products → Product Alternatives */}
                 <ProductsSection
                   products={products}
+                  projectId={id}
                   onAddToShortlist={addProductToShortlist}
                   shortlistedNames={shortlistedProductNames}
                   focusedProductIndex={focusedProductIndex}

@@ -1106,6 +1106,14 @@ def _attach_product_pins(products: list, scene_stage_a: dict) -> None:
                 prod["pin"] = {"x": round(cx_pct, 1), "y": round(cy_pct, 1)}
                 prod["pin_source"] = "product_sam3"
                 prod["pin_matched_label"] = best.get("label")
+                # 2026-02-08 — persist raw SAM3 bbox + confidence on the
+                # product so the similar-items pipeline can later crop
+                # the reference photo without re-running detection.
+                prod["sam3_bbox"] = [round(bx, 1), round(by, 1),
+                                     round(bw, 1), round(bh, 1)]
+                prod["sam3_confidence"] = round(float(best.get("confidence") or 0), 3)
+                prod["sam3_label"] = best.get("label")
+                prod["image_size"] = {"width": int(W), "height": int(H)}
                 continue
         except (TypeError, ValueError):
             pass
@@ -4894,6 +4902,241 @@ async def get_project_products(project_id: str, user: dict = Depends(get_current
     return {"products": pd.get("products", []),
             "generated_at": pd.get("generated_at"),
             "version": pd.get("version")}
+
+
+# ---------------------------------------------------------------------------
+# 2026-02-08 — Similar-items search (SerpApi Google Lens).
+#
+# Purely ADDITIVE to the existing products pipeline. Given a detected
+# product's SAM3 bbox we crop the reference photo, quality-gate the crop,
+# and (if it passes) fetch visually-similar shoppable listings from
+# Google Lens via SerpApi. Results are labelled "Similar items" in the UI
+# — never as exact matches — because the 2026-02-08 feasibility test
+# confirmed this is visual-similarity search, not SKU identification.
+#
+# Cost control: monthly counter capped at PRODUCT_SEARCH_MONTHLY_CAP
+# (default 240, leaves a 10-search buffer on the 250-free-search plan)
+# + content-addressed cache with 30-day TTL so re-viewing a project
+# never re-spends a search credit.
+# ---------------------------------------------------------------------------
+from intelligence.product_search import (
+    passes_quality_gate as _ps_gate,
+    prepare_crop_bytes as _ps_prepare_crop,
+    crop_cache_key as _ps_cache_key,
+    crop_sha_from_key as _ps_crop_sha,
+    search_similar_by_url as _ps_search,
+    ProductSearchError as _ProductSearchError,
+    DEFAULT_COUNTRY as _PS_DEFAULT_COUNTRY,
+)
+
+PRODUCT_SEARCH_MONTHLY_CAP = int(os.environ.get("PRODUCT_SEARCH_MONTHLY_CAP", "240"))
+PRODUCT_SEARCH_CACHE_TTL_DAYS = 30
+
+
+async def _ps_get_current_usage() -> int:
+    """Return this month's SerpApi call count (increment happens post-success)."""
+    key = datetime.now(timezone.utc).strftime("%Y-%m")
+    doc = await db.product_search_usage.find_one({"_id": key})
+    return int((doc or {}).get("count", 0))
+
+
+async def _ps_bump_usage() -> int:
+    key = datetime.now(timezone.utc).strftime("%Y-%m")
+    r = await db.product_search_usage.find_one_and_update(
+        {"_id": key},
+        {"$inc": {"count": 1}, "$set": {"updated_at": datetime.now(timezone.utc)}},
+        upsert=True, return_document=True,
+    )
+    return int(r.get("count", 0))
+
+
+async def _ps_cache_get(cache_key: str) -> dict | None:
+    doc = await db.product_search_cache.find_one({"_id": cache_key})
+    if not doc:
+        return None
+    exp = doc.get("expires_at")
+    if exp:
+        # MongoDB round-trips can drop tzinfo, so normalise both sides
+        # to UTC-aware before comparing to avoid TypeError.
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if exp < datetime.now(timezone.utc):
+            return None
+    return doc
+
+
+async def _ps_cache_put(cache_key: str, payload: dict) -> None:
+    now = datetime.now(timezone.utc)
+    await db.product_search_cache.update_one(
+        {"_id": cache_key},
+        {"$set": {
+            **payload,
+            "fetched_at": now,
+            "expires_at": now + timedelta(days=PRODUCT_SEARCH_CACHE_TTL_DAYS),
+        }},
+        upsert=True,
+    )
+
+
+async def _ps_store_crop(sha: str, crop_bytes: bytes) -> None:
+    """Store crop bytes so the public crop endpoint can serve them.
+    Idempotent — one write per unique SHA."""
+    existing = await db.product_search_crops.find_one({"_id": sha}, {"_id": 1})
+    if existing:
+        return
+    await db.product_search_crops.insert_one({
+        "_id": sha,
+        "image_b64": base64.b64encode(crop_bytes).decode(),
+        "created_at": datetime.now(timezone.utc),
+    })
+
+
+@app.get("/api/product_search/crop/{sha}.jpg")
+async def _serve_product_search_crop(sha: str):
+    """Public crop-hosting endpoint. Content-addressed (SHA-256) so it is
+    effectively unguessable — no auth needed. Required because Google Lens
+    fetches images by URL, not base64."""
+    if not sha or len(sha) != 64 or not all(c in "0123456789abcdef" for c in sha):
+        raise HTTPException(404)
+    doc = await db.product_search_crops.find_one({"_id": sha})
+    if not doc:
+        raise HTTPException(404)
+    from fastapi.responses import Response
+    return Response(
+        content=base64.b64decode(doc["image_b64"]),
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=2592000"},
+    )
+
+
+@api_router.post("/projects/{project_id}/products/{product_id}/similar")
+async def find_similar_products(project_id: str, product_id: str,
+                                user: dict = Depends(get_current_user)):
+    """Fetch visually-similar shoppable listings for one detected product.
+    Uses the cached SAM3 bbox on the product row to crop from the project's
+    reference image, then routes through SerpApi Google Lens.
+
+    Response shape:
+      {
+        "similar_items": [ ... ],       # possibly empty
+        "gate": {"passed": bool, "reason": str},
+        "cached": bool,
+        "quota_used_this_month": int,
+        "quota_cap": int,
+        "quota_exhausted": bool,
+        "error": str | None,
+      }
+
+    Never raises — a hard SerpApi failure returns an empty items list with
+    `error` populated so the UI can gracefully hide the section.
+    """
+    try:
+        doc = await db.projects.find_one({"_id": ObjectId(project_id), "user_id": user["id"]})
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid project id")
+    if not doc:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    pd = doc.get("products_detected") or {}
+    products = pd.get("products") or []
+    product = next((p for p in products if p.get("id") == product_id), None)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    gate = _ps_gate(product)
+    quota_used = await _ps_get_current_usage()
+    if not gate.passed:
+        return {
+            "similar_items": [],
+            "gate": {"passed": False, "reason": gate.reason},
+            "cached": False,
+            "quota_used_this_month": quota_used,
+            "quota_cap": PRODUCT_SEARCH_MONTHLY_CAP,
+            "quota_exhausted": quota_used >= PRODUCT_SEARCH_MONTHLY_CAP,
+            "error": None,
+        }
+
+    # Load the reference image + crop.
+    ref_b64 = doc.get("reference_image_b64") or doc.get("reference_photo_b64")
+    if not ref_b64:
+        raise HTTPException(400, "Project has no reference image on file")
+    try:
+        from PIL import Image
+        ref_img = Image.open(io.BytesIO(base64.b64decode(ref_b64))).convert("RGB")
+    except Exception:
+        raise HTTPException(500, "Reference image decode failed")
+
+    crop_bytes = _ps_prepare_crop(ref_img, product["sam3_bbox"])
+    country = _PS_DEFAULT_COUNTRY
+    cache_key = _ps_cache_key(crop_bytes, country=country)
+    sha = _ps_crop_sha(cache_key)
+
+    # Cache hit: return immediately, no quota spent.
+    cached = await _ps_cache_get(cache_key)
+    if cached:
+        return {
+            "similar_items": cached.get("similar_items") or [],
+            "gate": {"passed": True, "reason": "ok"},
+            "cached": True,
+            "quota_used_this_month": quota_used,
+            "quota_cap": PRODUCT_SEARCH_MONTHLY_CAP,
+            "quota_exhausted": quota_used >= PRODUCT_SEARCH_MONTHLY_CAP,
+            "error": None,
+        }
+
+    if quota_used >= PRODUCT_SEARCH_MONTHLY_CAP:
+        return {
+            "similar_items": [],
+            "gate": {"passed": True, "reason": "ok"},
+            "cached": False,
+            "quota_used_this_month": quota_used,
+            "quota_cap": PRODUCT_SEARCH_MONTHLY_CAP,
+            "quota_exhausted": True,
+            "error": "monthly_quota_exhausted",
+        }
+
+    # Publish crop for SerpApi to fetch.
+    await _ps_store_crop(sha, crop_bytes)
+    public_base = os.environ.get("FRONTEND_URL", "").rstrip("/")
+    if not public_base:
+        raise HTTPException(500, "FRONTEND_URL not configured — cannot expose crop to SerpApi")
+    public_url = f"{public_base}/api/product_search/crop/{sha}.jpg"
+
+    try:
+        result = _ps_search(public_url, country=country)
+        # Bump usage AFTER a successful call.
+        new_count = await _ps_bump_usage()
+    except _ProductSearchError as e:
+        logger.warning("similar-search failed for %s/%s: %s", project_id, product_id, e)
+        return {
+            "similar_items": [],
+            "gate": {"passed": True, "reason": "ok"},
+            "cached": False,
+            "quota_used_this_month": quota_used,
+            "quota_cap": PRODUCT_SEARCH_MONTHLY_CAP,
+            "quota_exhausted": False,
+            "error": str(e),
+        }
+
+    # Persist in cache.
+    await _ps_cache_put(cache_key, {
+        "similar_items": result["similar_items"],
+        "raw_match_count": result["raw_match_count"],
+        "country": country,
+        "elapsed_s": result["elapsed_s"],
+        "crop_sha": sha,
+    })
+
+    return {
+        "similar_items": result["similar_items"],
+        "gate": {"passed": True, "reason": "ok"},
+        "cached": False,
+        "quota_used_this_month": new_count,
+        "quota_cap": PRODUCT_SEARCH_MONTHLY_CAP,
+        "quota_exhausted": new_count >= PRODUCT_SEARCH_MONTHLY_CAP,
+        "error": None,
+    }
+
 
 
 

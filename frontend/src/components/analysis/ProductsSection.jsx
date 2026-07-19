@@ -1,5 +1,6 @@
 import React, { useRef, useEffect } from "react";
 import { ExternalLink, Sparkles, ShoppingBag, Package, Search, ListChecks, Check } from "lucide-react";
+import SimilarItems from "./SimilarItems";
 
 const CATEGORY_LABEL = {
   lighting: "Lighting",
@@ -50,7 +51,7 @@ function KeywordChips({ items, testid }) {
   );
 }
 
-function ProductCard({ product, index, onAddToShortlist, alreadyShortlisted, focused, onHoverCard }) {
+function ProductCard({ product, index, projectId, onAddToShortlist, alreadyShortlisted, focused, onHoverCard }) {
   const matched = product.matched_affiliate;
   const search = product.search_urls || {};
   const cardRef = useRef(null);
@@ -191,12 +192,19 @@ function ProductCard({ product, index, onAddToShortlist, alreadyShortlisted, foc
             </button>
           )}
         </div>
+
+        {/* Visually similar shoppable items (Google Lens via SerpApi).
+            Silently omitted when the crop can't be quality-gated or
+            returns zero shoppable matches. */}
+        {projectId && product.id && product.sam3_bbox && (
+          <SimilarItems projectId={projectId} productId={product.id} />
+        )}
       </div>
     </div>
   );
 }
 
-export default function ProductsSection({ products, onAddToShortlist, shortlistedNames, focusedProductIndex, onHoverProductCard }) {
+export default function ProductsSection({ products, projectId, onAddToShortlist, shortlistedNames, focusedProductIndex, onHoverProductCard }) {
   if (!products || products.length === 0) return null;
   const withCurated = products.filter((p) => p.matched_affiliate).length;
   const shortlisted = shortlistedNames || new Set();
@@ -209,7 +217,7 @@ export default function ProductsSection({ products, onAddToShortlist, shortliste
             Products &amp; Fixtures
           </h2>
           <p className="text-sm text-neutral-500 mt-1">
-            Shoppable products detected in this reference, matched to our curated Indian affiliate database.
+            Shoppable products detected in this reference. Each detected item shows visually-similar listings — not exact SKU matches.
           </p>
         </div>
         <div className="text-xs text-neutral-500" data-testid="products-count">
@@ -222,6 +230,7 @@ export default function ProductsSection({ products, onAddToShortlist, shortliste
             key={p.id || `p-${i}`}
             product={p}
             index={i}
+            projectId={projectId}
             onAddToShortlist={onAddToShortlist}
             alreadyShortlisted={shortlisted.has(p.product_name)}
             focused={focusedProductIndex === i}
