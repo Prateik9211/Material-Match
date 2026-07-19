@@ -1,0 +1,49 @@
+{
+  "passed": true,
+  "origin": "https://design-match-ai.preview.emergentagent.com",
+  "seed_project_id": "6a5c9aafa5fed9d31d8790ea",
+  "regular_user": "qa-catalogue-preview-iter23-1784453806@materialmatch.ai",
+  "viewport": {
+    "width": 1920,
+    "height": 1080
+  },
+  "checks": [
+    {
+      "name": "No relevant testing skill found",
+      "passed": true,
+      "details": "Mandatory skill lookup for catalogue Preview lightbox/backdrop/transform flow returned no matching testing skill."
+    },
+    {
+      "name": "Fix inspected",
+      "passed": true,
+      "details": "MaterialsFirstSection.jsx imports createPortal and renders catalogue-preview-lightbox through createPortal(..., document.body). Git diff shows only this one product-code change."
+    },
+    {
+      "name": "Hovered/focused transformed card origin",
+      "passed": true,
+      "details": "Opened preview from material-card-0 after hover; card class contained scale-[1.025] and -translate-y-1."
+    },
+    {
+      "name": "True fullscreen portal overlay",
+      "passed": true,
+      "details": "catalogue-preview-lightbox parent tag was BODY and bounding boxes were exactly {x:0,y:0,width:1920,height:1080} for both image and hex previews after the entry animation."
+    },
+    {
+      "name": "Backdrop, ESC, and close button close controls",
+      "passed": true,
+      "details": "Backdrop click at viewport coordinate (20,20) closed the image preview and hex preview; Escape closed; data-testid=catalogue-preview-close closed."
+    },
+    {
+      "name": "Image and hex preview branches",
+      "passed": true,
+      "details": "swatch_crop_b64 match rendered catalogue-preview-image with data:image/jpeg;base64 src; color_hex-only match rendered catalogue-preview-hex with rgb(241, 235, 224)."
+    },
+    {
+      "name": "Client-side preview only",
+      "passed": true,
+      "details": "Network tracking around preview open saw no /api/ backend requests for either image or hex branch."
+    }
+  ],
+  "console_log": "/root/.emergent/automation_output/20260719_093936/console_20260719_093936.log",
+  "note": "Console had expected pre-login /api/auth/me 401s and aborted font/RUM requests; no UI error message was present after preview checks."
+}

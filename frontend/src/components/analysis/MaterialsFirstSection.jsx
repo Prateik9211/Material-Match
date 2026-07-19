@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { ChevronDown, ChevronRight, MapPin, ListChecks, Check, Star, Layers, Search, Target, Sparkles, Info, Eye, X } from "lucide-react";
 
 /* Round 9 — inline "Preview" button + lightbox for a catalogue match.
@@ -39,7 +40,7 @@ function MatchPreviewButton({ match, index, testid, size = "sm" }) {
         <Eye className="w-3.5 h-3.5" strokeWidth={2} />
         Preview
       </button>
-      {open && (
+      {open && createPortal(
         <div
           className="fixed inset-0 z-50 bg-charcoal/80 grid place-items-center p-4 backdrop-blur-sm animate-fade-in-up"
           onClick={() => setOpen(false)}
@@ -86,7 +87,7 @@ function MatchPreviewButton({ match, index, testid, size = "sm" }) {
             </div>
           </div>
         </div>
-      )}
+      , document.body)}
     </>
   );
 }

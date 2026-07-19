@@ -1,0 +1,39 @@
+{
+  "verdict": "fixed",
+  "user_reported_bug": "Same as iteration 23. Only remaining unresolved sub-item: catalogue Preview lightbox backdrop click doesn't close because the fixed-position overlay was rendered inside a MaterialCard whose parent uses CSS transforms (scale/translate) \u2014 those transforms create a containing block that reparents `position:fixed` descendants, breaking full-viewport backdrop and click-outside behavior.",
+  "summary": "No relevant testing skill found. Focused frontend retest confirms the catalogue Preview lightbox now portals to document.body, opens fullscreen from a hovered/focused transformed MaterialCard, and backdrop click at (20,20), ESC, and the close button all close it. Image and hex branches still render and opening preview fired no backend API requests.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/scripts/catalogue_preview_portal_iteration_24.py",
+    "/app/test_reports/catalogue_preview_seed_iteration_24.json",
+    "/app/test_reports/catalogue_preview_ui_iteration_24.json"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Inspected MaterialsFirstSection.jsx: MatchPreviewButton imports createPortal and renders catalogue-preview-lightbox with createPortal(..., document.body), escaping the transformed MaterialCard containing block."
+  ],
+  "updated_files": [
+    "/app/test_reports/scripts/catalogue_preview_portal_iteration_24.py",
+    "/app/test_reports/catalogue_preview_seed_iteration_24.json",
+    "/app/test_reports/catalogue_preview_ui_iteration_24.json",
+    "/app/test_reports/bug_verification_24.json",
+    "/app/test_reports/iteration_24.json"
+  ],
+  "success_rate": {
+    "backend": "N/A - frontend-only retest",
+    "frontend": "100%"
+  },
+  "seed_data_creation": "Created a fresh regular non-admin user qa-catalogue-preview-iter23-1784453806@materialmatch.ai and project 6a5c9aafa5fed9d31d8790ea with SEEDED mock_analysis rows covering swatch_crop_b64 image preview and color_hex-only hex preview branches. No API integration was MOCKED; seeded mock_analysis was test data only.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Skill search returned no relevant testing skill. Use /app/test_reports/scripts/catalogue_preview_portal_iteration_24.py for the focused Playwright flow. The final successful run used 1920x1080, opened from a hovered/focused material card with scale-[1.025] and -translate-y-1, measured overlay {x:0,y:0,width:1920,height:1080}, verified parent BODY, backdrop click at (20,20), ESC, close button, image/hex branches, and no /api/ requests during preview open.",
+  "rca_of_the_issue": "Iteration 23 failed because the fixed overlay lived inside a transformed MaterialCard. The current change portals the overlay to document.body, so the transformed ancestor no longer establishes the overlay containing block; click-outside/backdrop behavior works again."
+}
