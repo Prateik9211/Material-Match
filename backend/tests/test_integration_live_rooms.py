@@ -1,9 +1,12 @@
 """Live SAM3 integration smoke test — permanent guard against future
 vision-layer regressions.
 
-Runs two real interior bedroom photographs through the production Stage-A
-scene-segmentation pipeline (`detect_objects` + `filter_detections`) and
-asserts that the expected architectural objects are actually present.
+Runs a matrix of real interior photographs — bedroom, kitchen, bathroom,
+living room, dining, and office — through the production Stage-A
+scene-segmentation pipeline (`detect_objects` + `filter_detections`)
+and asserts that the expected architectural objects are actually
+present. This is the permanent cross-room-type regression guard before
+Sprint 9 large-scale validation.
 
 Why this exists
 ---------------
@@ -23,15 +26,15 @@ Requirements
 Usage
 -----
     cd /app/backend
-    pytest -m integration tests/test_integration_live_bedroom.py -v -s
+    pytest -m integration tests/test_integration_live_rooms.py -v -s
 
 Marked `integration` so unit-only runs (`pytest -m "not integration"`)
 skip it, but CI can opt in.
 
 Cost
 ----
-Each test call = 1 SAM3 request. Two images = two requests. Free tier
-covers this comfortably.
+Each test call = 1 SAM3 request. Seven images = seven requests per full
+run. Roboflow free tier handles this comfortably.
 """
 from __future__ import annotations
 
@@ -56,18 +59,33 @@ from intelligence.scene_segmentation import detect_objects, filter_detections  #
 
 
 # ---------------------------------------------------------------------------
-# Fixtures — two real bedroom photographs from Unsplash.
+# Fixtures — real interior photographs from Unsplash, one per room type.
 #
-# We download once and cache locally in `tests/fixtures/live_bedroom/`
+# We download once and cache locally in `tests/fixtures/live_rooms/`
 # so subsequent runs don't hammer the CDN and stay deterministic even
 # if Unsplash rotates its top-page images.
+#
+# Every URL below was live-probed against SAM3 on 2026-02-01; the
+# `expect_any` groups are tuned to the labels SAM3 actually returns
+# for each specific image.
+#
+# HONEST VOCAB CAVEAT FOR DINING & OFFICE: `ARCHITECTURAL_VOCAB`
+# (see `intelligence/scene_segmentation.py`) does NOT include
+# `dining table`, `chair`, `desk` or `office chair`. That means
+# SAM3 cannot directly identify the defining furniture of a dining
+# room or a private office — those rooms can only be characterised
+# here by their architectural surfaces plus secondary décor (rug,
+# cushion, framed art, plant, curtain, cabinet, shelf). This is a
+# P2 product finding worth logging: adding these labels to the vocab
+# would let the Analysis UI surface dining tables and desks as their
+# own pins instead of dropping them.
 # ---------------------------------------------------------------------------
-FIXTURE_DIR = BACKEND_DIR / "tests" / "fixtures" / "live_bedroom"
+FIXTURE_DIR = BACKEND_DIR / "tests" / "fixtures" / "live_rooms"
 FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
 
 # `w=1400` keeps files ~200-400 KB, big enough for SAM3 to work with
 # yet still cheap to cache. The `?fm=jpg` param forces JPEG.
-BEDROOM_IMAGES = [
+LIVE_INTERIOR_IMAGES = [
     {
         "slug": "bed_artwork_wall",
         # Bedroom shot with bed, headboard, feature wall behind, framed
@@ -109,6 +127,97 @@ BEDROOM_IMAGES = [
             {"bed", "headboard", "pillow", "cushion"},
         ],
     },
+    # -- KITCHEN -----------------------------------------------------------
+    {
+        "slug": "kitchen_cabinets_countertop",
+        # Modern kitchen — cabinet run, countertop, wall, floor, ceiling.
+        # Live-probed 2026-02-01: 11 filtered detections including
+        # cabinet, ceiling, countertop, floor, shelf, wall.
+        "url": (
+            "https://images.unsplash.com/photo-1556909114-f6e7ad7d3136"
+            "?fm=jpg&w=1400&q=80"
+        ),
+        "expect_any": [
+            {"wall", "ceiling", "floor"},
+            # kitchen-defining joinery — SAM3 vocab HAS these
+            {"cabinet", "countertop", "backsplash"},
+        ],
+    },
+    # -- BATHROOM ----------------------------------------------------------
+    {
+        "slug": "bathroom_bathtub_mirror_sink",
+        # Full bathroom — freestanding bathtub, vanity with sink, mirror,
+        # backsplash, feature wall, floor tile, ceiling. Live-probed
+        # 2026-02-01: 22 filtered detections including bathtub, sink,
+        # mirror, feature wall, backsplash, countertop.
+        "url": (
+            "https://images.unsplash.com/photo-1620626011761-996317b8d101"
+            "?fm=jpg&w=1400&q=80"
+        ),
+        "expect_any": [
+            {"wall", "ceiling", "floor"},
+            # bathroom-defining fixture (at least one must be present)
+            {"sink", "toilet", "bathtub", "mirror"},
+        ],
+    },
+    # -- LIVING ROOM -------------------------------------------------------
+    {
+        "slug": "living_sofa_rug_feature_wall",
+        # Living room — sectional sofa, area rug, cushions/pillows,
+        # framed art on a feature wall, floor-length curtains, plant.
+        # Live-probed 2026-02-01: 27 filtered detections including
+        # sofa, cushion, pillow, rug, feature wall, framed art, curtain.
+        "url": (
+            "https://images.unsplash.com/photo-1615529182904-14819c35db37"
+            "?fm=jpg&w=1400&q=80"
+        ),
+        "expect_any": [
+            {"wall", "ceiling", "floor"},
+            # living-defining seating (sofa is the strong signal)
+            {"sofa", "cushion", "pillow"},
+            # décor commonly on / around a living-room feature wall
+            {"rug", "framed art", "artwork", "feature wall"},
+        ],
+    },
+    # -- DINING ------------------------------------------------------------
+    {
+        "slug": "dining_surfaces_and_decor",
+        # Interior with dining/lounge composition. SAM3 cannot detect a
+        # dining table itself (no `table` in vocab), so this test asserts
+        # only on the architectural surfaces plus the décor SAM3 CAN
+        # see. Live-probed 2026-02-01: 19 filtered detections including
+        # wall, ceiling, floor, feature wall, curtain, rug, framed art.
+        "url": (
+            "https://images.unsplash.com/photo-1583847268964-b28dc8f51f92"
+            "?fm=jpg&w=1400&q=80"
+        ),
+        "expect_any": [
+            {"wall", "ceiling", "floor"},
+            # Décor — at least one must appear. This is the honest
+            # ceiling of what SAM3 can currently see for a dining room.
+            {"rug", "framed art", "artwork", "picture frame", "curtain",
+             "plant", "feature wall", "accent wall"},
+        ],
+    },
+    # -- OFFICE / STUDY ----------------------------------------------------
+    {
+        "slug": "office_shelves_cabinet",
+        # Office / study with built-in shelving + cabinetry. SAM3 has
+        # no `desk` or `office chair` label, so this test asserts on
+        # shelf + cabinet (both of which SAM3 CAN see and which are
+        # signature office fitouts) plus architectural surfaces.
+        # Live-probed 2026-02-01: 22 filtered detections including
+        # cabinet, ceiling, countertop, floor, shelf, feature wall, wall.
+        "url": (
+            "https://images.unsplash.com/photo-1497366216548-37526070297c"
+            "?fm=jpg&w=1400&q=80"
+        ),
+        "expect_any": [
+            {"wall", "ceiling", "floor"},
+            # office-signature joinery — cabinet or shelf must appear
+            {"cabinet", "shelf"},
+        ],
+    },
 ]
 
 
@@ -145,10 +254,10 @@ def _cached_image_bytes(slug: str, url: str) -> bytes:
     not os.environ.get("ROBOFLOW_API_KEY"),
     reason="ROBOFLOW_API_KEY not configured — cannot exercise live SAM3.",
 )
-@pytest.mark.parametrize("case", BEDROOM_IMAGES, ids=lambda c: c["slug"])
-def test_sam3_bedroom_detects_expected_objects(case):
+@pytest.mark.parametrize("case", LIVE_INTERIOR_IMAGES, ids=lambda c: c["slug"])
+def test_sam3_room_detects_expected_objects(case):
     """Live SAM3 must return the expected architectural objects for
-    each real bedroom photograph.
+    each real interior photograph (across all six covered room types).
 
     We use `detect_objects` (Stage A only) and `filter_detections` with
     production defaults so the assertion mirrors what the user actually
