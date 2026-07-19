@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import Header from "@/components/Header";
 import api, { formatApiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
-import { Plus, FileText, ArrowUpRight, Sparkles, Clock, PlayCircle, Camera, Layers, BookOpen, ShoppingBag, ListChecks } from "lucide-react";
+import { Plus, FileText, ArrowUpRight, Sparkles, Clock, PlayCircle, Camera, Layers, BookOpen, ShoppingBag, ListChecks, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 const statusColor = {
@@ -106,6 +106,25 @@ export default function Dashboard() {
   const openCreate = () => navigate("/projects/new");
   const openLibrary = () => navigate("/library");
 
+  const deleteProject = async (p, e) => {
+    // The project card is a <button>; we're a nested control so we
+    // MUST stop propagation so the card's onClick doesn't navigate
+    // the user into a project they just asked to delete.
+    e?.stopPropagation?.();
+    e?.preventDefault?.();
+    const ok = window.confirm(
+      `Delete project "${p.name}"?\n\nThis permanently removes the project, its reference image, and all specification data. This cannot be undone.`
+    );
+    if (!ok) return;
+    try {
+      await api.delete(`/projects/${p.id}`);
+      setProjects((cur) => cur.filter((x) => x.id !== p.id));
+      toast.success(`Project "${p.name}" deleted`);
+    } catch (err) {
+      toast.error(formatApiError(err));
+    }
+  };
+
   const renderProjectsSection = () => {
     if (loading) {
       return (
@@ -119,29 +138,49 @@ export default function Dashboard() {
     return (
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
         {projects.map((p) => (
-          <button
+          <div
             key={p.id}
-            onClick={() => navigate(projectRoute(p))}
-            className="text-left bg-white border border-stone-border-soft rounded-2xl overflow-hidden shadow-soft hover:shadow-hover hover:-translate-y-1 transition-all duration-300"
+            className="relative group text-left bg-white border border-stone-border-soft rounded-2xl overflow-hidden shadow-soft hover:shadow-hover hover:-translate-y-1 transition-all duration-300"
             data-testid={`project-card-${p.id}`}
           >
-            <div className="aspect-[16/10] bg-stone-panel relative grain">
-              <div className="absolute inset-0 grid place-items-center">
-                <div className="text-overline">{p.name?.slice(0, 2).toUpperCase() || "PR"}</div>
+            <button
+              type="button"
+              onClick={() => navigate(projectRoute(p))}
+              className="block w-full text-left"
+              data-testid={`project-card-open-${p.id}`}
+            >
+              <div className="aspect-[16/10] bg-stone-panel relative grain">
+                <div className="absolute inset-0 grid place-items-center">
+                  <div className="text-overline">{p.name?.slice(0, 2).toUpperCase() || "PR"}</div>
+                </div>
+                <span className={`absolute top-3 left-3 text-[10px] px-2 py-1 rounded-full font-medium ${statusColor[p.status] || statusColor.draft}`}>
+                  {p.status || "draft"}
+                </span>
               </div>
-              <span className={`absolute top-3 left-3 text-[10px] px-2 py-1 rounded-full font-medium ${statusColor[p.status] || statusColor.draft}`}>
-                {p.status || "draft"}
-              </span>
-            </div>
-            <div className="p-5">
-              <h3 className="font-display font-semibold text-base mb-1 truncate text-charcoal">{p.name}</h3>
-              <p className="text-xs text-warm-grey truncate">{p.client_name || "No client"}</p>
-              <div className="mt-3 flex items-center gap-1 text-xs text-warm-grey/70">
-                <Clock className="w-3 h-3" strokeWidth={1.5} />
-                {new Date(p.created_at).toLocaleDateString()}
+              <div className="p-5">
+                <h3 className="font-display font-semibold text-base mb-1 truncate text-charcoal">{p.name}</h3>
+                <p className="text-xs text-warm-grey truncate">{p.client_name || "No client"}</p>
+                <div className="mt-3 flex items-center gap-1 text-xs text-warm-grey/70">
+                  <Clock className="w-3 h-3" strokeWidth={1.5} />
+                  {new Date(p.created_at).toLocaleDateString()}
+                </div>
               </div>
-            </div>
-          </button>
+            </button>
+            {/* Absolute-positioned delete control — outside the open
+                button so clicks don't bubble. Opacity ramps up on
+                hover / focus so the card stays clean at rest but the
+                affordance is always keyboard-reachable. */}
+            <button
+              type="button"
+              onClick={(e) => deleteProject(p, e)}
+              className="absolute top-3 right-3 inline-flex items-center justify-center w-8 h-8 rounded-full bg-white/90 backdrop-blur-sm border border-stone-border text-warm-grey hover:text-red-600 hover:border-red-300 hover:bg-white opacity-0 group-hover:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-red-200 transition-all"
+              title={`Delete project "${p.name}"`}
+              aria-label={`Delete project ${p.name}`}
+              data-testid={`project-delete-btn-${p.id}`}
+            >
+              <Trash2 className="w-4 h-4" strokeWidth={1.5} />
+            </button>
+          </div>
         ))}
       </div>
     );

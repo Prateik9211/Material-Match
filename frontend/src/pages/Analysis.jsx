@@ -7,7 +7,7 @@ import ShortlistSection from "@/components/analysis/ShortlistSection";
 import MaterialsFirstSection from "@/components/analysis/MaterialsFirstSection";
 import RegionSelector from "@/components/analysis/RegionSelector";
 import api, { formatApiError, useConfig } from "@/lib/api";
-import { ArrowLeft, Sparkles, RefreshCw, X, Focus, Layers } from "lucide-react";
+import { ArrowLeft, Sparkles, RefreshCw, X, Focus, Layers, ImagePlus } from "lucide-react";
 import { toast } from "sonner";
 
 function SummaryPanel({ summary, title, subtitle, ephemeral, onClear, cropPreview }) {
@@ -101,6 +101,8 @@ export default function Analysis() {
   const [regionResult, setRegionResult] = useState(null); // { rows, summary, crop_data_url }
   const [focusedIndex, setFocusedIndex] = useState(null); // syncs image pins ↔ material cards
   const [focusedProductIndex, setFocusedProductIndex] = useState(null); // syncs product pins ↔ product cards
+  const [replacing, setReplacing] = useState(false);
+  const replaceInputRef = React.useRef(null);
 
   const fetchProject = useCallback(async () => {
     try {
@@ -203,6 +205,49 @@ export default function Analysis() {
   });
 
   const goToMatchZone = (row) => navigate(`/projects/${id}/match?zone=${encodeURIComponent(row.zone)}`);
+
+  // 2026-02-01 — Replace-image flow.
+  // Backend `POST /projects/{id}/reference` already overwrites the image
+  // with $set AND $unsets the stale analysis / mock_analysis /
+  // products_detected fields so the UI can't display outdated pins
+  // against a photo the user no longer has.
+  const openReplacePicker = () => {
+    if (replacing) return;
+    const proceed = window.confirm(
+      "Replace the reference image?\n\nThis will delete the current photo and clear the existing specification, product detections and pins. You'll need to regenerate the specification for the new image."
+    );
+    if (!proceed) return;
+    replaceInputRef.current?.click();
+  };
+
+  const handleReplaceFile = async (e) => {
+    const file = e.target?.files?.[0];
+    // Always reset the input so the same file can be re-selected later.
+    if (e.target) e.target.value = "";
+    if (!file) return;
+    setReplacing(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      await api.post(`/projects/${id}/reference`, fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      // Local state cleanup — mirror the backend $unset so the UI
+      // reflects the empty state immediately, then re-fetch fresh data.
+      setRegionResult(null);
+      setProducts([]);
+      setFocusedIndex(null);
+      setFocusedProductIndex(null);
+      setImgError(false);
+      setProject((prev) => prev ? { ...prev, mock_analysis: undefined, products_detected: undefined, analysis: undefined, status: "draft" } : prev);
+      await fetchProject();
+      toast.success("Reference image replaced. Generate specification to analyse the new photo.");
+    } catch (err) {
+      toast.error(formatApiError(err));
+    } finally {
+      setReplacing(false);
+    }
+  };
 
   const projectRows = project?.mock_analysis?.rows || [];
   const projectSummary = project?.mock_analysis?.summary;
@@ -321,6 +366,25 @@ export default function Analysis() {
                           Beta
                         </span>
                       </Link>
+                      <button
+                        type="button"
+                        onClick={openReplacePicker}
+                        disabled={replacing || busy}
+                        className="inline-flex items-center justify-center gap-2 border border-stone-border hover:border-charcoal text-charcoal rounded-full px-4 py-2.5 text-sm font-medium transition-colors disabled:opacity-60"
+                        data-testid="replace-reference-btn"
+                        title="Replace the reference image and clear stale analysis"
+                      >
+                        <ImagePlus className={`w-4 h-4 ${replacing ? "animate-pulse" : ""}`} strokeWidth={1.5} />
+                        {replacing ? "Replacing…" : "Replace image"}
+                      </button>
+                      <input
+                        ref={replaceInputRef}
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        className="hidden"
+                        onChange={handleReplaceFile}
+                        data-testid="replace-reference-input"
+                      />
                     </div>
                   </div>
 

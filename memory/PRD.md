@@ -29,6 +29,19 @@ Admin validation tool at `/admin/scene-test` AND the LIVE user-facing `POST /api
 
 ## 2026-02-27 (round 2) — Scene-mode is now the DEFAULT for full-image analysis ✅
 
+## 2026-02-01 (round 2) — Vocab expansion + project CRUD ✅
+
+Two follow-up items shipped after the cross-room smoke test surfaced the SAM3 vocab gap and after the user requested basic project-lifecycle controls:
+
+1. **SAM3 vocabulary expanded to close the dining/office blind spot** — `ARCHITECTURAL_VOCAB` in `intelligence/scene_segmentation.py` now includes `dining table`, `chair`, `desk`, `office chair`. Live-verified across the 7-image smoke test: dining scene now detects `chair` (n=30 detections), office scene detects `chair` + `desk` (n=17). Test assertions in `test_integration_live_rooms.py` were tightened to *require* at least one of the new labels to fire on the dining and office fixtures — no future regression can silently remove desk/chair detection without failing the smoke test. Bonus: `chair`/`desk` also now fire on bedroom, kitchen and living scenes where SAM3 sees them, giving the Analysis UI more accurate secondary pins across every room type.
+
+2. **Delete project + replace-image project CRUD** — two user-visible controls wired into the existing (already-supported) backend endpoints so users can iterate photos without churning through fresh projects.
+   - **Delete project** (`Dashboard.jsx`): trash-icon overlay on every project card, top-right, opacity-0 at rest and revealed on hover / focus (keyboard-reachable). Click fires a `window.confirm` naming the project, then hits `DELETE /api/projects/{pid}` and optimistically removes the card. `data-testid="project-delete-btn-{pid}"`. Verified end-to-end with Playwright: delete → wait_for(detached) → reload → card confirmed gone after reload.
+   - **Replace reference image** (`Analysis.jsx`): new pill button next to Regenerate/Concept, opens a hidden file picker after a `window.confirm` that spells out the destructive side-effects. Backend `POST /api/projects/{pid}/reference` was updated to atomically `$unset` the stale `mock_analysis`, `analysis`, and `products_detected` fields AND `$set` `status=draft` when a new image is uploaded — so no photo can ever show the previous photo's specification rows / pins / product detections. Verified end-to-end with Playwright + real DB inspection: seeded a stale `mock_analysis` with a `STALE_WALL_MATERIAL` marker, replaced the image via the UI file picker, reloaded, and confirmed the specification section reset to "No specification yet" and the header reset to "Ready to specify." The `image_matches_v2` byte-compare passed too — the new image bytes made it into MongoDB.
+
+Multi-image / rooms-based analysis is deliberately **deferred** — the primary Analysis flow remains one image per project. The rooms collection exists but is scoped to the parallel Concept Workspace, not the primary Analysis flow.
+
+
 ## 2026-02-01 — Advance mislabel migration + ambient-light DNA hint + live SAM3 smoke test ✅
 
 Three-part follow-up to the feature-wall + cross-category audit:
@@ -37,7 +50,7 @@ Three-part follow-up to the feature-wall + cross-category audit:
 2. **Ambient-light normalisation in DNA prompt** — `intelligence/dna.py` `SWATCH_DNA_PROMPT` now instructs GPT-4o-mini to mentally subtract room-wide warm/cool tint before naming a surface colour. Fixes the specific bug where a plain white ceiling under warm lamps was being read as "terracotta"/"warm peach" and matched to warm-toned laminate swatches. Rule: if a plain-surface crop's cast matches the wider scene's cast, treat it as ambient and neutralise; only trust a warm/cool cast when it *contradicts* the ambient direction.
 3. **Live SAM3 smoke test across 7 real interior photographs / 6 room types** — `/app/backend/tests/test_integration_live_rooms.py` runs bedroom (×2), kitchen, bathroom, living, dining and office photos through Roboflow SAM3 and asserts the presence of expected object groups. First runs cache images to `tests/fixtures/live_rooms/` so subsequent runs are deterministic. Guarded by `@pytest.mark.integration` so unit-only CI runs skip it. `pytest.ini` registers the marker. **All 7 cases PASS live against production Roboflow endpoint** (~8s total, ~1.1s per image). This is the permanent cross-room regression guard against future SAM3 vocab / dedup regressions.
 
-   **P2 vocab-gap finding surfaced by the cross-room expansion:** `ARCHITECTURAL_VOCAB` in `intelligence/scene_segmentation.py` contains no `dining table`, `chair`, `desk` or `office chair`. Consequence — dining tables and office desks are currently invisible to SAM3 and cannot get their own pins in the Analysis UI. Dining and office rooms surface only via architectural surfaces (wall/ceiling/floor) + décor (rug, framed art, curtain, plant). Suggested Sprint-9 backlog item: add `dining table`, `chair`, `desk`, `office chair` to the vocab and re-run this test to lock the new expectations in.
+   **P2 vocab-gap finding surfaced by the cross-room expansion:** `ARCHITECTURAL_VOCAB` in `intelligence/scene_segmentation.py` contains no `dining table`, `chair`, `desk` or `office chair`. Consequence — dining tables and office desks are currently invisible to SAM3 and cannot get their own pins in the Analysis UI. Dining and office rooms surface only via architectural surfaces (wall/ceiling/floor) + décor (rug, framed art, curtain, plant). Suggested Sprint-9 backlog item: add `dining table`, `chair`, `desk`, `office chair` to the vocab and re-run this test to lock the new expectations in. **UPDATE 2026-02-01 (round 2): This gap has now been closed — see the "Vocab expansion + project CRUD" entry above.**
 
 
 

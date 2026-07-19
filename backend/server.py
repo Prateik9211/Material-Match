@@ -500,10 +500,27 @@ async def upload_reference(project_id: str, file: UploadFile = File(...),
     if mime not in ("image/jpeg", "image/png", "image/webp"):
         raise HTTPException(status_code=400, detail="Unsupported image format")
     b64 = base64.b64encode(content).decode("utf-8")
+    # 2026-02-01 — When the reference image is replaced, purge every
+    # cached analysis result derived from the OLD image. Otherwise the
+    # Analysis UI shows stale material rows / product pins / bboxes
+    # that were computed against a photo the user no longer has.
+    # `status` is reset to draft so the UI knows the project needs
+    # re-analysis.
     await db.projects.update_one(
         {"_id": ObjectId(project_id), "user_id": user["id"]},
-        {"$set": {"reference_image_b64": b64, "reference_mime": mime,
-                  "updated_at": datetime.now(timezone.utc).isoformat()}}
+        {
+            "$set": {
+                "reference_image_b64": b64,
+                "reference_mime": mime,
+                "status": "draft",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            "$unset": {
+                "mock_analysis": "",
+                "analysis": "",
+                "products_detected": "",
+            },
+        },
     )
     return {"ok": True, "mime": mime, "size": len(content)}
 
