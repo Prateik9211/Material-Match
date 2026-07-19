@@ -60,6 +60,39 @@ Admin validation tool at `/admin/scene-test` AND the LIVE user-facing `POST /api
 **Investigation summary (across rounds 4-7).** The founder reported three regressions on a real Advance-1mm kitchen image: (a) multiple pins on one cabinet run, (b) blue laminate not matching, (c) correct source PDF page found but wrong swatch outranked. After multiple live traces against the actual `Project 6a568fe4` kitchen image the founder was looking at, the honest single root cause turned out to be at Stage-B DNA classification, NOT at retrieval:
 
 * Blue matte laminate cabinet surfaces are visually identical to matte painted surfaces at crop scale. The DNA prompt's strong "plain uniform → Paint" rule was overriding the cabinet object cue and stamping `material_family='Paint'` on every blue-cabinet crop.
+
+## 2026-02-08 — E-commerce feasibility test: SerpApi Google Lens (findings, NOT yet integrated) ⚠️
+Founder provided `SERPAPI_KEY` (added to `backend/.env`, key valid, Free Plan 250 searches/month, 0 used at test time). Ran 5 real product crops taken from our SAM3 detections on live-room fixtures through SerpApi's Google Lens API (`country=in`, `hl=en`, `type=visual_matches`). No frontend integration was built — feasibility check only.
+
+**Cost model per SerpApi published pricing:**
+- Free plan: 250 searches/month (what we're on today) → $0
+- Developer plan: $75/month → 5,000 searches → $0.015/search
+- Production plan: $150/month → 15,000 searches → $0.010/search
+- At 4 products/analysis × 100 analyses/day → ~12,000 searches/month → $150 plan (~$0.30/user-day at moderate use)
+
+**Test results (5/5 crops, avg 6.9 s API latency):**
+
+| Crop | Total matches | Priced | Indian-retailer hits | Verdict |
+|---|---|---|---|---|
+| sofa (fabric grey, 613×782 in living-room fixture) | 59 | 26 | 37 | Mixed — top result was a cushion cover, not a sofa (crop was tight on the cushions). Sofa results DID appear (Pepperfry ₹16,999, Urban Ladder ₹1,199 cushion, BRAXTON L-sofa ₹20,999). |
+| chair (dining) | 60 | 32 | 24 | Mixed — top results included a KITCHEN TROLLEY and multiple COFFEE TABLES; correct armchair candidates appeared 3rd+ (Vinod Handicraft ₹9,000, Decure Brawo Walnut ₹1,92,375, IKEA BURVIK ₹3,490). |
+| planter (tall bird-of-paradise plant) | 59 | 14 | 24 | **Strong** — top 5 all correctly identified as bird-of-paradise / banana-plant artificial plants (Flipkart Kaykon ₹4,863, Myntra TIED RIBBONS ₹3,230, Amazon.in CAPHAUS ₹16,801). Best crop of the batch. |
+| table_lamp | 59 | 22 | 21 | **Strong** — 3rd+ results all real arc/floor lamps (HDC ₹14,999, Wooden Street ₹7,999, Urban Ladder Dorah ₹23,990, White Teak Lovelorn ₹16,900). |
+| pendant_light | 10 | 0 | 1 | **Failed** — returned 10 unrelated web-design/portfolio pages, zero shoppable results. The crop captured a tall vertical strip with mixed context; Google Lens couldn't isolate the fixture. |
+
+**Honest verdict (feasibility, NOT productisation recommendation):**
+1. **API works reliably** — 5/5 calls succeeded end-to-end via `country=in` biasing (SerpApi correctly steered Amazon.in, Flipkart, Pepperfry, Urban Ladder, Myntra, Wooden Street, IKEA India, The White Teak Company).
+2. **This is visual-SIMILARITY, not SKU identification.** Even the "good" crops surfaced dozens of visually-similar-but-different products. That's fine for a designer's shortlist ("find me sofas that LOOK like this") but wrong for "identify the exact model."
+3. **Crop quality dominates result quality.** Products isolated cleanly against a plain background (planter, lamp) worked well. Products with busy context / mixed items (sofa cushion cluster, tall vertical pendant strip) returned garbage-tier top-3 results.
+4. **~40-60% of hits carry price data** on good crops. Titles are Google-scraped listing titles — often verbose ("Buy X at Y%25 OFF Online at Z" or product-slug-encoded). Would need trimming for UI.
+5. **Latency 5-9 s/search** — usable for background enrichment, too slow for real-time typing.
+6. **Cost is affordable but not free at scale** — free plan works for personal-use design, $150/month plan needed once multiple designers use the tool daily.
+
+**Recommendation to founder (call NOT made — this is a feasibility report only):** SerpApi Google Lens is a viable shortlist enrichment tool IF (a) we crop products tightly on plain background before calling (which the existing SAM3 pipeline already does — polygon-masked crops), and (b) we reframe the UX honestly as "visually similar items to shortlist," not "exact product match." The pendant_light failure is a strong signal that busy/vertical crops need pre-filtering before the call. Currently NOT integrated into live product.
+
+**Files:** Test artefacts at `/tmp/serpapi_feasibility.json`. Endpoint added for the crop-hosting hack (`GET /api/_feasibility_crops/{name}` — needed because Google Lens fetches via URL, not base64) has been REMOVED. `SERPAPI_KEY` remains in `backend/.env` ready for future integration.
+
+
 * Once `family='Paint'` is stamped, the Brain's `object_locked=True` category gate architecturally filters out ALL Laminate records — including the correct source PDF's `BLUE FOCCASIA` / `BLUE SHIMMER` / `MIDNIGHT BLUE SPARKLE` etc. The Advance-1mm records were NEVER entering the candidate list. Bug 3's "correct page found but outranked" observation was on a different code state; in the current live code the correct records aren't even reachable when family=Paint.
 * Retrieval itself was proven fine via a controlled synthetic trace — when Stage-B produces a proper "blue matte laminate" DNA reading, `BLUE FOCCASIA` correctly wins rank 1 at 74%.
 

@@ -9422,6 +9422,6 @@ async def studio_cleanup(user: dict = Depends(require_admin)):
 
 
 app.include_router(api_router)
-
 # (CORS middleware was registered earlier — before any routes — so OPTIONS
 # preflights are answered without hitting a handler.)
+
