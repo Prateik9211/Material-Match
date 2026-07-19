@@ -575,3 +575,32 @@ def test_tile_floor_object_locked_no_laminate_leak():
         f"Tile floor should NOT widen into Laminates via family_alts, "
         f"but retrieval saw: {captured.get('categories')}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Round 9 — #2 vocab additions (feature/accent wall + wall-art).
+# ---------------------------------------------------------------------------
+def test_feature_wall_and_accent_wall_in_vocab():
+    from intelligence.scene_segmentation import ARCHITECTURAL_VOCAB, LABEL_MIN_CONFIDENCE
+    vocab_lc = {v.lower() for v in ARCHITECTURAL_VOCAB}
+    for prompt in ("feature wall", "accent wall"):
+        assert prompt in vocab_lc, f"missing SAM3 prompt: {prompt!r}"
+        assert prompt in LABEL_MIN_CONFIDENCE, (
+            f"{prompt!r} should have a soft per-label confidence override"
+        )
+
+
+def test_wall_art_prompts_route_to_products_not_materials():
+    """Wall art / framed art / painting / picture frame must be in the
+    SAM3 vocab AND in DETERMINISTIC_MATERIAL as None so they skip
+    material classification.  The parallel products pipeline (which
+    already targets 'art frames') will pick them up as shoppable."""
+    from intelligence.scene_segmentation import ARCHITECTURAL_VOCAB, DETERMINISTIC_MATERIAL
+    vocab_lc = {v.lower() for v in ARCHITECTURAL_VOCAB}
+    for prompt in ("wall art", "framed art", "artwork", "painting", "picture frame"):
+        assert prompt in vocab_lc, f"missing SAM3 prompt: {prompt!r}"
+        assert prompt in DETERMINISTIC_MATERIAL, f"{prompt!r} needs skip-material entry"
+        assert DETERMINISTIC_MATERIAL[prompt] is None, (
+            f"{prompt!r} must be None (skip material) — got "
+            f"{DETERMINISTIC_MATERIAL[prompt]!r}"
+        )

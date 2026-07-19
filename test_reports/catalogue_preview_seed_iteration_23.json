@@ -1,0 +1,46 @@
+{
+  "email": "qa-catalogue-preview-iter23-1784453452@materialmatch.ai",
+  "password": "Designer2026!",
+  "base": "http://localhost:8001/api",
+  "steps": [
+    {
+      "name": "register regular user",
+      "ok": true,
+      "data": {
+        "status": 200,
+        "role": "user"
+      }
+    },
+    {
+      "name": "create project",
+      "ok": true,
+      "data": {
+        "status": 200
+      }
+    },
+    {
+      "name": "upload reference image",
+      "ok": true,
+      "data": {
+        "status": 200
+      }
+    },
+    {
+      "name": "seed mock_analysis with catalogue matches",
+      "ok": true,
+      "data": {
+        "modified_count": 1
+      }
+    },
+    {
+      "name": "GET project returns seeded rows",
+      "ok": true,
+      "data": {
+        "status": 200
+      }
+    }
+  ],
+  "violations": [],
+  "project_id": "6a5c994da5fed9d31d8790e8",
+  "passed": true
+}

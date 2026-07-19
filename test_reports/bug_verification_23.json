@@ -1,0 +1,70 @@
+{
+  "verdict": "not_fixed",
+  "user_reported_bug": "Real user testing surfaced 4 items. #1: floor matched Advance\u00b7UNIQUE (Tile) \u2014 investigation found this is a DB data-quality issue (specific record `d868ead7` mislabeled as Tile family when Advance is a laminate brand); founder's call to fix via Studio metadata correction, NOT a pipeline change. #2: dark accent wall + wall art not detected \u2014 add feature wall/accent wall + wall art/framed art vocab, route art to products via DETERMINISTIC_MATERIAL=None. #3: ceiling matched 'terracotta warm' \u2014 investigation found this is legitimate ambient-light influence on the ceiling crop, not a bbox capture error; needs prompt hint, founder's call before applying. #4: replace the tiny admin-gated 'View source page' link with a prominent 'Preview' button that reuses the EXACT SAME swatch lightbox pattern (uses match.swatch_crop_b64 / match.color_hex directly, NO backend fallback logic, NO admin gate) so users can preview a match BEFORE shortlisting.",
+  "summary": "No relevant testing skill found. Backend #2/#4 checks pass (round-9 vocab/skip rules/confidence overrides, no /api/catalogue-preview endpoint, admin studio page route intact) and pytest has 28/28 passing. Frontend Preview was tested with MOCKED/SEEDED mock_analysis rows and is only partially fixed: buttons are prominent and regular users can open image/hex previews without backend/admin calls, but backdrop click does not work because the new fixed lightbox is constrained inside the transformed material card instead of the full viewport.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "MatchPreviewButton in MaterialsFirstSection.jsx",
+        "issue": "Backdrop click does not close the catalogue preview in the normal card-hover/click state. The lightbox overlay is not full-screen: measured bounding box was x=868.328,y=570.594,width=344.328,height=1034.297 on a 1920x1080 viewport, so clicking the page backdrop at (20,20) is outside the overlay and leaves it open. This violates the required 'backdrop click all work' behavior and is not the exact same fullscreen swatch lightbox pattern.",
+        "selector": "[data-testid='catalogue-preview-lightbox']",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Analysis page catalogue match cards",
+        "issues": [
+          "The preview modal appears constrained to the material card/column when opened from a hovered/focused card, rather than covering the full viewport."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/test_reports/pytest/pin_and_vocab_fixes_iteration_23.txt",
+    "/app/test_reports/backend_round9_iteration_23.json",
+    "/app/test_reports/catalogue_preview_seed_iteration_23.json",
+    "/app/test_reports/catalogue_preview_ui_iteration_23.json",
+    "/app/test_reports/flooring_edge_iteration_23.json",
+    "/app/test_reports/api_real_images_iteration_23_reference.json",
+    "/app/test_reports/frontend_hover_shortlist_lightbox_iteration_23_reference.json",
+    "/app/test_reports/scripts/backend_round9_iteration_23.py",
+    "/app/test_reports/scripts/seed_catalogue_preview_iteration_23.py",
+    "/app/test_reports/scripts/flooring_edge_iteration_23.py"
+  ],
+  "action_items": [
+    "Move catalogue-preview-lightbox out of the transformed MaterialCard subtree (e.g. portal to document.body or parent-level lightbox state) so it covers the viewport and backdrop click closes reliably, matching ShortlistSection's lightbox behavior."
+  ],
+  "critical_code_review_comments": [
+    "MatchPreviewButton renders a position:fixed modal inside MaterialCard. MaterialCard applies scale/translate transforms on hover/focus, which creates a containing block for fixed descendants and breaks fullscreen/backdrop behavior."
+  ],
+  "updated_files": [
+    "/app/test_reports/bug_verification_23.json",
+    "/app/test_reports/iteration_23.json",
+    "/app/test_reports/pytest/pin_and_vocab_fixes_iteration_23.txt",
+    "/app/test_reports/backend_round9_iteration_23.json",
+    "/app/test_reports/catalogue_preview_seed_iteration_23.json",
+    "/app/test_reports/catalogue_preview_ui_iteration_23.json",
+    "/app/test_reports/flooring_edge_iteration_23.json",
+    "/app/test_reports/flooring_edge_iteration_23_stdout.txt",
+    "/app/test_reports/api_real_images_iteration_23_reference.json",
+    "/app/test_reports/frontend_hover_shortlist_lightbox_iteration_23_reference.json",
+    "/app/test_reports/scripts/backend_round9_iteration_23.py",
+    "/app/test_reports/scripts/seed_catalogue_preview_iteration_23.py",
+    "/app/test_reports/scripts/flooring_edge_iteration_23.py"
+  ],
+  "success_rate": {
+    "backend": "100%",
+    "frontend": "75%"
+  },
+  "seed_data_creation": "Created a regular non-admin user qa-catalogue-preview-iter23-1784453452@materialmatch.ai and project 6a5c994da5fed9d31d8790e8 with MOCKED/SEEDED mock_analysis catalogue matches to exercise swatch_crop_b64 image preview and color_hex hex preview branches. No product code changed and no API integration was mocked.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Skill search returned no relevant testing skill. Backend checks passed: vocab includes feature wall/accent wall/wall art/framed art/artwork/painting/picture frame; five wall-art prompts map to DETERMINISTIC_MATERIAL None; feature/accent min confidence is 0.40; /api/catalogue-preview/d868ead7 returns 404; /api/admin/studio/uploads/{id}/page/{page} is mounted/protected and returns 404 for invalid id as admin. Pytest /app/backend/tests/test_pin_and_vocab_fixes.py passed 28/28. UI checks on preview origin as a regular user used MOCKED/SEEDED mock_analysis rows and passed button visibility, image branch, hex branch, no backend/admin preview requests, close button, and ESC; failed backdrop click because the overlay is constrained to a transformed material card. Previous-round real-image routing evidence from iteration 22 was copied as reference; direct flooring edge was rerun and passed with Tiles-only matches.",
+  "rca_of_the_issue": "The new inline MatchPreviewButton lightbox is rendered inside MaterialCard. When the user clicks from a hovered card, MaterialCard is focused and has transform classes (scale-[1.025] and -translate-y-1). CSS transforms establish a containing block for fixed-position descendants, so the supposed fixed inset-0 overlay is fixed relative to the card instead of the viewport. The visible modal can be closed with X/ESC, but clicking the page backdrop outside the card does not hit the overlay."
+}

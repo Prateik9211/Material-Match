@@ -1,0 +1,67 @@
+{
+  "checks": [
+    {
+      "name": "SAM3 vocabulary includes accent/feature wall + wall-art prompts",
+      "passed": true,
+      "details": {
+        "missing": []
+      }
+    },
+    {
+      "name": "wall-art prompts are deterministic skip-material None",
+      "passed": true,
+      "details": {
+        "values": {
+          "wall art": null,
+          "framed art": null,
+          "artwork": null,
+          "painting": null,
+          "picture frame": null
+        }
+      }
+    },
+    {
+      "name": "feature/accent wall min confidence is 0.40",
+      "passed": true,
+      "details": {
+        "feature wall": 0.4,
+        "accent wall": 0.4
+      }
+    },
+    {
+      "name": "/api/catalogue-preview/{record_id} does not exist",
+      "passed": true,
+      "details": {
+        "status": 404,
+        "body": "{\"detail\":\"Not Found\"}"
+      }
+    },
+    {
+      "name": "admin studio page preview route exists and is protected when unauthenticated",
+      "passed": true,
+      "details": {
+        "status": 401,
+        "body": "{\"detail\":\"Not authenticated\"}"
+      }
+    },
+    {
+      "name": "admin login usable for studio route check",
+      "passed": true,
+      "details": {
+        "status": 200,
+        "role": "admin",
+        "body": null
+      }
+    },
+    {
+      "name": "admin studio page preview route remains mounted (admin reaches route, invalid id 404)",
+      "passed": true,
+      "details": {
+        "status": 404,
+        "body": "{\"detail\":\"Upload not found\"}"
+      }
+    }
+  ],
+  "violations": [],
+  "passed": true
+}

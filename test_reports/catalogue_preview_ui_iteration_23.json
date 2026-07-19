@@ -1,0 +1,34 @@
+{
+  "passed": false,
+  "origin": "https://design-match-ai.preview.emergentagent.com",
+  "seed_project_id": "6a5c994da5fed9d31d8790e8",
+  "regular_user": "qa-catalogue-preview-iter23-1784453452@materialmatch.ai",
+  "checks": [
+    {
+      "name": "Prominent Preview buttons visible for recommended and catalogue match rows",
+      "passed": true,
+      "details": "recommended-preview-btn-0-0 and catalogue-preview-btn-0-1 were visible, labelled Preview, had an SVG eye icon, rounded-full pill classes, and no visible View source page link."
+    },
+    {
+      "name": "Preview uses existing fields without backend calls",
+      "passed": true,
+      "details": "swatch_crop_b64 match rendered catalogue-preview-image; color_hex-only match rendered catalogue-preview-hex with rgb(241, 235, 224). No /api/catalogue-preview or /api/admin/studio/uploads/... requests fired on preview click."
+    },
+    {
+      "name": "Regular non-admin user can open preview without permission error",
+      "passed": true,
+      "details": "Test user role=user opened preview lightbox; no permission error surfaced."
+    },
+    {
+      "name": "Close controls",
+      "passed": false,
+      "details": "Close button and ESC closed the lightbox, but backdrop click failed. The overlay bounding box after opening was x=868.328,y=570.594,width=344.328,height=1034.297 instead of the full 1920x1080 viewport, so a click at (20,20) was outside the overlay and did not close it."
+    }
+  ],
+  "console_logs": [
+    "/root/.emergent/automation_output/20260719_093117/console_20260719_093117.log",
+    "/root/.emergent/automation_output/20260719_093145/console_20260719_093145.log",
+    "/root/.emergent/automation_output/20260719_093304/console_20260719_093304.log"
+  ],
+  "root_cause_observed": "MatchPreviewButton renders the fixed lightbox inside MaterialCard. When the card is focused/hovered it has transform classes (scale/translate), which creates a containing block for position: fixed descendants. The lightbox is therefore constrained to the transformed card/column instead of the viewport, unlike the shortlist swatch lightbox pattern."
+}

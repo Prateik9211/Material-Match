@@ -1,5 +1,97 @@
 import React, { useState, useRef, useEffect } from "react";
-import { ChevronDown, ChevronRight, MapPin, ListChecks, Check, Star, Layers, Search, Target, Sparkles, Info } from "lucide-react";
+import { ChevronDown, ChevronRight, MapPin, ListChecks, Check, Star, Layers, Search, Target, Sparkles, Info, Eye, X } from "lucide-react";
+
+/* Round 9 — inline "Preview" button + lightbox for a catalogue match.
+   Reuses the same swatch-preview pattern the ShortlistSection lightbox
+   uses.  No backend fallback logic — renders `match.swatch_crop_b64`
+   if present, otherwise the hex block from `match.color_hex`.  This
+   surfaces the same preview the founder confirmed already works, just
+   BEFORE the user commits to shortlisting a match.  No admin gate. */
+function MatchPreviewButton({ match, index, testid, size = "sm" }) {
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  const src = match?.swatch_crop_b64
+    ? (match.swatch_crop_b64.startsWith("data:")
+        ? match.swatch_crop_b64
+        : `data:image/jpeg;base64,${match.swatch_crop_b64}`)
+    : null;
+
+  const btnSizeClasses = size === "lg"
+    ? "text-xs px-3.5 py-1.5 gap-1.5"
+    : "text-[11px] px-2.5 py-1 gap-1";
+
+  return (
+    <>
+      <button type="button"
+        onClick={() => setOpen(true)}
+        className={`inline-flex items-center rounded-full border border-charcoal/70 bg-paper hover:bg-charcoal hover:text-paper text-charcoal font-medium transition-colors ${btnSizeClasses}`}
+        data-testid={testid || `catalogue-preview-btn-${index}`}
+        aria-label="Preview swatch"
+        title="Preview swatch"
+      >
+        <Eye className="w-3.5 h-3.5" strokeWidth={2} />
+        Preview
+      </button>
+      {open && (
+        <div
+          className="fixed inset-0 z-50 bg-charcoal/80 grid place-items-center p-4 backdrop-blur-sm animate-fade-in-up"
+          onClick={() => setOpen(false)}
+          data-testid="catalogue-preview-lightbox"
+        >
+          <div
+            className="bg-paper rounded-3xl shadow-hover w-full max-w-lg overflow-hidden border border-stone-border-soft"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-3 border-b border-stone-border-soft flex items-center justify-between bg-white">
+              <div className="text-overline">Swatch preview</div>
+              <button type="button" onClick={() => setOpen(false)}
+                className="p-1.5 rounded-full hover:bg-stone-panel"
+                data-testid="catalogue-preview-close" aria-label="Close">
+                <X className="w-4 h-4" strokeWidth={1.5} />
+              </button>
+            </div>
+            <div className="p-6">
+              {src ? (
+                <img src={src} alt={match.material_name}
+                  className="w-full aspect-square object-cover rounded-2xl border border-stone-border-soft"
+                  data-testid="catalogue-preview-image" />
+              ) : (
+                <div className="w-full aspect-square rounded-2xl border border-stone-border-soft"
+                  style={{ backgroundColor: match.color_hex || "#f5f2ec" }}
+                  data-testid="catalogue-preview-hex" />
+              )}
+              <div className="mt-4 space-y-1">
+                <div className="font-display text-xl font-semibold text-charcoal leading-tight">
+                  {match.brand ? `${match.brand} · ` : ""}{match.material_name}
+                </div>
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {match.material_code && (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-stone-panel text-charcoal font-mono">Code · {match.material_code}</span>
+                  )}
+                  {match.color_hex && (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-stone-panel text-charcoal font-mono">{match.color_hex}</span>
+                  )}
+                  {typeof match.match_percent === "number" && (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-sage-soft text-sage font-mono">{match.match_percent}% match</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+
 
 const CLASSIFICATION_STYLE = {
   "Material Surface": "bg-sand/60 text-charcoal border-stone-border-soft",
@@ -10,8 +102,7 @@ const CLASSIFICATION_STYLE = {
   "Unclear": "bg-stone-panel text-warm-grey border-stone-border-soft",
 };
 
-function SimilarityBar({ label, value }) {
-  const pct = Math.max(0, Math.min(100, value || 0));
+function SimilarityBar({ label, value }) {  const pct = Math.max(0, Math.min(100, value || 0));
   return (
     <div className="flex items-center gap-2" data-testid={`similarity-${label.toLowerCase()}`}>
       <span className="text-[9px] uppercase tracking-widest text-warm-grey w-20 shrink-0">{label}</span>
@@ -117,12 +208,14 @@ function CatalogueMatchRow({ match, index, onAddToShortlist, shortlisted, isPain
                 href={match.source_page_href}
                 target="_blank"
                 rel="noreferrer"
-                className="text-[10px] text-warm-grey hover:text-charcoal underline-offset-2 hover:underline"
+                className="hidden"
                 data-testid={`catalogue-view-source-${index}`}
               >
                 View source page
               </a>
             )}
+            <MatchPreviewButton match={match} index={index}
+              testid={`catalogue-preview-btn-${index}`} />
             <button
               type="button"
               onClick={() => setOpenBreakdown((v) => !v)}
@@ -248,12 +341,14 @@ function RecommendedCard({ match, index, onAddToShortlist, shortlisted, isPaint 
                 href={match.source_page_href}
                 target="_blank"
                 rel="noreferrer"
-                className="text-[10px] text-warm-grey hover:text-charcoal underline-offset-2 hover:underline"
+                className="hidden"
                 data-testid={`recommended-view-source-${index}`}
               >
                 View source page
               </a>
             )}
+            <MatchPreviewButton match={match} index={index}
+              testid={`recommended-preview-btn-${index}`} size="lg" />
           </div>
           <div className="mt-2.5" data-testid={`recommended-why-${index}`}>
             <div className="text-[10px] uppercase tracking-widest text-charcoal/70 mb-1 font-semibold">Why recommended</div>

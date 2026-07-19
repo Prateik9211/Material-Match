@@ -75,6 +75,14 @@ DNA_TIMEOUT_S = int(os.environ.get("VISUAL_DNA_TIMEOUT_S", "45"))
 # treat these as surface materials, always route to products.
 # Headboards are NOT in this shortcut — they still go through normal
 # material classification for fabric / wood / upholstery detection.
+# 2026-02-27 (round 9) — additional accent-wall / wall-art detections
+# to close the founder-reported "dark-brown capsule wall with 3 art
+# pieces was not detected at all" gap.  Feature-wall and accent-wall
+# prompts help SAM3 flag distinctly-styled wall sub-zones as their own
+# object (not just absorbed into a plain "wall" mask).  Wall-art
+# prompts are added to detect the mounted artworks separately; their
+# DETERMINISTIC_MATERIAL entries route them to PRODUCTS (they're
+# shoppable framed art, not material surfaces).
 ARCHITECTURAL_VOCAB: tuple[str, ...] = (
     "wall", "ceiling", "floor", "cabinet", "countertop",
     "backsplash", "sofa", "curtain", "plant",
@@ -82,6 +90,8 @@ ARCHITECTURAL_VOCAB: tuple[str, ...] = (
     "rug", "shelf", "nightstand",
     "wainscot", "trim", "paneled wainscoting",
     "cushion", "pillow", "throw pillow", "mattress",
+    "feature wall", "accent wall",
+    "wall art", "framed art", "artwork", "painting", "picture frame",
 )
 
 
@@ -100,6 +110,10 @@ LABEL_MIN_CONFIDENCE: dict[str, float] = {
     "wainscot":           0.40,
     "trim":               0.40,
     "paneled wainscoting": 0.40,
+    # Round 9 — feature/accent walls are stylistic subsections of a
+    # larger wall; SAM3 confidence tends to run 0.40-0.50 on them.
+    "feature wall":       0.40,
+    "accent wall":        0.40,
 }
 
 
@@ -151,6 +165,15 @@ DETERMINISTIC_MATERIAL: dict[str, dict | None] = {
     "pillow": None,
     "throw pillow": None,
     "mattress": None,
+    # Round 9 — wall-art detections should NEVER be classified as
+    # surface materials.  They are shoppable products (handled by
+    # _run_products_pipeline).  The products LLM prompt already targets
+    # "art frames" explicitly, so routing is automatic.
+    "wall art": None,
+    "framed art": None,
+    "artwork": None,
+    "painting": None,
+    "picture frame": None,
 }
 
 
