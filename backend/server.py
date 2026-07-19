@@ -1446,6 +1446,10 @@ async def real_analyze(project_id: str,
             user_records=(await _load_user_catalogue_records(user["id"]))
                           if library_scope == "own" else None,
         )
+        # 2026-02-08 — broadcast anchor catalogue matches to grouped
+        # siblings so same-material regions ALWAYS return identical
+        # results (founder consistency requirement).
+        _broadcast_anchor_match_to_group(analysis.get("rows") or [])
         # 2026-02-01 (round 4) — stamp the scope onto the persisted
         # analysis so the UI surfaces the same choice on reload
         # (button-highlight, "Regenerate · Admin Library" label, etc.).
@@ -1606,6 +1610,195 @@ def _color_similarity(hex1: str, hex2: str) -> int:
     # Max Euclidean distance in RGB space ≈ 441.67
     sim = max(0.0, 1.0 - (d / 441.67))
     return int(round(sim * 100))
+
+
+# ---------------------------------------------------------------------------
+# 2026-02-08 — Same-material grouping across scene rows.
+#
+# Founder-reported problem: a single kitchen cabinet run detected as 5+
+# separate SAM3 objects (each door) can produce 5 independent Stage-B DNA
+# reads that differ subtly (slightly different color, one tagged "Paint"
+# another "Laminate", etc). Downstream retrieval then returns divergent
+# catalogue matches for what is physically the SAME material, and the UI
+# shows 5 near-duplicate pins pointing at DIFFERENT results.
+#
+# Fix: cluster rows by MATERIAL SIGNATURE (family + color + finish/gloss),
+# elect a single "anchor" per cluster (highest Stage-A confidence), and
+# guarantee every cluster member receives the ANCHOR's catalogue match.
+# The clustering does NOT drop rows / pins — it only guarantees
+# consistency of the underlying result. The UI can decide independently
+# whether to visually collapse pins (`material_group_id` is exposed on
+# every row).
+# ---------------------------------------------------------------------------
+_GROUP_COLOR_SIM_THRESHOLD = 85  # 0-100; >=85 == RGB distance <= ~66/441
+
+
+def _material_signature_matches(a: dict, b: dict,
+                                color_thresh: int = _GROUP_COLOR_SIM_THRESHOLD) -> bool:
+    """Return True when rows `a` and `b` describe the SAME physical material.
+
+    Criteria (ALL required):
+      * `material_family` case-insensitive equal AND non-empty.
+      * Color similarity via `_color_similarity` ≥ `color_thresh` (default 85).
+      * `finish` and `gloss_level` do not CONFLICT (either both empty,
+        equal, or one empty).
+
+    Object type (wall vs cabinet vs floor) is NOT gated — the founder
+    explicitly wants any repeated material collapsed regardless of the
+    SAM3 label attached to each detection.
+    """
+    fam_a = (a.get("material_family") or "").strip().lower()
+    fam_b = (b.get("material_family") or "").strip().lower()
+    if not fam_a or fam_a != fam_b:
+        return False
+    if _color_similarity(_resolve_hex(a), _resolve_hex(b)) < color_thresh:
+        return False
+    for key in ("gloss_level", "finish"):
+        va = str(a.get(key) or "").strip().lower()
+        vb = str(b.get(key) or "").strip().lower()
+        if va and vb and va != vb:
+            return False
+    return True
+
+
+def _cluster_rows_by_material(rows: list) -> list[list[int]]:
+    """Union-find clustering of row indices by `_material_signature_matches`.
+
+    Returns a list of clusters, each a list of row indices. Rows without
+    a `material_family` end up in singleton clusters (never merged).
+    """
+    n = len(rows)
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[ri] = rj
+
+    for i in range(n):
+        if not isinstance(rows[i], dict) or not rows[i].get("material_family"):
+            continue
+        for j in range(i + 1, n):
+            if not isinstance(rows[j], dict) or not rows[j].get("material_family"):
+                continue
+            if _material_signature_matches(rows[i], rows[j]):
+                union(i, j)
+
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+    return list(groups.values())
+
+
+def _bbox_area(bbox) -> float:
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return 0.0
+    try:
+        return max(0.0, float(bbox[2])) * max(0.0, float(bbox[3]))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _annotate_material_groups(rows: list) -> None:
+    """Assign `material_group_id`, `is_group_anchor`, `group_member_count`,
+    and `group_bboxes` / `group_polygons` on each row IN PLACE.
+
+    The anchor is the highest-Stage-A-confidence row in the cluster,
+    with `_bbox_area` as tiebreaker (bigger detection wins). All
+    non-anchor rows point at the anchor's index via
+    `material_group_anchor_index`. Downstream code reads these fields
+    to decide (a) whether to run expensive retrieval / rerank and
+    (b) whether the UI should visually merge the pins.
+    """
+    if not rows:
+        return
+    clusters = _cluster_rows_by_material(rows)
+    for gid, indices in enumerate(clusters):
+        # Elect anchor: highest confidence, tiebreak by bbox area.
+        anchor_idx = max(
+            indices,
+            key=lambda i: (
+                float(rows[i].get("confidence") or 0),
+                _bbox_area(rows[i].get("scene_bbox")),
+            ),
+        )
+        group_bboxes = [rows[i].get("scene_bbox") for i in indices
+                        if rows[i].get("scene_bbox")]
+        group_polygons = [rows[i].get("scene_polygon") for i in indices
+                          if rows[i].get("scene_polygon")]
+        group_pins = [rows[i].get("pin") for i in indices if rows[i].get("pin")]
+        group_zones = [rows[i].get("zone") for i in indices if rows[i].get("zone")]
+        for i in indices:
+            rows[i]["material_group_id"] = gid
+            rows[i]["material_group_anchor_index"] = anchor_idx
+            rows[i]["is_group_anchor"] = (i == anchor_idx)
+            rows[i]["group_member_count"] = len(indices)
+            rows[i]["group_member_indices"] = list(indices)
+            rows[i]["group_bboxes"] = group_bboxes
+            rows[i]["group_polygons"] = group_polygons
+            rows[i]["group_pins"] = group_pins
+            rows[i]["group_zones"] = group_zones
+    logger.info(
+        "[material-groups] %d row(s) → %d group(s) (max=%d, merged=%d)",
+        len(rows), len(clusters),
+        max((len(c) for c in clusters), default=0),
+        sum(1 for c in clusters if len(c) > 1),
+    )
+
+
+# Fields that come from catalogue retrieval / rerank on the anchor row
+# and MUST be replicated verbatim onto every sibling in the same group so
+# the founder-required consistency guarantee holds: identical material →
+# identical result, no divergence.
+_GROUP_BROADCAST_FIELDS: tuple[str, ...] = (
+    "catalogue_matches",
+    "match_buckets",
+    "match_state",
+    "rerank",
+    "alternative_systems",
+    "searched_categories",
+    "searched_libraries",
+    "excluded_libraries",
+)
+
+
+def _broadcast_anchor_match_to_group(rows: list) -> None:
+    """After anchors are enriched (and optionally reranked), copy the
+    catalogue-derived fields from each anchor onto every sibling in the
+    same `material_group_id`. Mutates in place.
+
+    Uses `copy.deepcopy` on list/dict fields so downstream code that
+    might mutate the sibling's copy (e.g. adjusting `match_percent` on
+    a candidate) cannot corrupt the anchor's canonical copy.
+    """
+    if not rows:
+        return
+    from copy import deepcopy
+    anchors_by_gid: dict[int, dict] = {}
+    for r in rows:
+        if isinstance(r, dict) and r.get("is_group_anchor"):
+            gid = r.get("material_group_id")
+            if gid is not None:
+                anchors_by_gid[gid] = r
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        if r.get("is_group_anchor"):
+            continue
+        gid = r.get("material_group_id")
+        anchor = anchors_by_gid.get(gid)
+        if anchor is None:
+            continue
+        for f in _GROUP_BROADCAST_FIELDS:
+            if f in anchor:
+                r[f] = deepcopy(anchor[f])
+        r["group_result_source"] = "broadcast_from_anchor"
 
 
 # Family-alias table so a row tagged "wood" still boosts the "Veneer" and
@@ -1946,6 +2139,15 @@ def _enrich_rows_with_catalogue(rows: list, top_k: int = 4,
         row["searched_categories"] = brain["allowed_categories"]
         row["searched_libraries"] = brain["allowed_libraries"]
         row["excluded_libraries"] = brain["excluded_libraries"]
+        # 2026-02-08 — same-material grouping. If this row is a NON-anchor
+        # member of a material group, skip the expensive retrieval call
+        # entirely. The caller must invoke `_broadcast_anchor_match_to_group`
+        # after enrichment so siblings inherit the anchor's exact match.
+        is_group_anchor = row.get("is_group_anchor", True)
+        in_group = row.get("material_group_id") is not None
+        if in_group and not is_group_anchor:
+            # Non-anchor: leave catalogue_matches unset so broadcast fills it.
+            continue
         if "catalogue_matches" not in row:
             row["catalogue_matches"] = _find_catalogue_matches(
                 row, top_k=top_k,
@@ -3698,6 +3900,13 @@ async def run_scene_region_analysis(
         for r in rows if r.get("color")
     })[:6]
 
+    # 2026-02-08 — Same-material grouping BEFORE returning. Guarantees
+    # that downstream retrieval + rerank runs exactly once per distinct
+    # material (on the elected anchor row) and the anchor's match is
+    # replicated onto every sibling. Founder requirement: identical
+    # material → identical catalogue result, never divergent.
+    _annotate_material_groups(rows)
+
     result = {
         "rows": rows,
         "summary": {
@@ -4174,7 +4383,14 @@ async def analyze_region(project_id: str, payload: RegionAnalyzePayload,
         # user explicitly selected this region, so we spend ONE GPT-4o
         # call comparing the crop against the retrieved shortlist.
         # Skipped automatically on exact pHash loopback hits.
+        # 2026-02-08 — for grouped scene rows, only rerank the ANCHOR;
+        # siblings inherit the anchor's reranked matches via broadcast
+        # so identical materials never diverge on the reranker's
+        # per-row LLM call.
         for i, r in enumerate(result.get("rows") or []):
+            in_group = r.get("material_group_id") is not None
+            if in_group and not r.get("is_group_anchor", True):
+                continue
             try:
                 per_row_crop = per_object_crops.get(i) or crop
                 # Scene-mode crops are wide-angle polygon-masked views —
@@ -4186,6 +4402,7 @@ async def analyze_region(project_id: str, payload: RegionAnalyzePayload,
                 await _apply_visual_rerank(r, per_row_crop, strict=strict)
             except Exception:
                 logger.exception("visual rerank failed — keeping retrieval results")
+        _broadcast_anchor_match_to_group(result.get("rows") or [])
         result["ephemeral"] = True
         result["region_note"] = (payload.note or "").strip()[:200]
         return result

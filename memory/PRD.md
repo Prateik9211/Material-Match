@@ -24,6 +24,32 @@ Build a modern AI SaaS web application called "MaterialMatch AI" that helps arch
 - Downloadable PDF reports
 - Modern premium SaaS UX
 
+
+## 2026-02-08 — Same-material grouping across scene rows (consistency guarantee) ✅
+Founder-reported bug: a single kitchen cabinet run detected as 5+ separate SAM3 objects can produce independent Stage-B DNA reads that differ subtly (slightly different color, one "Paint" vs "Laminate", different gloss). Downstream retrieval then returned divergent catalogue matches for what was physically the SAME material — e.g. Project `6a568fe4` (kitchen) had two blue cabinet detections hitting `BLUE SHIMMER 88%` but a third going to `BLUE FOCCASIA 84%`.
+
+**Fix (`server.py` `_annotate_material_groups` / `_broadcast_anchor_match_to_group`, called at the end of `run_scene_region_analysis` and after every `_enrich_rows_with_catalogue` in the analyze + analyze-region endpoints):**
+1. After Stage-B, cluster rows by MATERIAL SIGNATURE via union-find:
+   - `material_family` case-insensitive equal AND non-empty
+   - Color similarity via `_color_similarity(_resolve_hex(a), _resolve_hex(b)) >= 85` (RGB Euclidean, generous enough for photograph shading drift)
+   - `finish` / `gloss_level` non-conflicting (both empty, equal, or one empty)
+   - Object type is NOT gated — cabinets + walls + trims with the same material all cluster (broad application per founder).
+2. Elect an ANCHOR per cluster: highest Stage-A confidence, tiebreak by `_bbox_area(scene_bbox)`.
+3. `_enrich_rows_with_catalogue` NOW SKIPS retrieval for non-anchor rows (saves N-1 catalogue searches per group). Same for `_apply_visual_rerank` in the analyze-region flow.
+4. `_broadcast_anchor_match_to_group` deep-copies the anchor's `catalogue_matches`, `match_buckets`, `match_state`, `rerank`, `alternative_systems`, `searched_categories`, `searched_libraries`, `excluded_libraries` onto every sibling. Siblings are marked `group_result_source: "broadcast_from_anchor"`.
+5. Every row (anchor + sibling) carries `material_group_id`, `is_group_anchor`, `group_member_count`, `group_member_indices`, `group_bboxes`, `group_polygons`, `group_pins`, `group_zones` — UI can optionally collapse pins visually but the DATA guarantee holds regardless.
+
+**Live pipeline test — Project `6a568fe43b12a55fe92f2746` (founder's kitchen):**
+- 15 rows → 9 material groups (4 merged, 5 singleton).
+- 3 blue-glossy cabinet detections (rows 4/6/12, `#003B5C`/`#003366`) → ALL now share `BLUE SHIMMER 88%` (was previously divergent BLUE SHIMMER vs BLUE FOCCASIA).
+- 3 white-matte surfaces across ceiling/wall/countertop → ALL share Excel Off White 83%.
+- 2 grey-matte cabinets share MANACEMEM 88%.
+- 2 silver-matte metal trims share the same (no-match) state.
+- The one legitimately-different dark-blue cabinet (row 7, gloss=`low`) stays in its own group with BLUE FOCCASIA 84% — correct behaviour: different physical finish, different result.
+
+**Unit test coverage:** `/app/backend/tests/test_material_group_consistency.py` (13 tests, all passing).
+
+
 ## Scene Segmentation — Hybrid Pipeline v3 (2026-07-18, live analyze flow)
 Admin validation tool at `/admin/scene-test` AND the LIVE user-facing `POST /api/projects/{id}/analyze-region` (with `mode="scene"`) now use a hybrid two-stage pipeline. Landing-page demo panel at `/` (`WorkflowVisual` in `Landing.jsx`) shows a real end-to-end T2 kitchen-scene result — MISTY GREY 85% visually verified, FROSTY WHITE, Anthracite 70% — no fabricated numbers.
 
