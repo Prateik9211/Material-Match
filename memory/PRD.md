@@ -29,6 +29,16 @@ Admin validation tool at `/admin/scene-test` AND the LIVE user-facing `POST /api
 
 ## 2026-02-27 (round 2) — Scene-mode is now the DEFAULT for full-image analysis ✅
 
+## 2026-02-01 — Advance mislabel migration + ambient-light DNA hint + live SAM3 smoke test ✅
+
+Three-part follow-up to the feature-wall + cross-category audit:
+
+1. **DB migration** — `/app/backend/scripts/migrate_advance_mislabels_20260201.py` corrects three Advance catalogue records that were tagged as `Tile`/`Stone,Wood` when they are actually laminates. Idempotent (records already-fixed are skipped) and safety-guarded (refuses to update rows that drifted from the audited state). Verified fixed live in DB: `_id=6a57915f0676e6f5d868ead6` (Swatch p9.s1), `_id=6a57915f0676e6f5d868ead7` (UNIQUE), `_id=6a4a6af0ab194ba808fa639a` (Warm Oak Ripple 8834). Each row now carries `migration_note='advance_mislabel_fix_20260201'` for audit.
+2. **Ambient-light normalisation in DNA prompt** — `intelligence/dna.py` `SWATCH_DNA_PROMPT` now instructs GPT-4o-mini to mentally subtract room-wide warm/cool tint before naming a surface colour. Fixes the specific bug where a plain white ceiling under warm lamps was being read as "terracotta"/"warm peach" and matched to warm-toned laminate swatches. Rule: if a plain-surface crop's cast matches the wider scene's cast, treat it as ambient and neutralise; only trust a warm/cool cast when it *contradicts* the ambient direction.
+3. **Live SAM3 smoke test** — `/app/backend/tests/test_integration_live_bedroom.py` runs two real Unsplash bedroom photographs through Roboflow SAM3 and asserts the presence of expected object groups (`bed`/`headboard`, `wall`/`ceiling`/`floor`, `artwork`/`framed art`, `feature wall`/`accent wall`). First runs cache images to `tests/fixtures/live_bedroom/` so subsequent runs are deterministic. Guarded by `@pytest.mark.integration` so unit-only CI runs skip it. `pytest.ini` registers the marker. **Both cases PASS live against production Roboflow endpoint** (elapsed ~2–3s per image). This is the permanent guard against future SAM3 vocab / dedup regressions.
+
+
+
 The full-image `POST /api/projects/{id}/analyze` endpoint ("Generate specification" button) now runs the hybrid SAM3+GPT-4o-mini scene pipeline by default. This gives every material row a real bbox-derived pin instead of the deterministic group-based fallback.
 
 **Live proof (2026-02-27, three real interior photos, live endpoint)**:

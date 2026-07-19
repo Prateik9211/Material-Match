@@ -45,6 +45,13 @@ Primary rules (image-first):
 
 Metadata should influence family ONLY when visual evidence is genuinely ambiguous. If the classifier's object_type contradicts what the image plainly shows, TRUST THE IMAGE.
 
+AMBIENT LIGHT NORMALISATION (critical — do this BEFORE reporting colour):
+Interior photographs are almost always lit by warm tungsten / halogen / LED lamps or cool daylight streaming through a window. That lighting tints EVERY surface in the frame the same direction. Before you name the material's colour, mentally subtract that ambient tint.
+- If the crop is a CEILING, WALL, TRIM, MOULDING, WAINSCOT, DOOR or DRYWALL surface that reads warm/creamy/peach/terracotta/tan but shows NO visible grain, weave, veining or pattern → the surface is almost certainly WHITE or OFF-WHITE PAINT being tinted by warm ambient light. Report primary_color as "white" or "off-white" (hex around #F5F1EA to #FFFFFF), NEVER "terracotta", "warm peach", "beige paint" etc. Set color_temperature to "neutral" — do NOT let the room's warm cast leak into the swatch reading.
+- If the crop is a FLOOR or CEILING with a strong uniform blue/green cast but shows no pigment pattern → likely a neutral surface (white/grey) under cool daylight; normalise the same way.
+- Only trust a warm/cool cast as the material's actual colour when it is IN CONFLICT with the ambient direction — e.g. a cool blue panel photographed under warm light, or a warm terracotta tile under cool daylight. Those contrasts confirm the pigment is real.
+- Rule of thumb: if the crop's cast matches the dominant cast of the wider scene it came from, treat it as ambient and neutralise. If it pushes back against the ambient direction, treat it as pigment.
+
 IMPORTANT — pattern defaults for wood families: when material_family is Laminate, Veneer or Wood, DEFAULT the `pattern` field to a wood-grain description (e.g. "linear wood grain", "figured wood grain") unless the surface is UNAMBIGUOUSLY plain solid (a smooth uniform colour panel with zero grain even at high magnification, e.g. an acrylic solid-colour cabinet front). A small crop of a warm-brown wooden beam / plank / door should still report a wood-grain pattern even when fine grain is not resolvable at the crop's pixel resolution. This is critical so the retrieval embedding retrieves wood-grain catalogue candidates, not solid-colour panels.
 
 Choose "Other" ONLY when the image genuinely does not fit any listed family; never as a lazy default.
