@@ -1307,8 +1307,18 @@ async def run_real_analysis(project_id: str, user_id: str, ref_b64: str, region:
 
 
 @api_router.post("/projects/{project_id}/analyze")
-async def real_analyze(project_id: str, user: dict = Depends(get_current_user)):
-    """Real-AI material analysis endpoint. Falls back to mock when ENABLE_REAL_ANALYSIS is off."""
+async def real_analyze(project_id: str,
+                       library_scope: str = "admin",
+                       user: dict = Depends(get_current_user)):
+    """Real-AI material analysis endpoint. Falls back to mock when ENABLE_REAL_ANALYSIS is off.
+
+    2026-02-01 (round 4) — `library_scope` (`"admin"` | `"own"`) selects
+    the catalogue corpus. Admin scope hits the seeded + admin-published
+    library; own scope hits ONLY the user's own uploaded catalogue.
+    Scopes are never silently merged."""
+    if library_scope not in ("admin", "own"):
+        raise HTTPException(status_code=400,
+                            detail="library_scope must be 'admin' or 'own'")
     if not ENABLE_REAL_ANALYSIS or not EMERGENT_LLM_KEY:
         return await mock_analyze(project_id, user)
 
@@ -1423,7 +1433,12 @@ async def real_analyze(project_id: str, user: dict = Depends(get_current_user)):
                     len(analysis.get("rows") or []),
                 )
 
-        _enrich_rows_with_catalogue(analysis.get("rows") or [])
+        _enrich_rows_with_catalogue(
+            analysis.get("rows") or [],
+            library_scope=library_scope,
+            user_records=(await _load_user_catalogue_records(user["id"]))
+                          if library_scope == "own" else None,
+        )
     except HTTPException:
         day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         await db.usage_counters.update_one(
@@ -1499,6 +1514,10 @@ class RegionAnalyzePayload(BaseModel):
     # object, and returns ONE row per material.  Existing "single"
     # behaviour is unchanged and remains the default.
     mode: Optional[str] = "single"            # "single" | "scene"
+    # 2026-02-01 (round 4) — user-uploadable catalogues. "admin" searches
+    # the global admin/seed library; "own" searches ONLY this user's
+    # uploaded catalogue records. Never silently merged.
+    library_scope: Optional[str] = "admin"    # "admin" | "own"
 
 
 # ---------------------------------------------------------------------------
@@ -1623,7 +1642,9 @@ def _normalize_category(cat: str | None) -> str | None:
 def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 62,
                               allowed_categories: list | None = None,
                               weights: dict | None = None,
-                              object_locked: bool = False) -> list:
+                              object_locked: bool = False,
+                              library_scope: str = "admin",
+                              user_records: list | None = None) -> list:
     """Sprint 7 — Describe-Embed-Rerank retrieval stage.
 
     Pipeline: Brain category gate (hard filter) → pHash exact-loopback
@@ -1644,7 +1665,16 @@ def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 62,
     widened to include Laminates because DNA said "plain white panel
     could plausibly be a laminate" — producing the trust-breaking
     Paint-wall → 88%-laminate cross-category match reported in the
-    founder's wife's session on 2026-02-27."""
+    founder's wife's session on 2026-02-27.
+
+    2026-02-01 (round 4 — user-uploadable catalogues) — `library_scope`
+    controls the search corpus:
+      * `"admin"` — searches the global admin/seed catalogue only.
+      * `"own"`   — searches ONLY the calling user's uploaded records
+                    (pass them in via `user_records`; retrieval never
+                    reaches admin data).
+    Scopes are NEVER silently merged — the caller must make an explicit
+    choice per search."""
     from intelligence.dna import dna_from_query_row
     from intelligence.pipeline import retrieve_matches
 
@@ -1689,8 +1719,20 @@ def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 62,
                         allow_norm.add(alt_cat)
         if not allow_norm:
             return []
-    # Studio (uploaded PDF) records first — real user data outranks seed.
-    all_items = list(_STUDIO_INDEXED_RECORDS) + list(SEEDED_CATALOGUE)
+    # 2026-02-01 (round 4) — corpus is chosen strictly by scope; no
+    # silent merging of admin and user catalogues. Founder rule.
+    scope = (library_scope or "admin").lower()
+    if scope == "own":
+        # User-scope search: only that user's uploaded records.
+        # SEEDED_CATALOGUE (the built-in demo library) is EXCLUDED so
+        # a user searching "my catalogue" only sees materials they
+        # actually uploaded themselves.
+        all_items = list(user_records or [])
+    else:
+        # Admin scope (default): admin uploads + built-in seed library.
+        # Studio (uploaded PDF) records first — real supplier data
+        # outranks the demo seed.
+        all_items = list(_STUDIO_INDEXED_RECORDS) + list(SEEDED_CATALOGUE)
     if allow_norm is not None:
         items = [it for it in all_items
                  if _normalize_category(it.get("category")) in allow_norm]
@@ -1861,11 +1903,18 @@ def _alternative_systems_for(row: dict) -> list:
     return merged[:8]
 
 
-def _enrich_rows_with_catalogue(rows: list, top_k: int = 4) -> None:
+def _enrich_rows_with_catalogue(rows: list, top_k: int = 4,
+                                  library_scope: str = "admin",
+                                  user_records: list | None = None) -> None:
     """Mutates each row in-place. Sprint 4 — every row is now routed through
     the MaterialMatch Brain, whose decision packet drives category-restricted
     search and per-category ranking. Sprint 5 — default top_k lowered to 4:
-    the user sees a small set of strong candidates, never 8 mediocre ones."""
+    the user sees a small set of strong candidates, never 8 mediocre ones.
+
+    2026-02-01 (round 4) — `library_scope` ('admin' | 'own') selects the
+    corpus.  Pass `user_records` when scope='own' so retrieval can search
+    the user's own uploaded catalogue records without hitting DB
+    per-row (they're loaded once by the caller)."""
     if not rows:
         return
     for row in rows:
@@ -1896,6 +1945,8 @@ def _enrich_rows_with_catalogue(rows: list, top_k: int = 4) -> None:
                 # `_find_catalogue_matches` docstring for the failure
                 # case this fixes.
                 object_locked=bool(brain.get("object_locked")),
+                library_scope=library_scope,
+                user_records=user_records,
             )
         if "alternative_systems" not in row:
             row["alternative_systems"] = _alternative_systems_for(row)
@@ -1944,17 +1995,60 @@ def _studio_record_to_search_item(rec: dict) -> dict:
 
 
 async def _refresh_studio_index() -> None:
+    """Rebuild the in-memory admin-catalogue index.
+
+    2026-02-01 (round 4 — user-uploadable catalogues): this cache now
+    ONLY holds records with `catalogue_scope in ('admin', <missing>)`.
+    User-uploaded catalogue records live in the same `ke_records`
+    collection but are marked `catalogue_scope='user'` and are fetched
+    on-demand per search (see `_load_user_catalogue_records`). This
+    keeps process memory bounded regardless of how many users upload
+    catalogues.
+    """
     global _STUDIO_INDEXED_RECORDS
     try:
-        # Only PUBLISHED (non-archived) records feed the matcher.
-        docs = await db.ke_records.find({"status": "published"}).to_list(2000)
+        # Only PUBLISHED (non-archived) admin/seed records feed the
+        # global matcher. Records without `catalogue_scope` are legacy
+        # admin records from before the field existed.
+        docs = await db.ke_records.find({
+            "status": "published",
+            "$or": [
+                {"catalogue_scope": {"$exists": False}},
+                {"catalogue_scope": "admin"},
+            ],
+        }).to_list(2000)
         # User-uploaded catalogues rank ahead of demo-seeded ones so a real
         # PDF upload always outranks the seeded demo library.
         docs.sort(key=lambda d: 1 if d.get("demo_seed") else 0)
         _STUDIO_INDEXED_RECORDS = [_studio_record_to_search_item(d) for d in docs]
-        logger.info("Studio index refreshed: %d records", len(_STUDIO_INDEXED_RECORDS))
+        logger.info("Studio index refreshed: %d admin/seed records", len(_STUDIO_INDEXED_RECORDS))
     except Exception:
         logger.exception("studio index refresh failed")
+
+
+async def _load_user_catalogue_records(user_id: str) -> list[dict]:
+    """Fetch this user's PUBLISHED catalogue records on-demand for a
+    single retrieval call.
+
+    Deliberately not cached in a module-level dict — the user catalogue
+    is bounded by `USER_LIBRARY_MAX_UPLOADS` × per-PDF record yield
+    (typically ~100 records / PDF), so a per-search live query stays
+    cheap AND keeps process memory constant even at thousands of
+    concurrent users. Returns items already in the search-item shape
+    `_find_catalogue_matches` expects.
+    """
+    if not user_id:
+        return []
+    try:
+        docs = await db.ke_records.find({
+            "status": "published",
+            "catalogue_scope": "user",
+            "uploaded_by": user_id,
+        }).to_list(2000)
+        return [_studio_record_to_search_item(d) for d in docs]
+    except Exception:
+        logger.exception("user catalogue load failed for user=%s", user_id)
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -4034,7 +4128,21 @@ async def analyze_region(project_id: str, payload: RegionAnalyzePayload,
                     "override_applied": False,
                     "reason": "vision_dna_unavailable_fallback_to_text",
                 })
-        _enrich_rows_with_catalogue(result.get("rows") or [])
+        # 2026-02-01 (round 4) — thread library_scope through to
+        # retrieval so the manual selector honours the user's explicit
+        # admin-vs-own choice per search.
+        region_scope = (payload.library_scope or "admin").lower()
+        if region_scope not in ("admin", "own"):
+            region_scope = "admin"
+        region_user_records = (
+            await _load_user_catalogue_records(user["id"])
+            if region_scope == "own" else None
+        )
+        _enrich_rows_with_catalogue(
+            result.get("rows") or [],
+            library_scope=region_scope,
+            user_records=region_user_records,
+        )
         # Sprint 7 — visual re-rank (Describe-Embed-Rerank stage 5). The
         # user explicitly selected this region, so we spend ONE GPT-4o
         # call comparing the crop against the retrieved shortlist.
@@ -8189,30 +8297,66 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
 
 
 STUDIO_MAX_UPLOAD_BYTES = 150 * 1024 * 1024  # 150 MB — supplier catalogues.
+# 2026-02-01 (round 4) — separate, tighter cap for user (non-admin)
+# uploads. Users don't need the 150 MB headroom admins use for full
+# supplier books.
+USER_LIBRARY_MAX_UPLOAD_BYTES = int(
+    os.environ.get("USER_LIBRARY_MAX_UPLOAD_BYTES", str(25 * 1024 * 1024))
+)
+# Per-user upload count ceiling — bounds how much space a single account
+# can consume and keeps the on-demand DB fetch cheap.
+USER_LIBRARY_MAX_UPLOADS = int(
+    os.environ.get("USER_LIBRARY_MAX_UPLOADS", "20")
+)
 STUDIO_UPLOAD_DIR = os.environ.get("STUDIO_UPLOAD_DIR", "/app/backend/uploads_data")
 
 
-async def _run_studio_extraction(upload_id: str, data: bytes, filename: str) -> None:
+async def _run_studio_extraction(upload_id: str, data: bytes, filename: str,
+                                 catalogue_scope: str = "admin",
+                                 uploaded_by: str | None = None) -> None:
     """Run PDF extraction OUT-OF-BAND (background task). Never raises —
-    always leaves the upload in a terminal state (`review` on success,
-    `failed` with a diagnostic on any error). Runs the CPU-heavy work in
-    a thread pool so the FastAPI event loop stays responsive (login,
-    dashboards and KE search keep working while a large scan is being
-    OCR'd)."""
+    always leaves the upload in a terminal state (`review`/`published`
+    on success, `failed` with a diagnostic on any error). Runs the
+    CPU-heavy work in a thread pool so the FastAPI event loop stays
+    responsive (login, dashboards and KE search keep working while a
+    large scan is being OCR'd).
+
+    2026-02-01 (round 4) — `catalogue_scope`:
+      * `"admin"`: extracted records land in status='review' — admin
+        must approve them before they enter the global index (existing
+        behaviour).
+      * `"user"`: extracted records land in status='published' AND get
+        stamped with `catalogue_scope='user'` + `uploaded_by=<user_id>`
+        so they're immediately searchable in the OWNER'S scope but
+        never leak into the admin/global catalogue."""
     import asyncio
     try:
-        logger.info("[studio %s] UPLOAD accepted — filename=%r size=%.1fMB",
-                    upload_id, filename, len(data) / (1024 * 1024))
+        logger.info("[studio %s] UPLOAD accepted — filename=%r size=%.1fMB scope=%s",
+                    upload_id, filename, len(data) / (1024 * 1024), catalogue_scope)
         # Off-load the CPU-bound extractor to a worker thread so the
         # asyncio event loop is free for all other requests.
         records, meta = await asyncio.to_thread(
             _extract_records_from_pdf, data, upload_id
         )
+        # 2026-02-01 (round 4) — stamp scope + ownership + auto-publish
+        # for user uploads so they're immediately usable in the owner's
+        # library without needing an admin review step.
+        if records and catalogue_scope == "user":
+            for r in records:
+                r["catalogue_scope"] = "user"
+                r["uploaded_by"] = uploaded_by
+                r["status"] = "published"
+        elif records:
+            for r in records:
+                r.setdefault("catalogue_scope", "admin")
         if records:
             await db.ke_records.insert_many(records)
-            logger.info("[studio %s] DATABASE_SAVE — inserted %d record(s)",
-                        upload_id, len(records))
-        status = "review" if records else "failed"
+            logger.info("[studio %s] DATABASE_SAVE — inserted %d record(s) (scope=%s)",
+                        upload_id, len(records), catalogue_scope)
+        if catalogue_scope == "user":
+            status = "published" if records else "failed"
+        else:
+            status = "review" if records else "failed"
         update_fields = {
             "status": status,
             "page_count": meta["total_pages"],
@@ -8229,9 +8373,14 @@ async def _run_studio_extraction(upload_id: str, data: bytes, filename: str) -> 
             "extracted_at": datetime.now(timezone.utc).isoformat(),
         }
         await db.ke_uploads.update_one({"id": upload_id}, {"$set": update_fields})
-        logger.info("[studio %s] FINAL_STATUS = %s (records=%d)",
-                    upload_id, status, len(records))
-        await _refresh_studio_index()
+        logger.info("[studio %s] FINAL_STATUS = %s (records=%d, scope=%s)",
+                    upload_id, status, len(records), catalogue_scope)
+        # Admin scope: refresh the global cache so newly-approved
+        # records show up in matcher immediately. User scope: no
+        # global cache to refresh — records are fetched on-demand
+        # per-search via `_load_user_catalogue_records`.
+        if catalogue_scope == "admin":
+            await _refresh_studio_index()
     except Exception as e:
         logger.exception("[studio %s] EXTRACTION_CRASHED filename=%r",
                          upload_id, filename)
@@ -8290,6 +8439,7 @@ async def studio_upload(
         "filename": file.filename,
         "size_bytes": len(data),
         "uploaded_by": user.get("id"),
+        "catalogue_scope": "admin",
         "status": "processing",
         "page_count": 0,
         "records_extracted": 0,
@@ -8302,7 +8452,10 @@ async def studio_upload(
     }
     await db.ke_uploads.insert_one(upload_doc)
     # Fire-and-forget: the caller sees a 202-style response instantly.
-    asyncio.create_task(_run_studio_extraction(upload_id, data, file.filename))
+    asyncio.create_task(_run_studio_extraction(
+        upload_id, data, file.filename,
+        catalogue_scope="admin", uploaded_by=user.get("id"),
+    ))
     return {
         "upload_id": upload_id,
         "filename": file.filename,
@@ -8321,6 +8474,178 @@ def _clean_upload(u: dict) -> dict:
 
 def _clean_record(r: dict) -> dict:
     return {k: v for k, v in r.items() if k != "_id"}
+
+
+# ============================================================================
+# 2026-02-01 (round 4) — USER-UPLOADABLE CATALOGUES
+# ---------------------------------------------------------------------------
+# Reuses the exact same background extraction pipeline the admin Studio
+# uses (`_run_studio_extraction` → `_extract_records_from_pdf`), but:
+#   * caps upload size + count per user (USER_LIBRARY_MAX_UPLOAD_BYTES /
+#     USER_LIBRARY_MAX_UPLOADS)
+#   * auto-publishes extracted records (no admin review queue)
+#   * stamps every upload + record with `catalogue_scope='user'` and
+#     `uploaded_by=<user_id>` so retrieval never mixes them into the
+#     admin/global scope
+# Retrieval honours the `library_scope` param on the analyse endpoints
+# so a search is always confined to exactly one scope per user's
+# explicit choice.
+# ============================================================================
+@api_router.post("/library/uploads")
+async def library_user_upload(
+    file: UploadFile = File(...),
+    user: dict = Depends(get_current_user),
+):
+    """Accept a supplier PDF from a non-admin user, run the same real
+    ingestion pipeline the admin Studio uses, and auto-publish the
+    extracted records into the user's own private catalogue scope."""
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
+    data = await file.read()
+    if len(data) > USER_LIBRARY_MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(f"PDF too large (max {USER_LIBRARY_MAX_UPLOAD_BYTES // (1024 * 1024)} "
+                    "MB for user uploads)."),
+        )
+    # Per-user upload count cap — count only NON-archived, non-deleted
+    # uploads so the user can delete old ones to free slots.
+    existing = await db.ke_uploads.count_documents({
+        "catalogue_scope": "user",
+        "uploaded_by": user["id"],
+        "status": {"$ne": "archived"},
+    })
+    if existing >= USER_LIBRARY_MAX_UPLOADS:
+        raise HTTPException(
+            status_code=429,
+            detail=(f"Upload limit reached ({USER_LIBRARY_MAX_UPLOADS} PDFs). "
+                    "Delete an existing catalogue to free a slot."),
+        )
+    # Validate the PDF is real (cheap probe) before spawning the
+    # background task.
+    try:
+        _probe = fitz.open(stream=data, filetype="pdf")
+        _probe.close()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Not a valid PDF: {e}")
+    upload_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        os.makedirs(STUDIO_UPLOAD_DIR, exist_ok=True)
+        with open(os.path.join(STUDIO_UPLOAD_DIR, f"{upload_id}.pdf"), "wb") as fh:
+            fh.write(data)
+    except Exception:
+        logger.exception("failed to persist user-upload blob")
+    upload_doc = {
+        "id": upload_id,
+        "filename": file.filename,
+        "size_bytes": len(data),
+        "uploaded_by": user["id"],
+        "catalogue_scope": "user",
+        "status": "processing",
+        "page_count": 0,
+        "records_extracted": 0,
+        "extraction_mode": None,
+        "failure_reason": None,
+        "created_at": now,
+        "has_blob": True,
+    }
+    await db.ke_uploads.insert_one(upload_doc)
+    asyncio.create_task(_run_studio_extraction(
+        upload_id, data, file.filename,
+        catalogue_scope="user", uploaded_by=user["id"],
+    ))
+    return {
+        "upload_id": upload_id,
+        "filename": file.filename,
+        "status": "processing",
+        "message": (
+            "Upload accepted. We're extracting materials in the background — "
+            "check back in a moment."
+        ),
+    }
+
+
+@api_router.get("/library/uploads")
+async def library_list_user_uploads(user: dict = Depends(get_current_user)):
+    """List this user's own uploaded catalogues (never admin uploads)."""
+    docs = await db.ke_uploads.find({
+        "catalogue_scope": "user",
+        "uploaded_by": user["id"],
+    }).sort("created_at", -1).to_list(200)
+    return {
+        "uploads": [_clean_upload(d) for d in docs],
+        "quota": {
+            "used": len(docs),
+            "max": USER_LIBRARY_MAX_UPLOADS,
+            "max_bytes": USER_LIBRARY_MAX_UPLOAD_BYTES,
+        },
+    }
+
+
+@api_router.get("/library/records")
+async def library_list_user_records(user: dict = Depends(get_current_user)):
+    """List all published catalogue records this user owns — the raw
+    material entries the analyse pipeline will match against when the
+    caller opts into `library_scope=own`."""
+    docs = await db.ke_records.find({
+        "catalogue_scope": "user",
+        "uploaded_by": user["id"],
+        "status": "published",
+    }).sort("created_at", -1).to_list(2000)
+    return {"records": [_clean_record(d) for d in docs], "count": len(docs)}
+
+
+@api_router.delete("/library/uploads/{upload_id}")
+async def library_delete_user_upload(upload_id: str,
+                                     user: dict = Depends(get_current_user)):
+    """Delete a user's own upload AND every catalogue record extracted
+    from it. Never touches admin uploads (ownership is verified)."""
+    up = await db.ke_uploads.find_one({
+        "id": upload_id,
+        "catalogue_scope": "user",
+        "uploaded_by": user["id"],
+    })
+    if not up:
+        raise HTTPException(status_code=404, detail="Upload not found.")
+    # Purge associated records first so retrieval can never resurrect
+    # them.
+    rec_res = await db.ke_records.delete_many({"upload_id": upload_id})
+    up_res = await db.ke_uploads.delete_one({"id": upload_id})
+    # Best-effort: remove the persisted PDF blob too.
+    blob_path = os.path.join(STUDIO_UPLOAD_DIR, f"{upload_id}.pdf")
+    try:
+        if os.path.exists(blob_path):
+            os.remove(blob_path)
+    except Exception:
+        logger.exception("failed to remove upload blob %s", blob_path)
+    return {
+        "ok": True,
+        "upload_deleted": up_res.deleted_count,
+        "records_deleted": rec_res.deleted_count,
+    }
+
+
+@api_router.delete("/library/records/{record_id}")
+async def library_delete_user_record(record_id: str,
+                                     user: dict = Depends(get_current_user)):
+    """Delete a single catalogue record from the user's own library."""
+    try:
+        oid = ObjectId(record_id)
+    except Exception:
+        # Not all records have ObjectId string ids; some carry `id`
+        # UUID strings. Try both.
+        oid = None
+    query = {"catalogue_scope": "user", "uploaded_by": user["id"]}
+    if oid is not None:
+        query["_id"] = oid
+    else:
+        query["id"] = record_id
+    rec = await db.ke_records.find_one(query)
+    if not rec:
+        raise HTTPException(status_code=404, detail="Record not found.")
+    await db.ke_records.delete_one({"_id": rec["_id"]})
+    return {"ok": True}
 
 
 @api_router.get("/admin/studio/uploads")
