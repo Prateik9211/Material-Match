@@ -99,6 +99,32 @@ ARCHITECTURAL_VOCAB: tuple[str, ...] = (
     # or work desk. See tests/test_integration_live_rooms.py for the
     # regression case that forced adding them.
     "dining table", "chair", "desk", "office chair",
+    # 2026-02-05 (round 5) — comprehensive product-object vocabulary.
+    # These are all clearly non-surface objects that must be detected
+    # by SAM3 (so pins get placed at the right pixel) but MUST skip
+    # material classification (DETERMINISTIC_MATERIAL entry = None
+    # for each — see below). Without SAM3 detections for these, they
+    # either get missed entirely or their pixel region gets mis-tagged
+    # as "wall"/"cabinet" — and Stage-B then runs `generate_swatch_dna`
+    # on the mislabeled crop, confidently reporting things like
+    # "high-gloss decorative laminate" on a track light or refrigerator.
+    # Founder-reported bug: kitchen scenes surfacing appliances as
+    # both a product AND a material simultaneously. This vocab list is
+    # deliberately comprehensive — better to add too many product-only
+    # objects up front than to keep patching one-by-one as new bugs
+    # surface.
+    #   Lighting fixtures
+    "track light", "pendant light", "chandelier", "ceiling light",
+    "wall sconce", "lamp", "floor lamp", "table lamp", "light fixture",
+    #   Kitchen appliances (all built-in / countertop non-material)
+    "range hood", "refrigerator", "oven", "microwave", "dishwasher",
+    "cooktop", "stove", "kitchen appliance",
+    #   Plumbing fixtures beyond sink / faucet / bathtub / toilet
+    "faucet", "showerhead", "showerscreen",
+    #   Home tech / small kitchen appliances that show up in inspiration
+    #   photos and were previously getting mis-classified as generic
+    #   "gloss surface" material rows.
+    "television", "microwave oven", "coffee machine",
 )
 
 
@@ -181,6 +207,36 @@ DETERMINISTIC_MATERIAL: dict[str, dict | None] = {
     "artwork": None,
     "painting": None,
     "picture frame": None,
+    # 2026-02-05 (round 5) — every appliance / lighting fixture /
+    # plumbing product added to ARCHITECTURAL_VOCAB above skips
+    # material classification here. They're shoppable PRODUCTS
+    # (handled by `_run_products_pipeline`), not surface materials.
+    # Founder-reported bug: track light / hood / refrigerator getting
+    # both a product listing AND a spurious "high-gloss decorative
+    # laminate" material row. Founder rule: any non-surface object
+    # goes here as None.
+    "track light": None,
+    "pendant light": None,
+    "chandelier": None,
+    "ceiling light": None,
+    "wall sconce": None,
+    "lamp": None,
+    "floor lamp": None,
+    "table lamp": None,
+    "light fixture": None,
+    "range hood": None,
+    "refrigerator": None,
+    "oven": None,
+    "microwave": None,
+    "microwave oven": None,
+    "dishwasher": None,
+    "cooktop": None,
+    "stove": None,
+    "kitchen appliance": None,
+    "showerhead": None,
+    "showerscreen": None,
+    "television": None,
+    "coffee machine": None,
 }
 
 
@@ -478,7 +534,163 @@ def filter_detections(
                 clash = True; break
         if not clash:
             out.append(d)
-    return out
+    # 2026-02-05 (round 5) — same-label spatial merge.
+    #
+    # Founder-reported bug: kitchen scenes with a single visible
+    # cabinet run yield 4-5 separate cabinet pins. Investigation on
+    # a real Unsplash kitchen (photo-1600607687939-ce8a6c25118c)
+    # showed SAM3 returning:
+    #   * one wide "whole cabinet run" bbox
+    #   * plus 3-4 narrow per-door bboxes on the SAME row
+    # Pairwise IoU across those 5 boxes was 0.00 – 0.32, all well
+    # below the 0.70 same-class dedup threshold above, so all 5
+    # survived and produced 5 pins.
+    #
+    # Fix: after the standard IoU dedup pass, run a same-label
+    # merge that folds together detections that are either
+    # (a) heavily contained inside a larger sibling
+    #     (intersection / smaller_area >= 0.80), or
+    # (b) sitting on the same horizontal row and touching / close
+    #     (y-centers within 25 % of average height, horizontal gap
+    #     <= 50 % of average width).
+    # The retained detection is the highest-confidence one; its
+    # bbox is expanded to the axis-aligned hull of every member in
+    # the cluster, and its polygon is dropped (a merged hull polygon
+    # would be misleading — Stage B falls back to bbox in that case).
+    #
+    # Only fires on labels the founder rule targets — architectural
+    # runs that a user thinks about as ONE zone, never per-tile.
+    return _merge_same_label_zones(out)
+
+
+# ---------------------------------------------------------------------------
+# 2026-02-05 (round 5) — Same-label spatial merge (Bug B fix)
+# ---------------------------------------------------------------------------
+# The set of labels a merge is safe to apply to. These are all
+# architectural surfaces / joinery runs where a user mentally groups
+# adjacent instances into ONE zone (e.g. cabinet run, shelf run,
+# countertop run, backsplash panel, trim moulding). Labels like
+# `pillow` / `cushion` / `artwork` / `chair` / `plant` stay OUT of
+# this list — those are legitimately distinct items and merging them
+# would collapse individual pillows into one blob.
+_MERGE_ELIGIBLE_LABELS: set[str] = {
+    "wall", "ceiling", "floor",
+    "cabinet", "countertop", "backsplash", "shelf",
+    "wainscot", "trim", "paneled wainscoting",
+    "feature wall", "accent wall",
+}
+
+
+def _hull_bbox(boxes: list) -> list[float]:
+    """Axis-aligned bounding hull of a list of [x, y, w, h] boxes."""
+    x0 = min(float(b[0]) for b in boxes)
+    y0 = min(float(b[1]) for b in boxes)
+    x1 = max(float(b[0]) + float(b[2]) for b in boxes)
+    y1 = max(float(b[1]) + float(b[3]) for b in boxes)
+    return [x0, y0, x1 - x0, y1 - y0]
+
+
+def _should_merge_boxes(a: list, b: list) -> bool:
+    """True if two same-label bboxes should collapse into one zone.
+
+    Rule 1 (containment): the smaller box is >= 80 % contained
+    inside the larger. Handles the "wide whole-cabinet-run box +
+    individual door boxes" case observed on the founder's kitchen
+    image.
+
+    Rule 2 (row-adjacency): both boxes sit on the same horizontal
+    row (y-centers within 25 % of average height, heights within
+    35 % of each other) AND their horizontal gap is small
+    (<= 50 % of average width). Handles the "no wide parent, just
+    a chain of adjacent individual doors" case.
+    """
+    ax, ay, aw, ah = (float(v) for v in a[:4])
+    bx, by, bw, bh = (float(v) for v in b[:4])
+    if aw <= 0 or ah <= 0 or bw <= 0 or bh <= 0:
+        return False
+    ix0, iy0 = max(ax, bx), max(ay, by)
+    ix1, iy1 = min(ax + aw, bx + bw), min(ay + ah, by + bh)
+    iw, ih = max(0.0, ix1 - ix0), max(0.0, iy1 - iy0)
+    inter = iw * ih
+    a_area, b_area = aw * ah, bw * bh
+    smaller = min(a_area, b_area)
+    # Rule 1 — containment.
+    if smaller > 0 and inter / smaller >= 0.80:
+        return True
+    # Rule 2 — same row, close horizontally.
+    a_cy, b_cy = ay + ah / 2, by + bh / 2
+    avg_h = (ah + bh) / 2
+    if abs(a_cy - b_cy) > avg_h * 0.25:
+        return False
+    if abs(ah - bh) > max(ah, bh) * 0.35:
+        return False
+    avg_w = (aw + bw) / 2
+    a_right, b_left = ax + aw, bx
+    b_right, a_left = bx + bw, ax
+    horiz_gap = max(0.0, max(a_left - b_right, b_left - a_right))
+    return horiz_gap <= avg_w * 0.50
+
+
+def _merge_same_label_zones(detections: list[dict]) -> list[dict]:
+    """Cluster same-label detections whose bboxes are contained or
+    row-adjacent, keep the highest-confidence source and expand its
+    bbox to the cluster hull. Labels outside `_MERGE_ELIGIBLE_LABELS`
+    (e.g. `pillow`, `chair`, `artwork`) are passed through unchanged."""
+    if not detections:
+        return detections
+    # Group by (lower-cased) label.
+    by_label: dict[str, list[dict]] = {}
+    passthrough: list[dict] = []
+    for d in detections:
+        lbl = (d.get("label") or "").strip().lower()
+        if lbl in _MERGE_ELIGIBLE_LABELS and isinstance(d.get("bbox"), (list, tuple)) and len(d["bbox"]) == 4:
+            by_label.setdefault(lbl, []).append(d)
+        else:
+            passthrough.append(d)
+
+    merged_out: list[dict] = []
+    for lbl, items in by_label.items():
+        # Union-find on `items`.
+        parent = list(range(len(items)))
+
+        def _find(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def _union(x: int, y: int) -> None:
+            rx, ry = _find(x), _find(y)
+            if rx != ry:
+                parent[rx] = ry
+
+        for i in range(len(items)):
+            for j in range(i + 1, len(items)):
+                if _should_merge_boxes(items[i]["bbox"], items[j]["bbox"]):
+                    _union(i, j)
+
+        clusters: dict[int, list[int]] = {}
+        for i in range(len(items)):
+            clusters.setdefault(_find(i), []).append(i)
+
+        for members_idx in clusters.values():
+            members = [items[k] for k in members_idx]
+            if len(members) == 1:
+                merged_out.append(members[0])
+                continue
+            # Highest-confidence member is the anchor.
+            members.sort(key=lambda m: float(m.get("confidence", 0)), reverse=True)
+            anchor = dict(members[0])
+            hull = _hull_bbox([m["bbox"] for m in members])
+            anchor["bbox"] = hull
+            # A merged polygon is misleading — drop it so Stage B
+            # falls back to the bounding box mask.
+            anchor.pop("polygon", None)
+            anchor["merged_from"] = len(members)
+            anchor["merged_labels"] = [m.get("label") for m in members]
+            merged_out.append(anchor)
+
+    return merged_out + passthrough
 
 
 # ---------------------------------------------------------------------------

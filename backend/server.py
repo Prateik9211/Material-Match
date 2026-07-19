@@ -8309,11 +8309,15 @@ def _extract_records_from_pdf(pdf_bytes: bytes, upload_id: str) -> tuple[list[di
 
 
 STUDIO_MAX_UPLOAD_BYTES = 150 * 1024 * 1024  # 150 MB — supplier catalogues.
-# 2026-02-01 (round 4) — separate, tighter cap for user (non-admin)
-# uploads. Users don't need the 150 MB headroom admins use for full
-# supplier books.
+# 2026-02-01 (round 5) — founder approved raising the user cap to match
+# admin's headroom (was 25 MB). Real supplier catalogues frequently
+# exceed 25 MB; the 20-uploads-per-user hard cap already bounds total
+# per-user footprint (theoretical worst case 20 × 150 MB = 3 GB on
+# disk + ~320 MB in Mongo per user — manageable on standard block
+# storage, flagged for future capacity planning if user growth hits
+# thousands of heavy uploaders).
 USER_LIBRARY_MAX_UPLOAD_BYTES = int(
-    os.environ.get("USER_LIBRARY_MAX_UPLOAD_BYTES", str(25 * 1024 * 1024))
+    os.environ.get("USER_LIBRARY_MAX_UPLOAD_BYTES", str(150 * 1024 * 1024))
 )
 # Per-user upload count ceiling — bounds how much space a single account
 # can consume and keeps the on-demand DB fetch cheap.

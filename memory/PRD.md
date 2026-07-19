@@ -29,7 +29,52 @@ Admin validation tool at `/admin/scene-test` AND the LIVE user-facing `POST /api
 
 ## 2026-02-27 (round 2) — Scene-mode is now the DEFAULT for full-image analysis ✅
 
-## 2026-02-01 (round 4) — SCOPE #1: USER-UPLOADABLE CATALOGUES (Phase A + B) ✅
+## 2026-02-05 (round 5) — 150 MB user cap + product-vocab expansion + same-label spatial merge ✅
+
+Three related accuracy fixes shipped after the founder tested a real kitchen image.
+
+**1. User upload cap raised to 150 MB (was 25 MB) — matches admin.**
+Sanity check on current footprint: 142 MB of PDFs (115 admin files, avg 1.2 MB/PDF) + 107 MB Mongo for 358 records. Worst case per user at new cap = 20 × 150 MB = ~3 GB disk + ~320 MB Mongo. At 1000 heavy users that's ~3 TB disk + 320 GB Mongo — manageable on standard block storage; flagged for future capacity planning.
+
+**2. Comprehensive product-object vocabulary (Bug A — track light / range hood / refrigerator surfacing as materials).**
+Root cause: `ARCHITECTURAL_VOCAB` had NO entry for lighting fixtures or kitchen appliances. Either SAM3 missed them entirely or their region got tagged as `cabinet`/`wall` and Stage-B ran `generate_swatch_dna` on the mislabeled crop, confidently reporting "high-gloss decorative laminate" on an appliance.
+
+Fix — added the full product-object vocabulary in one sweep so this bug can't keep recurring one object at a time:
+* Lighting: `track light`, `pendant light`, `chandelier`, `ceiling light`, `wall sconce`, `lamp`, `floor lamp`, `table lamp`, `light fixture`
+* Kitchen appliances: `range hood`, `refrigerator`, `oven`, `microwave`, `microwave oven`, `dishwasher`, `cooktop`, `stove`, `kitchen appliance`, `coffee machine`
+* Plumbing beyond sink/tub/toilet: `faucet`, `showerhead`, `showerscreen`
+* Home tech: `television`
+
+Every new entry is `DETERMINISTIC_MATERIAL: None` — same mechanism proven for `plant`/`cushion`/`pillow`/`mattress`. Universally skips material classification, routes to `_run_products_pipeline`. **Live-verified on real kitchens**: photo-1600607687939-ce8a6c25118c now surfaces 7 `ceiling light`, 3 `pendant light`, 1 `microwave`, 1 `stove`; photo-1600585154340-be6161a56a0c now surfaces 3 `wall sconce` — all previously invisible to SAM3.
+
+**3. Same-label spatial merge (Bug B — kitchen showing 4–5 pins for one visible cabinet run).**
+Investigation on the exact kitchen the founder tested (photo-1600607687939-ce8a6c25118c) showed SAM3 returning:
+* 1 wide "whole cabinet run" bbox at [593, 349, 206×60]
+* 4 narrow per-door bboxes on the same row: [551, 42×62], [595, 51×60], [696, 67×59], [762, 38×59]
+
+Pairwise IoU across all 5 was 0.00 – 0.32, well below the 0.70 same-class dedup threshold, so all 5 survived → 5 pins. The founder's characterization was exactly right: SAM3 is genuinely detecting each door + the whole-run, not making duplicate detections.
+
+Fix — new `_merge_same_label_zones` post-processor that runs as the last pass of `filter_detections`:
+* **Rule 1 (containment)**: if smaller box is ≥ 80 % contained inside a same-label sibling → merge.
+* **Rule 2 (row-adjacency)**: same-label boxes on the same horizontal row (y-centers within 25 % of avg height, heights within 35 %) AND horizontal gap ≤ 50 % of avg width → merge.
+* Anchor = highest-confidence source; bbox becomes axis-aligned hull; polygon dropped (Stage B falls back to bbox mask).
+* `_MERGE_ELIGIBLE_LABELS` restricts merge to architectural runs a user thinks about as ONE zone: `wall`, `ceiling`, `floor`, `cabinet`, `countertop`, `backsplash`, `shelf`, `wainscot`, `trim`, `paneled wainscoting`, `feature wall`, `accent wall`. Individual items like `pillow`, `chair`, `artwork`, `plant` stay OUT of the merge list — legitimately separate detections.
+
+**Real before/after evidence on the SAME kitchen image:**
+
+| Metric | BEFORE | AFTER |
+|---|---|---|
+| Cabinet detections | 5 separate pins | **1 merged pin** with `merged_from: 5`, bbox = full hull |
+| Lighting fixtures | 0 (invisible to SAM3) | 7 ceiling light + 3 pendant light |
+| Microwave | 0 | 1 |
+| Stove | 0 | 1 |
+
+**Regression guards:**
+* New `tests/test_same_label_merge.py` — 5 unit tests: parent-swallowing children (the exact founder-reported bbox coords), pure row-adjacency chain, ineligible-labels-stay-separate (pillow row), far-apart-same-label-untouched (kitchen with two cabinet runs on opposite walls), full pipeline via `filter_detections`. All 5 pass in 0.07 s.
+* All 8 pre-existing integration tests (`test_flow_consistency.py` + 7 room fixtures) still pass live against Roboflow + LLM in 45 s.
+
+
+
 
 **Backend (Phase A):**
 * New endpoints under `/api/library/*`: `POST /library/uploads` (drag-drop supplier PDF), `GET /library/uploads` (list + quota), `GET /library/records` (list extracted records), `DELETE /library/uploads/{id}` (removes upload + all its records + PDF blob), `DELETE /library/records/{id}`.
@@ -87,6 +132,10 @@ Admin validation tool at `/admin/scene-test` AND the LIVE user-facing `POST /api
 | Match? | **False** ❌ | **True** ✅ |
 
 **Permanent regression guard:** `tests/test_flow_consistency.py` — pytest integration test that runs the same bedroom image through both endpoints and asserts `material_family` matches for the same wall region. Also hard-fails if the response version ever contains `region-object-aware` (would signal a regression back to the old prompt). Test passes today on live SAM3 + LLM in ~26 s.
+
+## 2026-02-01 (round 4) — SCOPE #1: USER-UPLOADABLE CATALOGUES ✅
+
+Shipped in one session: `POST/GET/DELETE /api/library/uploads`, `GET/DELETE /api/library/records`, `catalogue_scope='user'` + `uploaded_by=<uid>` ownership stamping (never merged with admin scope), auto-publish (no admin review queue for user's own uploads), `library_scope` param threaded through `/analyze` + `/analyze-region` → `_enrich_rows_with_catalogue` → `_find_catalogue_matches`, memory-safe on-demand user-record loader (`_load_user_catalogue_records`), abuse caps (20 uploads / 25 MB per user — cap since raised to 150 MB in round 5), scope-aware dedup fix on `/analyze`. Frontend: new `MyCatalogueSection` drag-drop uploader with quota + status pills + delete-with-confirm, replaced legacy filename-aggregation "My Library" on `MaterialLibrary.jsx`, Analysis-page two-button choice ("Check Admin Library" / "Check My Catalogue") with persisted scope highlight, RegionSelector inherits parent scope, zero-results-in-admin CTA banner offering supplier-PDF upload or trying the user's own scope.
 
 **Regression check:** all 8 integration tests (including the new consistency test + the 7 room fixtures) pass. Unit-test count unchanged aside from the same 13 pre-existing failures we've been tracking since round 1 (also fail on `git stash` — not introduced by this session).
 
