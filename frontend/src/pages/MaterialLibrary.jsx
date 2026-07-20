@@ -200,7 +200,7 @@ export default function MaterialLibrary() {
               number="01"
               icon={BookOpen}
               title="MaterialMatch Library"
-              subtitle="Platform-managed Knowledge Engine. Curated across Indian & global brands and searched category-first so a paint region never returns a wood veneer."
+              subtitle="Platform-managed Knowledge Engine. Curated across regional supplier catalogues and searched category-first so a paint region never returns a wood veneer."
               status="beta"
               testid="library-section-materialmatch"
             >

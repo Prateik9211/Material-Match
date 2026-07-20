@@ -376,7 +376,8 @@ export default function AdminAffiliates() {
             Affiliate Products
           </h1>
           <p className="text-neutral-500 mt-2 max-w-2xl">
-            Curate the Indian-market affiliate database. Each entry is
+            Curate the affiliate product database (currently India-focused;
+            per-region tagging coming as new regions launch). Each entry is
             keyword-matched against products detected in reference images.
           </p>
         </div>

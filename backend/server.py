@@ -46,10 +46,35 @@ ACCESS_TOKEN_MINUTES = 60 * 24  # 24h for MVP comfort
 REFRESH_TOKEN_DAYS = 7
 
 # ----------------------------------------------------------------------------
-# Region preference (controls AI prompt context, NOT visible vendor data)
+# Region preference — multi-country search scope.
+#
+# 2026-02-08: expanded from ["India", "Global"] (prompt-only flag) to a real
+# multi-region search scope. Values are ISO-style short codes so they
+# round-trip cleanly through URL params, DB rows, and frontend state.
+# "Global" was deliberately dropped as a search scope — a search must
+# target ONE real region so retrieval/catalogue isolation is unambiguous.
+# The word "Global" survives only as a marketing/prose term in the UI.
 # ----------------------------------------------------------------------------
-SUPPORTED_REGIONS = ["India", "Global"]
-DEFAULT_REGION = "India"
+SUPPORTED_REGIONS = ["IN", "US", "AE"]
+DEFAULT_REGION = "IN"
+
+# Migrate legacy user-preferred_region values on read: "India" → "IN",
+# anything else (including "Global") → default.
+_REGION_LEGACY_ALIASES = {
+    "India": "IN", "IN": "IN", "in": "IN",
+    "US": "US", "USA": "US", "us": "US",
+    "AE": "AE", "UAE": "AE", "ae": "AE",
+    # Anything else — legacy "Global" or unknown — falls through to DEFAULT_REGION.
+}
+
+
+def _normalize_region(value) -> str:
+    """Coerce any incoming region string to a supported code, defaulting on
+    unknown input. Never raises."""
+    if not value:
+        return DEFAULT_REGION
+    v = _REGION_LEGACY_ALIASES.get(str(value).strip(), None)
+    return v if v in SUPPORTED_REGIONS else DEFAULT_REGION
 
 # Indian-market brand & terminology context used to enrich AI reasoning when
 # preferred_region == "India". Kept server-side only — never surfaced in UI.
@@ -70,6 +95,43 @@ INDIAN_BRAND_CONTEXT = (
     "referenced material is uncommon in India, prefer to suggest a plausible "
     "Indian-market equivalent over a global one."
 )
+
+US_BRAND_CONTEXT = (
+    "US SOURCING CONTEXT (use to enrich reasoning, not to advertise brands):\n"
+    "- Laminates / Veneers commonly specified in the US: Wilsonart, Formica, "
+    "Havwoods, Nevamar (typical thickness ~1mm on MDF or plywood substrate).\n"
+    "- Tile / Stone: Ann Sacks, Walker Zanger, Daltile, Fireclay; natural "
+    "stone via Vermont Danby, Calacatta, Carrara from regional stone yards.\n"
+    "- Hardware: Rejuvenation, Emtek, Baldwin, Top Knobs (matte black + brass).\n"
+    "- Paints / Finishes: Benjamin Moore (Regal Select, Aura), Sherwin-"
+    "Williams (SuperPaint, Emerald), Farrow & Ball (specification-grade).\n"
+    "Prefer US design terminology — 'engineered white oak', 'matte polyurethane', "
+    "'quartz counter', 'natural marble slab', 'shiplap wall', 'ship-lap'. "
+    "Suggest plausible US retail alternatives (Room & Board, West Elm, CB2, "
+    "Rejuvenation, Schoolhouse) instead of India-specific brands."
+)
+
+AE_BRAND_CONTEXT = (
+    "UAE SOURCING CONTEXT (use to enrich reasoning, not to advertise brands):\n"
+    "- Laminates / Veneers commonly specified in UAE: Formica ME, Wilsonart, "
+    "Merino (via local dealers), Egger boards (imported EU spec).\n"
+    "- Tile / Stone: RAK Ceramics, Porcelanosa (imported), Al Attar Group, "
+    "Fima Marbles; natural stone via regional Dubai stone yards.\n"
+    "- Hardware: Hafele UAE, Hettich, IKEA UAE (soft-close, brass/black).\n"
+    "- Paints / Finishes: Jotun Fenomastic, Dulux Weathershield, Kansai "
+    "Nerolac ME. Heat-resistance and UV-fade tolerance are commonly specified.\n"
+    "Prefer UAE / Gulf design terminology where it reads naturally — 'Statuario "
+    "marble', 'porcelain plank', 'double-glazed Low-E', 'majlis seating', "
+    "'wood-look porcelain'. Suggest plausible UAE retail alternatives "
+    "(Home Centre, IKEA UAE, Danube Home, West Elm ME, 2XL Furniture, THAT "
+    "Concept Store) instead of India-specific brands."
+)
+
+REGIONAL_BRAND_CONTEXT: dict[str, str] = {
+    "IN": INDIAN_BRAND_CONTEXT,
+    "US": US_BRAND_CONTEXT,
+    "AE": AE_BRAND_CONTEXT,
+}
 
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 LLM_PROVIDER = "anthropic"
@@ -253,8 +315,9 @@ async def get_current_user(request: Request) -> dict:
         user = to_str_id(user)
         user.pop("password_hash", None)
         # Backfill default preferred_region for older users so callers can rely on it.
-        if user.get("preferred_region") not in SUPPORTED_REGIONS:
-            user["preferred_region"] = DEFAULT_REGION
+        # Normalisation also migrates legacy values like "India" → "IN"
+        # and "Global" → default in-flight.
+        user["preferred_region"] = _normalize_region(user.get("preferred_region"))
         # Auto-promote admin emails. Idempotent — DB write only when needed.
         email_lc = (user.get("email") or "").lower()
         if email_lc in ADMIN_EMAILS and user.get("role") != "admin":
@@ -351,7 +414,7 @@ async def login(payload: LoginRequest, response: Response):
         "email": email,
         "name": user.get("name", ""),
         "role": user.get("role", "user"),
-        "preferred_region": user.get("preferred_region") if user.get("preferred_region") in SUPPORTED_REGIONS else DEFAULT_REGION,
+        "preferred_region": _normalize_region(user.get("preferred_region")),
         # See register() comment — bearer-token fallback for cross-site cookie issues.
         "access_token": access,
     }
@@ -381,13 +444,15 @@ class PreferencesUpdate(BaseModel):
 
 @api_router.get("/users/me/preferences")
 async def get_my_preferences(user: dict = Depends(get_current_user)):
-    return {"preferred_region": user.get("preferred_region", DEFAULT_REGION)}
+    return {"preferred_region": _normalize_region(user.get("preferred_region"))}
 
 
 @api_router.put("/users/me/preferences")
 async def update_my_preferences(payload: PreferencesUpdate,
                                 user: dict = Depends(get_current_user)):
-    region = (payload.preferred_region or "").strip()
+    raw = (payload.preferred_region or "").strip()
+    # Accept both new codes ("IN", "US", "AE") and any legacy alias.
+    region = _REGION_LEGACY_ALIASES.get(raw)
     if region not in SUPPORTED_REGIONS:
         raise HTTPException(
             status_code=400,
@@ -727,6 +792,64 @@ INDIA_ALTERNATIVES_BY_FAMILY = {
     "other": None,
 }
 
+# 2026-02-08 — US / UAE placeholder brand alternatives. Founder will
+# refine once real vendor relationships are established; these are
+# reasonable defaults using publicly-known brands so the LLM has SOME
+# context to reason with instead of falling back to generic language.
+US_ALTERNATIVES_BY_FAMILY = {
+    "wood": "White-oak or walnut veneer on MDF (Wilsonart / Formica / Havwoods range) — widely stocked in US.",
+    "wall": "Benjamin Moore Regal or Sherwin-Williams SuperPaint low-VOC emulsion — standard US residential spec.",
+    "ceiling": "5/8\" drywall with matte white latex (Benjamin Moore / Sherwin-Williams) — standard US spec.",
+    "upholstery": "Boucle or performance-linen from Crypton / Sunbrella — widely available via US trade fabric houses.",
+    "stone": "Vermont Danby marble or honed Calacatta from Ann Sacks / Walker Zanger — common US spec.",
+    "metal": "Brushed brass or matte black profiles from Rejuvenation / Emtek — standard US residential hardware.",
+    "textile": "Hand-loomed wool rug from Armadillo, Cold Picnic, or Lulu & Georgia — US alternative.",
+    "flooring": "Engineered white-oak plank (Stuga / Duchateau) or LVT from Shaw / Coretec — common US spec.",
+    "furniture": "Solid-wood pieces from Room & Board, West Elm, or CB2 — mid-market US furniture.",
+    "lighting": "Brushed brass or matte black pendants from Rejuvenation / Cedar & Moss / Schoolhouse — US-first.",
+    "decor": "Curated accents from West Elm, CB2, or Anthropologie — widely stocked in US.",
+    "door": "Solid-core paint-grade door with lever handle (Emtek / Baldwin) — standard US spec.",
+    "window": "Andersen or Marvin double-hung wood-clad with Low-E glass — standard US residential.",
+    "other": None,
+}
+
+AE_ALTERNATIVES_BY_FAMILY = {
+    "wood": "Engineered oak veneer on MDF (available via IKEA UAE, Ace Hardware ME, Danube Home) — widely stocked.",
+    "wall": "Jotun Fenomastic or Dulux Weathershield low-VOC emulsion — standard UAE residential spec.",
+    "ceiling": "Suspended gypsum with Jotun / Dulux matte white — standard UAE apartment ceiling.",
+    "upholstery": "Performance-linen or bouclé via Danube Home / West Elm ME — widely available in Dubai / Abu Dhabi.",
+    "stone": "Statuario marble or travertine from RAK Ceramics / Al Attar Group — common UAE spec.",
+    "metal": "Brushed brass or matte black profiles from IKEA UAE / Ace Hardware — widely stocked.",
+    "textile": "Persian- or Turkish-style hand-knotted rug from The Odd Piece / West Elm ME — UAE alternative.",
+    "flooring": "Porcelain plank from RAK Ceramics or engineered oak from Home Centre / Danube Home.",
+    "furniture": "Home Centre, IKEA UAE, or 2XL Furniture pieces — mid-market UAE furniture.",
+    "lighting": "Brass or black pendants from IKEA UAE, Ace Hardware, or bespoke via Al Habtoor Lighting.",
+    "decor": "Curated accents from West Elm ME, THAT Concept Store, Home Centre — widely stocked in UAE.",
+    "door": "Solid-core veneer door with lever handle (IKEA UAE / local carpenters) — standard UAE residential.",
+    "window": "Aluminium frame with double-glazed Low-E glass — standard UAE residential (heat regulations).",
+    "other": None,
+}
+
+REGIONAL_ALTERNATIVES: dict[str, dict] = {
+    "IN": INDIA_ALTERNATIVES_BY_FAMILY,
+    "US": US_ALTERNATIVES_BY_FAMILY,
+    "AE": AE_ALTERNATIVES_BY_FAMILY,
+}
+
+
+def _alternatives_for(region: str) -> dict:
+    return REGIONAL_ALTERNATIVES.get(_normalize_region(region), INDIA_ALTERNATIVES_BY_FAMILY)
+
+
+# Human-readable region label for UI copy / summary text.
+REGION_LABEL: dict[str, str] = {
+    "IN": "India", "US": "United States", "AE": "United Arab Emirates",
+}
+
+
+def _region_label(region: str) -> str:
+    return REGION_LABEL.get(_normalize_region(region), "your region")
+
 
 @api_router.post("/projects/{project_id}/mock-analyze")
 async def mock_analyze(project_id: str, user: dict = Depends(get_current_user)):
@@ -740,16 +863,22 @@ async def mock_analyze(project_id: str, user: dict = Depends(get_current_user)):
     seed = int(ObjectId(project_id).binary[-4:].hex(), 16)
     count = 5 + (seed % 4)  # 5-8 rows
     start = seed % len(MOCK_MATERIAL_LIBRARY)
-    region = user.get("preferred_region", DEFAULT_REGION)
+    region = _normalize_region(user.get("preferred_region"))
+    alt_map = _alternatives_for(region)
     rows = []
     for i in range(count):
         base = dict(MOCK_MATERIAL_LIBRARY[(start + i) % len(MOCK_MATERIAL_LIBRARY)])
-        if region == "India":
-            base["indian_alternative"] = INDIA_ALTERNATIVES_BY_FAMILY.get(
-                base.get("material_family", "other")
-            )
+        alt = alt_map.get(base.get("material_family", "other"))
+        if alt:
+            base["local_alternative"] = alt
+            # Legacy field kept only when the active region is India so
+            # older frontend code that reads `indian_alternative` still
+            # renders on IN — cleaner path forward is `local_alternative`.
+            if region == "IN":
+                base["indian_alternative"] = alt
         rows.append(base)
 
+    region_label = _region_label(region)
     mock_analysis = {
         "rows": rows,
         "summary": {
@@ -757,10 +886,8 @@ async def mock_analyze(project_id: str, user: dict = Depends(get_current_user)):
             "material_palette": "Wood, stone, textile, plaster",
             "key_finishes": "Matt PU, honed stone, woven fabric",
             "sourcing_note": (
-                "Similar finishes are widely available across Indian dealers "
-                "(Greenlam, Century, Kajaria, Asian Paints)."
-                if region == "India"
-                else "Common materials sourceable from most global suppliers."
+                f"Similar finishes are widely available across {region_label} "
+                "dealers — see per-row brand suggestions."
             ),
         },
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -893,11 +1020,41 @@ INDIA_ANALYSIS_BLOCK = (
 )
 
 
+def _regional_analysis_block(region: str) -> str:
+    """Build a region-tuned sourcing-context block for the analysis prompt.
+
+    Uses the same schema for every region (`local_alternative`,
+    `brands_to_check`, `vendor_type`, `sourcing_keywords`) — only the
+    example brands and phrasing differ. The LLM still writes an
+    `indian_alternative` field on IN region for backward compat with
+    older frontend that reads that key.
+    """
+    r = _normalize_region(region)
+    ctx = REGIONAL_BRAND_CONTEXT.get(r, INDIAN_BRAND_CONTEXT)
+    label = _region_label(r)
+    # For IN we keep the legacy `indian_alternative` key so older frontend
+    # code paths continue to work. For US/AE we emit both the legacy key
+    # (empty) plus a `local_alternative` key holding the real value.
+    return (
+        "\n\n" + ctx + "\n\n"
+        f"BECAUSE the user is sourcing for {label}, ADD these 4 optional fields "
+        "per row (populate for EVERY row where useful):\n"
+        f'  "local_alternative": "≤ 120 chars naming a {label}-market equivalent, '
+        'using brand names from the context list above",\n'
+        f'  "brands_to_check": ["array of 2–5 {label} brand names to check, '
+        'from the context list above"],\n'
+        '  "vendor_type": "≤ 60 chars naming the vendor category",\n'
+        f'  "sourcing_keywords": ["array of 2–5 {label}-market search phrases"]\n'
+        f"Also update the top-level summary.sourcing_note to reflect {label} "
+        "sourcing clearly. Never invent brand-SKU pairs; only reference the "
+        "brand names from the context list above."
+    )
+
+
 def _build_analysis_prompt(region: str) -> str:
-    """Compose the analysis user prompt, optionally adding the India sourcing block."""
-    if region == "India":
-        return ANALYSIS_USER_PROMPT + INDIA_ANALYSIS_BLOCK
-    return ANALYSIS_USER_PROMPT
+    """Compose the analysis user prompt with the region-tuned sourcing block."""
+    r = _normalize_region(region)
+    return ANALYSIS_USER_PROMPT + _regional_analysis_block(r)
 
 ANALYSIS_RETRY_NUDGE = (
     "Your previous response was not valid JSON for the requested schema. "
@@ -1317,16 +1474,22 @@ async def run_real_analysis(project_id: str, user_id: str, ref_b64: str, region:
 @api_router.post("/projects/{project_id}/analyze")
 async def real_analyze(project_id: str,
                        library_scope: str = "admin",
+                       region: str | None = None,
                        user: dict = Depends(get_current_user)):
     """Real-AI material analysis endpoint. Falls back to mock when ENABLE_REAL_ANALYSIS is off.
 
     2026-02-01 (round 4) — `library_scope` (`"admin"` | `"own"`) selects
     the catalogue corpus. Admin scope hits the seeded + admin-published
     library; own scope hits ONLY the user's own uploaded catalogue.
-    Scopes are never silently merged."""
+    Scopes are never silently merged.
+
+    2026-02-08 (multi-region) — `region` (`"IN"`|`"US"`|`"AE"`) filters
+    the catalogue to that region only. Defaults to the user's
+    `preferred_region`. Cross-region records can NEVER surface."""
     if library_scope not in ("admin", "own"):
         raise HTTPException(status_code=400,
                             detail="library_scope must be 'admin' or 'own'")
+    active_region = _normalize_region(region or user.get("preferred_region"))
     if not ENABLE_REAL_ANALYSIS or not EMERGENT_LLM_KEY:
         return await mock_analyze(project_id, user)
 
@@ -1451,8 +1614,9 @@ async def real_analyze(project_id: str,
         _enrich_rows_with_catalogue(
             analysis.get("rows") or [],
             library_scope=library_scope,
-            user_records=(await _load_user_catalogue_records(user["id"]))
+            user_records=(await _load_user_catalogue_records(user["id"], region=active_region))
                           if library_scope == "own" else None,
+            region=active_region,
         )
         # 2026-02-08 — broadcast anchor catalogue matches to grouped
         # siblings so same-material regions ALWAYS return identical
@@ -1463,6 +1627,7 @@ async def real_analyze(project_id: str,
         # (button-highlight, "Regenerate · Admin Library" label, etc.).
         if isinstance(analysis, dict):
             analysis["library_scope"] = library_scope
+            analysis["region"] = active_region
     except HTTPException:
         day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         await db.usage_counters.update_one(
@@ -1542,6 +1707,9 @@ class RegionAnalyzePayload(BaseModel):
     # the global admin/seed library; "own" searches ONLY this user's
     # uploaded catalogue records. Never silently merged.
     library_scope: Optional[str] = "admin"    # "admin" | "own"
+    # 2026-02-08 — active search region ("IN"|"US"|"AE"). None → falls
+    # back to the user's `preferred_region` server-side.
+    region: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1857,7 +2025,8 @@ def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 62,
                               weights: dict | None = None,
                               object_locked: bool = False,
                               library_scope: str = "admin",
-                              user_records: list | None = None) -> list:
+                              user_records: list | None = None,
+                              region: str | None = None) -> list:
     """Sprint 7 — Describe-Embed-Rerank retrieval stage.
 
     Pipeline: Brain category gate (hard filter) → pHash exact-loopback
@@ -1940,12 +2109,21 @@ def _find_catalogue_matches(row: dict, top_k: int = 8, min_overall: int = 62,
         # SEEDED_CATALOGUE (the built-in demo library) is EXCLUDED so
         # a user searching "my catalogue" only sees materials they
         # actually uploaded themselves.
+        # 2026-02-08: `user_records` is expected to already be region-
+        # filtered by the caller (via `_load_user_catalogue_records(uid, region)`).
         all_items = list(user_records or [])
     else:
-        # Admin scope (default): admin uploads + built-in seed library.
-        # Studio (uploaded PDF) records first — real supplier data
-        # outranks the demo seed.
-        all_items = list(_STUDIO_INDEXED_RECORDS) + list(SEEDED_CATALOGUE)
+        # Admin scope (default): admin uploads + built-in seed library,
+        # restricted to the active region so cross-region records can
+        # NEVER surface. Legacy records without a region default to IN
+        # via `_normalize_region` inside `_studio_record_to_search_item`.
+        r = _normalize_region(region)
+        studio_items = _admin_index_for_region(r)
+        # The built-in SEEDED_CATALOGUE (5-item demo) is IN-only content —
+        # only include it on IN searches so US/AE users don't see
+        # Kajaria / Greenlam in an empty catalogue.
+        seed_items = list(SEEDED_CATALOGUE) if r == "IN" else []
+        all_items = list(studio_items) + seed_items
     if allow_norm is not None:
         items = [it for it in all_items
                  if _normalize_category(it.get("category")) in allow_norm]
@@ -2118,7 +2296,8 @@ def _alternative_systems_for(row: dict) -> list:
 
 def _enrich_rows_with_catalogue(rows: list, top_k: int = 4,
                                   library_scope: str = "admin",
-                                  user_records: list | None = None) -> None:
+                                  user_records: list | None = None,
+                                  region: str | None = None) -> None:
     """Mutates each row in-place. Sprint 4 — every row is now routed through
     the MaterialMatch Brain, whose decision packet drives category-restricted
     search and per-category ranking. Sprint 5 — default top_k lowered to 4:
@@ -2127,7 +2306,12 @@ def _enrich_rows_with_catalogue(rows: list, top_k: int = 4,
     2026-02-01 (round 4) — `library_scope` ('admin' | 'own') selects the
     corpus.  Pass `user_records` when scope='own' so retrieval can search
     the user's own uploaded catalogue records without hitting DB
-    per-row (they're loaded once by the caller)."""
+    per-row (they're loaded once by the caller).
+
+    2026-02-08 (multi-region) — `region` (`"IN"` | `"US"` | `"AE"`) further
+    restricts the corpus so cross-region records can never surface.
+    `user_records` MUST already be region-filtered by the caller
+    (via `_load_user_catalogue_records(uid, region)`)."""
     if not rows:
         return
     for row in rows:
@@ -2169,6 +2353,7 @@ def _enrich_rows_with_catalogue(rows: list, top_k: int = 4,
                 object_locked=bool(brain.get("object_locked")),
                 library_scope=library_scope,
                 user_records=user_records,
+                region=region,
             )
         if "alternative_systems" not in row:
             row["alternative_systems"] = _alternative_systems_for(row)
@@ -2179,7 +2364,7 @@ def _enrich_rows_with_catalogue(rows: list, top_k: int = 4,
 # ---------------------------------------------------------------------------
 # Sprint 5 — In-memory index of published Studio records so uploaded catalogue
 # entries become searchable alongside the seeded MaterialMatch Library.
-_STUDIO_INDEXED_RECORDS: list[dict] = []
+# 2026-02-08 — partitioned by region (see `_STUDIO_INDEXED_BY_REGION` below).
 
 
 def _studio_record_to_search_item(rec: dict) -> dict:
@@ -2213,44 +2398,70 @@ def _studio_record_to_search_item(rec: dict) -> dict:
         "visual_hashes": rec.get("visual_hashes"),         # Sprint 6
         "visual_dna": rec.get("visual_dna"),               # Sprint 7
         "dna_embedding": rec.get("dna_embedding"),         # Sprint 7
+        # 2026-02-08 — multi-region search scope. Legacy records without
+        # `region` are treated as IN (see the one-line migration).
+        "region": _normalize_region(rec.get("region")),
     }
 
 
+# In-memory admin index partitioned by region so a single region-scoped
+# search only walks its own records — no cross-region leak possible
+# and no per-request O(N) filtering pass.
+_STUDIO_INDEXED_BY_REGION: dict[str, list[dict]] = {r: [] for r in SUPPORTED_REGIONS}
+
+
 async def _refresh_studio_index() -> None:
-    """Rebuild the in-memory admin-catalogue index.
+    """Rebuild the in-memory admin-catalogue index, partitioned by region.
 
     2026-02-01 (round 4 — user-uploadable catalogues): this cache now
     ONLY holds records with `catalogue_scope in ('admin', <missing>)`.
     User-uploaded catalogue records live in the same `ke_records`
     collection but are marked `catalogue_scope='user'` and are fetched
-    on-demand per search (see `_load_user_catalogue_records`). This
-    keeps process memory bounded regardless of how many users upload
-    catalogues.
+    on-demand per search (see `_load_user_catalogue_records`).
+
+    2026-02-08 (multi-region): index is now `{region: [items]}` so a
+    region-scoped search NEVER walks cross-region records. Legacy
+    records without a `region` field are treated as IN.
     """
-    global _STUDIO_INDEXED_RECORDS
+    global _STUDIO_INDEXED_BY_REGION, _STUDIO_INDEXED_RECORDS
     try:
-        # Only PUBLISHED (non-archived) admin/seed records feed the
-        # global matcher. Records without `catalogue_scope` are legacy
-        # admin records from before the field existed.
         docs = await db.ke_records.find({
             "status": "published",
             "$or": [
                 {"catalogue_scope": {"$exists": False}},
                 {"catalogue_scope": "admin"},
             ],
-        }).to_list(2000)
+        }).to_list(5000)
         # User-uploaded catalogues rank ahead of demo-seeded ones so a real
         # PDF upload always outranks the seeded demo library.
         docs.sort(key=lambda d: 1 if d.get("demo_seed") else 0)
-        _STUDIO_INDEXED_RECORDS = [_studio_record_to_search_item(d) for d in docs]
-        logger.info("Studio index refreshed: %d admin/seed records", len(_STUDIO_INDEXED_RECORDS))
+        by_region: dict[str, list[dict]] = {r: [] for r in SUPPORTED_REGIONS}
+        for d in docs:
+            item = _studio_record_to_search_item(d)
+            by_region.setdefault(item["region"], []).append(item)
+        _STUDIO_INDEXED_BY_REGION = by_region
+        # Keep the flat list around for any legacy code path that still
+        # imports it — it's populated with IN records only, matching the
+        # historical behaviour before multi-region.
+        _STUDIO_INDEXED_RECORDS = list(by_region.get("IN", []))
+        summary = ", ".join(f"{r}={len(by_region.get(r, []))}" for r in SUPPORTED_REGIONS)
+        logger.info("Studio index refreshed by region: %s", summary)
     except Exception:
         logger.exception("studio index refresh failed")
 
 
-async def _load_user_catalogue_records(user_id: str) -> list[dict]:
+def _admin_index_for_region(region: str) -> list[dict]:
+    """Return the region-scoped admin/seed index slice. Empty list on
+    unknown region — critical invariant so a bad param can NEVER return
+    cross-region records."""
+    r = _normalize_region(region)
+    return _STUDIO_INDEXED_BY_REGION.get(r, [])
+
+
+async def _load_user_catalogue_records(user_id: str,
+                                       region: str | None = None) -> list[dict]:
     """Fetch this user's PUBLISHED catalogue records on-demand for a
-    single retrieval call.
+    single retrieval call, optionally region-scoped.
 
     Deliberately not cached in a module-level dict — the user catalogue
     is bounded by `USER_LIBRARY_MAX_UPLOADS` × per-PDF record yield
@@ -2258,19 +2469,40 @@ async def _load_user_catalogue_records(user_id: str) -> list[dict]:
     cheap AND keeps process memory constant even at thousands of
     concurrent users. Returns items already in the search-item shape
     `_find_catalogue_matches` expects.
+
+    2026-02-08: when `region` is provided we filter by it in Mongo so
+    the caller gets ONLY records for the active region. Legacy user
+    records without a `region` field are treated as IN.
     """
     if not user_id:
         return []
     try:
-        docs = await db.ke_records.find({
+        q: dict = {
             "status": "published",
             "catalogue_scope": "user",
             "uploaded_by": user_id,
-        }).to_list(2000)
+        }
+        if region:
+            r = _normalize_region(region)
+            if r == "IN":
+                # Include legacy records that pre-date the region field.
+                q["$or"] = [
+                    {"region": {"$exists": False}},
+                    {"region": "IN"},
+                ]
+            else:
+                q["region"] = r
+        docs = await db.ke_records.find(q).to_list(2000)
         return [_studio_record_to_search_item(d) for d in docs]
     except Exception:
         logger.exception("user catalogue load failed for user=%s", user_id)
         return []
+
+
+# Backwards-compat shim: legacy references to `_STUDIO_INDEXED_RECORDS`
+# outside this module (or in old code paths) still work — the list holds
+# the IN slice which matches historical behaviour.
+_STUDIO_INDEXED_RECORDS: list[dict] = []
 
 
 # ---------------------------------------------------------------------------
@@ -4378,14 +4610,17 @@ async def analyze_region(project_id: str, payload: RegionAnalyzePayload,
         region_scope = (payload.library_scope or "admin").lower()
         if region_scope not in ("admin", "own"):
             region_scope = "admin"
+        # 2026-02-08 — active search region for this analyze-region call.
+        active_region = _normalize_region(payload.region or user.get("preferred_region"))
         region_user_records = (
-            await _load_user_catalogue_records(user["id"])
+            await _load_user_catalogue_records(user["id"], region=active_region)
             if region_scope == "own" else None
         )
         _enrich_rows_with_catalogue(
             result.get("rows") or [],
             library_scope=region_scope,
             user_records=region_user_records,
+            region=active_region,
         )
         # Sprint 7 — visual re-rank (Describe-Embed-Rerank stage 5). The
         # user explicitly selected this region, so we spend ONE GPT-4o
@@ -4412,6 +4647,7 @@ async def analyze_region(project_id: str, payload: RegionAnalyzePayload,
                 logger.exception("visual rerank failed — keeping retrieval results")
         _broadcast_anchor_match_to_group(result.get("rows") or [])
         result["ephemeral"] = True
+        result["region"] = active_region
         result["region_note"] = (payload.note or "").strip()[:200]
         return result
     except HTTPException:
@@ -5067,7 +5303,11 @@ async def find_similar_products(project_id: str, product_id: str,
         raise HTTPException(500, "Reference image decode failed")
 
     crop_bytes = _ps_prepare_crop(ref_img, product["sam3_bbox"])
-    country = _PS_DEFAULT_COUNTRY
+    # 2026-02-08 — region-aware cache key + Google Lens routing. Cache
+    # key is bucketed by region so IN and US searches on the same crop
+    # don't collide (they'd rank different retailers first).
+    active_region = _normalize_region(user.get("preferred_region"))
+    country = active_region.lower()
     cache_key = _ps_cache_key(crop_bytes, country=country)
     sha = _ps_crop_sha(cache_key)
 
@@ -5103,7 +5343,7 @@ async def find_similar_products(project_id: str, product_id: str,
     public_url = f"{public_base}/api/product_search/crop/{sha}.jpg"
 
     try:
-        result = _ps_search(public_url, country=country)
+        result = _ps_search(public_url, country=country, region=active_region)
         # Bump usage AFTER a successful call.
         new_count = await _ps_bump_usage()
     except _ProductSearchError as e:
@@ -5409,7 +5649,7 @@ def _build_match_user_prompt(region: str,
         n=n,
         n_minus_1=n - 1,
     )
-    if region == "India":
+    if _normalize_region(region) == "IN":
         return base + INDIA_MATCH_BLOCK
     return base
 
@@ -6123,15 +6363,36 @@ async def run_match(
 
     base_pcts = [92, 86, 79, 71, 63]
     reason_pool = MATCH_REASONS_LIBRARY.get(category, MATCH_REASONS_LIBRARY["wood"])
-    region = user.get("preferred_region", DEFAULT_REGION)
-    india_hint_by_cat = {
-        "wood":    "Comparable Indian alternative: teak / sheesham veneer + PU matt (Greenlam / Century).",
-        "stone":   "Comparable Indian alternative: Kota stone honed or Indian Statuario from regional suppliers.",
-        "fabric":  "Comparable Indian alternative: D'Decor / Sarom upholstery in similar weave.",
-        "metal":   "Comparable Indian alternative: brushed brass profile via Hafele India or Hettich India.",
-        "plaster": "Comparable Indian alternative: Asian Paints Royale Aspira or Berger Silk Velvet finish.",
-        "rug":     "Comparable Indian alternative: Jaipur Rugs or Obeetee hand-tufted wool.",
+    region = _normalize_region(user.get("preferred_region"))
+    # Region-aware "comparable local alternative" hint. Only added to
+    # mock matches with pct ≥ 65 so it doesn't clutter weak candidates.
+    _local_hint_by_region_cat = {
+        "IN": {
+            "wood":    "Comparable local alternative: teak / sheesham veneer + PU matt (Greenlam / Century).",
+            "stone":   "Comparable local alternative: Kota stone honed or Indian Statuario from regional suppliers.",
+            "fabric":  "Comparable local alternative: D'Decor / Sarom upholstery in similar weave.",
+            "metal":   "Comparable local alternative: brushed brass profile via Hafele India or Hettich India.",
+            "plaster": "Comparable local alternative: Asian Paints Royale Aspira or Berger Silk Velvet finish.",
+            "rug":     "Comparable local alternative: Jaipur Rugs or Obeetee hand-tufted wool.",
+        },
+        "US": {
+            "wood":    "Comparable local alternative: engineered white-oak or walnut veneer + matte poly (Havwoods / Wilsonart).",
+            "stone":   "Comparable local alternative: honed Calacatta or Vermont Danby marble from regional US stone yards.",
+            "fabric":  "Comparable local alternative: Crypton or Sunbrella upholstery in similar weave.",
+            "metal":   "Comparable local alternative: brushed brass or matte black profiles (Rejuvenation / Emtek).",
+            "plaster": "Comparable local alternative: Benjamin Moore Regal Select or Sherwin-Williams Emerald matte.",
+            "rug":     "Comparable local alternative: hand-loomed wool from Armadillo, Cold Picnic or Lulu & Georgia.",
+        },
+        "AE": {
+            "wood":    "Comparable local alternative: engineered oak veneer + matte lacquer (Egger / Formica ME via local dealers).",
+            "stone":   "Comparable local alternative: Statuario marble or travertine via RAK Ceramics / Al Attar Group.",
+            "fabric":  "Comparable local alternative: performance-linen or bouclé via West Elm ME or Danube Home.",
+            "metal":   "Comparable local alternative: brass or black profiles via Hafele UAE or IKEA UAE.",
+            "plaster": "Comparable local alternative: Jotun Fenomastic or Dulux Weathershield matte finish.",
+            "rug":     "Comparable local alternative: hand-knotted Persian/Turkish rug via The Odd Piece or West Elm ME.",
+        },
     }
+    hint_by_cat = _local_hint_by_region_cat.get(region, _local_hint_by_region_cat["IN"])
     matches = []
     for i, product in enumerate(chosen):
         jitter = ((seed_int >> (i * 3)) & 0x7) - 3  # ±3
@@ -6139,6 +6400,7 @@ async def run_match(
         r_start = (seed_int + i * 7) % len(reason_pool)
         reasons = [reason_pool[(r_start + j) % len(reason_pool)] for j in range(3)]
         disqualifier = DISQUALIFIER_LIBRARY[(seed_int + i) % len(DISQUALIFIER_LIBRARY)] if i >= 3 else None
+        local_alt = hint_by_cat.get(category) if pct >= 65 else None
         matches.append({
             "id": f"match_{i + 1}",
             "product_name": product["name"],
@@ -6147,7 +6409,9 @@ async def run_match(
             "score_label": _score_label(pct),
             "reasons": reasons,
             "disqualifier": disqualifier,
-            "indian_alternative": india_hint_by_cat.get(category) if region == "India" and pct >= 65 else None,
+            "local_alternative": local_alt,
+            # Legacy field, kept only for IN so old frontend still renders.
+            "indian_alternative": local_alt if region == "IN" else None,
             "thumbnail_color": product["color"],
         })
 
@@ -8804,7 +9068,8 @@ STUDIO_UPLOAD_DIR = os.environ.get("STUDIO_UPLOAD_DIR", "/app/backend/uploads_da
 
 async def _run_studio_extraction(upload_id: str, data: bytes, filename: str,
                                  catalogue_scope: str = "admin",
-                                 uploaded_by: str | None = None) -> None:
+                                 uploaded_by: str | None = None,
+                                 region: str = DEFAULT_REGION) -> None:
     """Run PDF extraction OUT-OF-BAND (background task). Never raises —
     always leaves the upload in a terminal state (`review`/`published`
     on success, `failed` with a diagnostic on any error). Runs the
@@ -8819,11 +9084,16 @@ async def _run_studio_extraction(upload_id: str, data: bytes, filename: str,
       * `"user"`: extracted records land in status='published' AND get
         stamped with `catalogue_scope='user'` + `uploaded_by=<user_id>`
         so they're immediately searchable in the OWNER'S scope but
-        never leak into the admin/global catalogue."""
+        never leak into the admin/global catalogue.
+
+    2026-02-08 (multi-region) — every extracted record is stamped with
+    the target `region` so a US catalogue never surfaces in an IN
+    search and vice-versa. Defaults to IN for backwards compatibility."""
     import asyncio
+    active_region = _normalize_region(region)
     try:
-        logger.info("[studio %s] UPLOAD accepted — filename=%r size=%.1fMB scope=%s",
-                    upload_id, filename, len(data) / (1024 * 1024), catalogue_scope)
+        logger.info("[studio %s] UPLOAD accepted — filename=%r size=%.1fMB scope=%s region=%s",
+                    upload_id, filename, len(data) / (1024 * 1024), catalogue_scope, active_region)
         # Off-load the CPU-bound extractor to a worker thread so the
         # asyncio event loop is free for all other requests.
         records, meta = await asyncio.to_thread(
@@ -8837,9 +9107,11 @@ async def _run_studio_extraction(upload_id: str, data: bytes, filename: str,
                 r["catalogue_scope"] = "user"
                 r["uploaded_by"] = uploaded_by
                 r["status"] = "published"
+                r["region"] = active_region
         elif records:
             for r in records:
                 r.setdefault("catalogue_scope", "admin")
+                r["region"] = active_region
         if records:
             await db.ke_records.insert_many(records)
             logger.info("[studio %s] DATABASE_SAVE — inserted %d record(s) (scope=%s)",
@@ -8894,6 +9166,7 @@ async def _run_studio_extraction(upload_id: str, data: bytes, filename: str,
 async def studio_upload(
     file: UploadFile = File(...),
     category_hint: str | None = Form(default=None),
+    region: str = Form(default=DEFAULT_REGION),
     user: dict = Depends(require_admin),
 ):
     """MaterialMatch Studio — upload a supplier PDF. The request returns
@@ -8901,7 +9174,11 @@ async def studio_upload(
     then runs in a background task so it never blocks the event loop or
     times out at the ingress. Poll `GET /admin/studio/uploads` (or the
     Processing Queue in the UI) to observe status transitions:
-    `processing → review → published / partially_published / archived / failed`."""
+    `processing → review → published / partially_published / archived / failed`.
+
+    2026-02-08 — admin tags which region the catalogue is for (defaults
+    to IN for backwards compat). Every record extracted from this PDF
+    inherits the region tag."""
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
     data = await file.read()
@@ -8925,12 +9202,14 @@ async def studio_upload(
             fh.write(data)
     except Exception:
         logger.exception("failed to persist upload blob")
+    active_region = _normalize_region(region)
     upload_doc = {
         "id": upload_id,
         "filename": file.filename,
         "size_bytes": len(data),
         "uploaded_by": user.get("id"),
         "catalogue_scope": "admin",
+        "region": active_region,
         "status": "processing",
         "page_count": 0,
         "records_extracted": 0,
@@ -8946,6 +9225,7 @@ async def studio_upload(
     asyncio.create_task(_run_studio_extraction(
         upload_id, data, file.filename,
         catalogue_scope="admin", uploaded_by=user.get("id"),
+        region=active_region,
     ))
     return {
         "upload_id": upload_id,
@@ -8985,11 +9265,17 @@ def _clean_record(r: dict) -> dict:
 @api_router.post("/library/uploads")
 async def library_user_upload(
     file: UploadFile = File(...),
+    region: str = Form(default=DEFAULT_REGION),
     user: dict = Depends(get_current_user),
 ):
     """Accept a supplier PDF from a non-admin user, run the same real
     ingestion pipeline the admin Studio uses, and auto-publish the
-    extracted records into the user's own private catalogue scope."""
+    extracted records into the user's own private catalogue scope.
+
+    2026-02-08 — user tags which region the catalogue is for (defaults
+    to their preferred_region falling back to IN). Every extracted
+    record inherits the tag so the user's OWN catalogue view respects
+    the active region."""
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
     data = await file.read()
@@ -9027,12 +9313,14 @@ async def library_user_upload(
             fh.write(data)
     except Exception:
         logger.exception("failed to persist user-upload blob")
+    active_region = _normalize_region(region or user.get("preferred_region"))
     upload_doc = {
         "id": upload_id,
         "filename": file.filename,
         "size_bytes": len(data),
         "uploaded_by": user["id"],
         "catalogue_scope": "user",
+        "region": active_region,
         "status": "processing",
         "page_count": 0,
         "records_extracted": 0,
@@ -9045,6 +9333,7 @@ async def library_user_upload(
     asyncio.create_task(_run_studio_extraction(
         upload_id, data, file.filename,
         catalogue_scope="user", uploaded_by=user["id"],
+        region=active_region,
     ))
     return {
         "upload_id": upload_id,

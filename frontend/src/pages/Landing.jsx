@@ -11,7 +11,7 @@ import heroKitchenScene from "../assets/landing/hero_kitchen_scene.jpg";
 
 const TRUST_BULLETS = [
   "Designer-first",
-  "India-first sourcing",
+  "Region-aware sourcing",
   "Catalogue matching",
   "Products & Fixtures detection",
   "Sourceable shortlist",
@@ -22,7 +22,7 @@ const WORKFLOW = [
   { n: "02", icon: Layers, title: "Material Detection", body: "Zones, finishes, colour and material family surfaced automatically." },
   { n: "03", icon: BookOpen, title: "Material Library Search", body: "Match against your uploaded catalogues and reusable library." },
   { n: "04", icon: BookOpen, title: "Catalogue Matches", body: "Ranked matches with source, page number, confidence and match reason." },
-  { n: "05", icon: ShoppingBag, title: "Product Suggestions", body: "Lighting, furniture and decor detected — with curated Indian recommendations." },
+  { n: "05", icon: ShoppingBag, title: "Product Suggestions", body: "Lighting, furniture and decor detected — with curated regional recommendations." },
   { n: "06", icon: ListChecks, title: "Sourceable Shortlist", body: "Build a shortlist to walk into vendor meetings prepared." },
 ];
 
@@ -539,7 +539,7 @@ export default function Landing() {
             </h1>
             <p className="text-lg text-charcoal/70 max-w-xl leading-relaxed" data-testid="hero-subhead">
               Upload a reference image, detect materials and products, match them with supplier catalogues,
-              and generate a shortlist of India-ready sourcing options.
+              and generate a shortlist of local sourcing options.
             </p>
             <p className="text-sm text-warm-grey italic max-w-xl border-l-2 border-stone-border pl-4" data-testid="hero-philosophy">
               MaterialMatch does not replace design judgement. It helps designers reach the right shortlist
@@ -642,12 +642,12 @@ export default function Landing() {
             <div className="lg:col-span-7 space-y-4">
               <div className="text-overline">Products & Fixtures</div>
               <h2 className="font-display text-3xl sm:text-4xl font-bold tracking-tight text-charcoal">
-                Product discovery built for Indian interiors.
+                Product discovery built for local interiors.
               </h2>
               <p className="text-warm-grey leading-relaxed">
                 Detect lights, decor, furniture, rugs and fixtures from references and generate
                 search-ready suggestions. Curated affiliate links show up when we have a match — otherwise
-                we surface search keywords tuned for Indian marketplaces.
+                we surface search keywords tuned for your active region's marketplaces.
               </p>
             </div>
             <div className="lg:col-span-5 space-y-3">

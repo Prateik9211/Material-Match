@@ -173,18 +173,18 @@ function SpecCard({ row, index, catalogueMatch }) {
           </div>
         )}
 
-        {/* Indian sourcing fallback — only when there is no catalogue match */}
-        {!catalogueMatch && (row.indian_alternative || (row.brands_to_check && row.brands_to_check.length > 0) || row.vendor_type) && (
-          <div className="rounded-xl bg-ochre-soft/60 border border-ochre/30 p-3.5" data-testid={`present-spec-indian-${index}`}>
+        {/* Regional sourcing fallback — only when there is no catalogue match */}
+        {!catalogueMatch && (row.local_alternative || row.indian_alternative || (row.brands_to_check && row.brands_to_check.length > 0) || row.vendor_type) && (
+          <div className="rounded-xl bg-ochre-soft/60 border border-ochre/30 p-3.5" data-testid={`present-spec-local-${index}`}>
             <div className="flex items-center gap-1.5 mb-1">
               <MapPin className="w-3.5 h-3.5 text-ochre" strokeWidth={2} />
               <span className="text-[10px] uppercase tracking-widest text-ochre font-semibold">
-                Recommended Indian Options
+                Recommended Local Options
               </span>
             </div>
-            {row.indian_alternative && (
+            {(row.local_alternative || row.indian_alternative) && (
               <div className="text-sm text-charcoal leading-relaxed">
-                {row.indian_alternative}
+                {row.local_alternative || row.indian_alternative}
               </div>
             )}
             {row.brands_to_check && row.brands_to_check.length > 0 && (
@@ -455,7 +455,7 @@ export default function RoomPresentation({
             number="04"
             overline="Step four"
             title="Material Specifications"
-            subtitle="Surface materials with catalogue matches or India-first sourcing options."
+            subtitle="Surface materials with catalogue matches or local sourcing options."
             testid="story-specs"
           >
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">

@@ -104,14 +104,14 @@ export default function MatchCard({ match, index }) {
             </div>
           )}
 
-          {m.indian_alternative && (
+          {(m.local_alternative || m.indian_alternative) && (
             <div
               className="text-xs italic text-amber-900 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 leading-snug"
-              data-testid={`match-indian-alt-${i}`}
-              title="AI-suggested Indian-market equivalent"
+              data-testid={`match-local-alt-${i}`}
+              title="AI-suggested local-market equivalent"
             >
-              <span className="not-italic font-semibold mr-1">India alt:</span>
-              {m.indian_alternative}
+              <span className="not-italic font-semibold mr-1">Local alt:</span>
+              {m.local_alternative || m.indian_alternative}
             </div>
           )}
         </div>

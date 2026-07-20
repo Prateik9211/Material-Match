@@ -203,14 +203,34 @@ def crop_sha_from_key(cache_key: str) -> str:
 # ---------------------------------------------------------------------------
 # SerpApi Google Lens
 # ---------------------------------------------------------------------------
-_INDIA_RETAILER_HOSTS = (
-    "amazon.in", ".flipkart.", "pepperfry.", "urbanladder.", "myntra.",
-    "woodenstreet.", "ikea.com/in", "whiteteak.", "godrejinterio.",
-    "nilkamalfurniture.", "hometown.in", "decorest.", "wakefit.",
-    "sleepycat.", "decathlon.in",
-)
+# ---------------------------------------------------------------------------
+# SerpApi Google Lens — region-aware retailer allow-lists.
+#
+# Populated from feasibility findings (2026-02-08) and honest defaults
+# for regions where the founder hasn't yet built vendor relationships.
+# ---------------------------------------------------------------------------
+_REGIONAL_RETAILER_HOSTS: dict[str, tuple[str, ...]] = {
+    "IN": (
+        "amazon.in", ".flipkart.", "pepperfry.", "urbanladder.", "myntra.",
+        "woodenstreet.", "ikea.com/in", "whiteteak.", "godrejinterio.",
+        "nilkamalfurniture.", "hometown.in", "decorest.", "wakefit.",
+        "sleepycat.", "decathlon.in",
+    ),
+    "US": (
+        "amazon.com", "wayfair.com", "westelm.com", "cb2.com", "target.com",
+        "walmart.com", "houzz.com", "overstock.com", "etsy.com",
+        "roomandboard.com", "rejuvenation.com", "schoolhouse.com",
+        "articlefurniture.com", "article.com", "potterybarn.com",
+        "crateandbarrel.com", "lulaandgeorgia.com", "annsacks.com",
+    ),
+    "AE": (
+        "amazon.ae", "noon.com", "danubehome.com", "homecentre.com",
+        "westelm-me.", "ikea.com/ae", "acehardware.com/ae", "hafele-ae.",
+        "thatconceptstore.", "2xlfurniture.", "modernindesign.",
+    ),
+}
 # International retailers still count as shoppable — better a real
-# Amazon.com listing than nothing. The UI already labels this as
+# retail listing than nothing. The UI already labels this as
 # "Similar items" (not exact matches), so cross-border discovery is
 # honest UX.
 _GLOBAL_RETAILER_HOSTS = (
@@ -235,8 +255,9 @@ def _looks_shoppable(link: str, source: str) -> bool:
     l = (link or "").lower()
     if any(b in l for b in _BANNED_HOSTS):
         return False
-    if any(host in l for host in _INDIA_RETAILER_HOSTS):
-        return True
+    for hosts in _REGIONAL_RETAILER_HOSTS.values():
+        if any(host in l for host in hosts):
+            return True
     if any(host in l for host in _GLOBAL_RETAILER_HOSTS):
         return True
     # Fall back on source-string heuristics for unlisted retailers.
@@ -244,8 +265,16 @@ def _looks_shoppable(link: str, source: str) -> bool:
     return bool(s and ("shop" in s or "store" in s or "furniture" in s))
 
 
+def _is_regional_retailer(link: str, region: str) -> bool:
+    """Region-specific retailer match. Used to rank local retailers first."""
+    hosts = _REGIONAL_RETAILER_HOSTS.get((region or "").upper(), ())
+    return any(host in (link or "").lower() for host in hosts)
+
+
+# Legacy shim — kept only because early integration tests referenced it
+# directly. Route through the region-aware check with IN as default.
 def _is_indian_retailer(link: str) -> bool:
-    return any(host in (link or "").lower() for host in _INDIA_RETAILER_HOSTS)
+    return _is_regional_retailer(link, "IN")
 
 
 def _normalize_match(m: dict) -> dict:
@@ -284,45 +313,50 @@ class ProductSearchError(RuntimeError):
     """Raised when SerpApi returns a hard error (not just empty)."""
 
 
+_REGION_TO_LENS_COUNTRY: dict[str, str] = {"IN": "in", "US": "us", "AE": "ae"}
+
+
 def search_similar_by_url(image_url: str, country: str = DEFAULT_COUNTRY,
                           lang: str = DEFAULT_LANG,
-                          max_results: int = 6) -> dict:
-    """Call SerpApi Google Lens with a public image URL. Returns:
+                          max_results: int = 6,
+                          region: str = "IN") -> dict:
+    """Call SerpApi Google Lens with a public image URL, region-aware.
 
-        {
-          "similar_items": [ {title, source, price_display, price_value,
-                              currency, link, thumbnail, region}, ... ],
-          "raw_match_count": int,
-          "shoppable_count": int,
-          "indian_count": int,
-          "elapsed_s": float,
-          "empty": bool,
-          "error": str | None,
-        }
+    2026-02-08 (multi-region) — pass `region` ("IN"|"US"|"AE") so:
+      * SerpApi's `country` param is sent as `in|us|ae` — Google Lens
+        then biases its result set to that market.
+      * Local-retailer ranking uses that region's allow-list
+        (`_REGIONAL_RETAILER_HOSTS`), so US searches rank US retailers
+        first, AE searches rank AE retailers first, etc.
+      * Falls back to global retailers when the region-specific list
+        returns no hits (feasibility confirmed India-only queries can
+        return 0 matches even for valid crops — see the SerpApi
+        Google Lens quirk documented in PRD).
 
-    Behaviour tuned after the 2026-02-08 feasibility test:
-      * `country` is deliberately NOT sent to Google Lens — feasibility
-        confirmed `country=in` returns 0 matches for many valid crops
-        (Google Lens's India shopping index is sparse). Instead we get
-        global results and rank Indian retailers first.
-      * We DROP every non-shoppable result (YouTube, blogs, 3D-model
-        sites, stock-photo hosts) before ranking. Empty results are
-        preferable to junk results per the founder's spec.
-      * Priced Indian retailer > priced global retailer > unpriced Indian
-        > unpriced global.
-
-    Callers must have already: (a) budgeted the search, (b) confirmed the
-    quality gate passed, (c) exposed `image_url` publicly.
+    Returns:
+      {
+        "similar_items": [ {title, source, price_display, price_value,
+                            currency, link, thumbnail}, ... ],
+        "raw_match_count": int,
+        "shoppable_count": int,
+        "regional_count": int,    # count of hits from the ACTIVE region
+        "elapsed_s": float,
+        "empty": bool,
+        "error": str | None,
+        "region": str,
+      }
     """
     if not SERPAPI_KEY:
         raise ProductSearchError("SERPAPI_KEY missing from environment")
+    active_region = (region or "IN").upper()
+    lens_country = _REGION_TO_LENS_COUNTRY.get(active_region, "in")
     params = {
         "engine": "google_lens",
         "type": "visual_matches",
         "url": image_url,
         "api_key": SERPAPI_KEY,
         "hl": lang,
-        # `country` intentionally omitted — see docstring.
+        "country": lens_country,
     }
     url = SERPAPI_ENDPOINT + "?" + urllib.parse.urlencode(params)
     t0 = time.monotonic()
@@ -343,13 +377,18 @@ def search_similar_by_url(image_url: str, country: str = DEFAULT_COUNTRY,
         m for m in vm
         if _looks_shoppable(m.get("link") or "", m.get("source") or "")
     ]
-    indian_count = sum(1 for m in shoppable if _is_indian_retailer(m.get("link") or ""))
+    regional_count = sum(
+        1 for m in shoppable
+        if _is_regional_retailer(m.get("link") or "", active_region)
+    )
 
-    # Rank: (a) Indian retailer, (b) has a price, (c) original position.
+    # Rank: (a) retailer from THE ACTIVE REGION, (b) has a price,
+    # (c) original position. This way US searches float Amazon.com/
+    # Wayfair up top; AE searches float Amazon.ae / Noon.
     ranked = sorted(
         enumerate(shoppable),
         key=lambda ix: (
-            not _is_indian_retailer(ix[1].get("link") or ""),
+            not _is_regional_retailer(ix[1].get("link") or "", active_region),
             not bool(ix[1].get("price")),
             ix[0],
         ),
@@ -357,16 +396,20 @@ def search_similar_by_url(image_url: str, country: str = DEFAULT_COUNTRY,
     normalized = [_normalize_match(m) for _, m in ranked[:max_results]]
 
     logger.info(
-        "[serpapi] elapsed=%.1fs raw=%d shoppable=%d indian=%d kept=%d",
-        elapsed, len(vm), len(shoppable), indian_count, len(normalized),
+        "[serpapi] region=%s elapsed=%.1fs raw=%d shoppable=%d regional=%d kept=%d",
+        active_region, elapsed, len(vm), len(shoppable), regional_count, len(normalized),
     )
 
     return {
         "similar_items": normalized,
         "raw_match_count": len(vm),
         "shoppable_count": len(shoppable),
-        "indian_count": indian_count,
+        "regional_count": regional_count,
+        # Retained for backwards compatibility with existing UI/tests
+        # that read `indian_count`.
+        "indian_count": regional_count if active_region == "IN" else 0,
         "elapsed_s": round(elapsed, 2),
         "empty": len(normalized) == 0,
         "error": d.get("error"),
+        "region": active_region,
     }

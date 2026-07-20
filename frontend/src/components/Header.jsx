@@ -10,7 +10,14 @@ export default function Header({ variant = "app" }) {
   const navigate = useNavigate();
   const [savingRegion, setSavingRegion] = useState(false);
 
-  const region = user?.preferred_region === "Global" ? "Global" : "India";
+  // 2026-02-08 — multi-region search. `preferred_region` holds a short
+  // ISO code ("IN" | "US" | "AE"). Legacy values ("India" | "Global")
+  // are normalised server-side on read so we only ever see codes here.
+  const region = ["IN", "US", "AE"].includes(user?.preferred_region)
+    ? user.preferred_region : "IN";
+
+  const REGION_LABEL = { IN: "India", US: "United States", AE: "UAE" };
+  const REGION_SHORT = { IN: "IN", US: "US", AE: "AE" };
 
   const switchRegion = async (next) => {
     if (!user || savingRegion || next === region) return;
@@ -18,11 +25,7 @@ export default function Header({ variant = "app" }) {
     try {
       const { data } = await api.put("/users/me/preferences", { preferred_region: next });
       setUser({ ...user, preferred_region: data.preferred_region });
-      toast.success(
-        data.preferred_region === "India"
-          ? "India mode: AI now uses Indian-market sourcing context"
-          : "Global mode: no India-specific context"
-      );
+      toast.success(`Search region set to ${REGION_LABEL[data.preferred_region] || data.preferred_region}`);
     } catch {
       toast.error("Could not update region preference");
     } finally {
@@ -104,37 +107,35 @@ export default function Header({ variant = "app" }) {
                 </>
               )}
 
-              {/* Region preference toggle — drives AI prompt context (India sourcing brands, terminology). Server-only signal, never surfaced as vendor data. */}
+              {/* Region search-scope selector — the ACTIVE region gates
+                  every catalogue search + SerpApi similar-items call.
+                  Cross-region records never merge into a single result. */}
               <div
-                className="hidden sm:inline-flex items-center gap-1.5 bg-[#F5F1EC] rounded-full pl-3 pr-0.5 py-0.5 text-xs"
+                className="hidden sm:inline-flex items-center gap-1 bg-[#F5F1EC] rounded-full pl-3 pr-0.5 py-0.5 text-xs"
                 data-testid="region-toggle"
                 role="group"
-                aria-label="Region preference"
+                aria-label="Search region"
               >
                 <span className="text-[10px] uppercase tracking-wider text-neutral-500 font-semibold">
                   Region
                 </span>
-                {["India", "Global"].map((r) => (
+                {["IN", "US", "AE"].map((r) => (
                   <button
                     key={r}
                     onClick={() => switchRegion(r)}
                     disabled={savingRegion}
                     aria-pressed={region === r}
-                    aria-label={`Switch region preference to ${r}`}
-                    title={
-                      r === "India"
-                        ? "India mode: AI prompts include Indian-market sourcing context (Greenlam, Kajaria, Asian Paints, Kota stone, etc.)"
-                        : "Global mode: no India-specific sourcing context"
-                    }
+                    aria-label={`Search catalogues for ${REGION_LABEL[r]}`}
+                    title={`Search ${REGION_LABEL[r]} catalogues only — cross-region records never surface.`}
                     className={
-                      "px-3 py-1.5 rounded-full font-medium transition-colors " +
+                      "px-2.5 py-1.5 rounded-full font-medium transition-colors " +
                       (region === r
                         ? "bg-black text-white"
                         : "text-neutral-600 hover:text-black")
                     }
                     data-testid={`region-${r.toLowerCase()}-btn`}
                   >
-                    {r}
+                    {REGION_SHORT[r]}
                   </button>
                 ))}
               </div>

@@ -69,7 +69,7 @@ function SummaryPanel({ summary, title, subtitle, ephemeral, onClear, cropPrevie
         {summary?.sourcing_note && (
           <div className="rounded-xl bg-ochre-soft/60 border border-ochre/30 p-3">
             <div className="text-[10px] uppercase tracking-widest text-ochre font-semibold mb-1">
-              Indian Sourcing Summary
+              Regional Sourcing Summary
             </div>
             <p className="text-xs text-charcoal leading-relaxed" data-testid="intelligence-sourcing">
               {summary.sourcing_note}

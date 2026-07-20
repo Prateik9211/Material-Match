@@ -689,16 +689,16 @@ function MaterialCard({ row, index, onAddToShortlist, shortlisted, onAddCatalogu
           </div>
         )}
 
-        {/* Indian sourcing note — Sprint 6: hidden unless at least one
+        {/* Local sourcing note — Sprint 6: hidden unless at least one
             Published Library match exists, so we never surface a
             fabricated brand recommendation. */}
-        {row.indian_alternative && (row.catalogue_matches || []).some((m) => m.source_library === "Published Library") && (
+        {(row.local_alternative || row.indian_alternative) && (row.catalogue_matches || []).some((m) => m.source_library === "Published Library") && (
           <div className="rounded-xl bg-ochre-soft/40 border border-ochre/20 p-3">
             <div className="flex items-center gap-1.5 mb-1">
               <MapPin className="w-3.5 h-3.5 text-ochre" strokeWidth={2} />
-              <span className="text-[10px] uppercase tracking-widest text-ochre font-semibold">Indian sourcing note</span>
+              <span className="text-[10px] uppercase tracking-widest text-ochre font-semibold">Local sourcing note</span>
             </div>
-            <div className="text-xs text-charcoal leading-relaxed">{row.indian_alternative}</div>
+            <div className="text-xs text-charcoal leading-relaxed">{row.local_alternative || row.indian_alternative}</div>
           </div>
         )}
 

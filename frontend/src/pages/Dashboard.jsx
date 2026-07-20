@@ -16,9 +16,9 @@ const statusColor = {
 
 const WORKFLOW_STEPS = [
   { icon: Camera, title: "Upload a reference", body: "A Pinterest pin or an interior photograph." },
-  { icon: Layers, title: "Detect materials & products", body: "Zones, finishes, colour and Indian sourcing context." },
+  { icon: Layers, title: "Detect materials & products", body: "Zones, finishes, colour and regional sourcing context." },
   { icon: BookOpen, title: "Match catalogues", body: "Upload a supplier PDF or search your Material Library." },
-  { icon: ShoppingBag, title: "Discover products", body: "Lighting, furniture, decor — with curated Indian options." },
+  { icon: ShoppingBag, title: "Discover products", body: "Lighting, furniture, decor — with curated regional options." },
   { icon: ListChecks, title: "Build sourceable shortlist", body: "Walk into vendor meetings prepared." },
 ];
 
@@ -239,7 +239,7 @@ export default function Dashboard() {
               {[
                 { label: "Active projects", value: projects.length, icon: Sparkles },
                 { label: "Completed reports", value: reports.length, icon: FileText },
-                { label: "Sourcing region", value: user?.preferred_region || "IN", icon: ArrowUpRight, sub: "India-first sourcing" },
+                { label: "Sourcing region", value: user?.preferred_region || "IN", icon: ArrowUpRight, sub: "Active search scope" },
               ].map((s, i) => (
                 <div key={s.label} className="bg-white border border-stone-border-soft rounded-2xl p-6 shadow-soft" data-testid={`stat-card-${i}`}>
                   <div className="flex items-start justify-between mb-6">

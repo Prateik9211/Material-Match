@@ -166,6 +166,86 @@ Ceiling and painted left-wall correctly remained `Paint` — cabinet-specific bi
 
 **Files touched:** `intelligence/dna.py` only (prompt-only fix, ~15 lines added).
 
+
+## 2026-02-08 — Multi-region catalogue architecture (IN / US / AE) ✅
+Founder approved after the investigation report. The 2-state toggle ("India"/"Global") is replaced by a real 3-region search scope; catalogue records, user preferences, uploads, and SerpApi routing are all region-aware. `Global` was DROPPED as a search scope (a search must target ONE real region — anything less defeats clean isolation). It survives only as a marketing word in prose.
+
+**Data model (with idempotent one-time migration `scripts/migrate_regions.py`):**
+- `ke_records.region`: `"IN" | "US" | "AE"` — 352 legacy records stamped `"IN"`.
+- `ke_uploads.region` — 6 legacy uploads stamped `"IN"`.
+- `affiliate_products.region` — 10 legacy affiliates stamped `"IN"`.
+- `users.preferred_region`: migrated `"India" → "IN"`, `"Global" → "IN"` (default).
+
+**Retrieval (same 3-slot library_scope template):**
+- `_STUDIO_INDEXED_BY_REGION: dict[str, list]` — admin/seed index now PARTITIONED by region so cross-region records CANNOT walk into a scoped search.
+- `_admin_index_for_region(region)` returns the correct slice (empty list on unknown region — a bad param fails safe, never leaks).
+- `_load_user_catalogue_records(user_id, region=...)` filters by region in Mongo before returning.
+- `_find_catalogue_matches` accepts `region` and uses the partitioned index + region-filtered user records.
+- `_enrich_rows_with_catalogue` threads region through to `_find_catalogue_matches`.
+- SEEDED_CATALOGUE (5-item built-in India-only demo library) is now IN-only — never surfaces on US/AE searches.
+
+**Endpoints:**
+- `POST /projects/{id}/analyze?region=IN|US|AE&library_scope=...` — defaults to user's `preferred_region`.
+- `POST /projects/{id}/analyze-region` body accepts `region: str | None`.
+- `POST /admin/studio/upload` accepts `region` Form param (admin tags catalogue at upload).
+- `POST /library/uploads` accepts `region` Form param (user tags their own catalogue at upload).
+- Every extracted record inherits the parent upload's region tag.
+
+**Regional prompt/context blocks:**
+- `INDIAN_BRAND_CONTEXT`, `US_BRAND_CONTEXT`, `AE_BRAND_CONTEXT` — one prompt block per region with real brand names as reasoning context (Greenlam/Kajaria for IN, Wilsonart/Rejuvenation/Benjamin Moore for US, RAK/Jotun/IKEA UAE for AE).
+- `INDIA_ALTERNATIVES_BY_FAMILY` + new `US_ALTERNATIVES_BY_FAMILY` + `AE_ALTERNATIVES_BY_FAMILY` — per-region fallback suggestions when no catalogue match is found.
+- `_alternatives_for(region)` / `_regional_analysis_block(region)` / `_build_analysis_prompt(region)` — clean per-region resolution.
+- Analysis rows now carry `local_alternative` (region-agnostic) alongside the legacy `indian_alternative` (only populated when region=IN so old frontend code still renders on IN).
+
+**SerpApi Google Lens routing (`intelligence/product_search.py`):**
+- `_REGIONAL_RETAILER_HOSTS = {IN:[...], US:[...], AE:[...]}` replaces the flat `_INDIA_RETAILER_HOSTS`.
+- `search_similar_by_url(url, region=...)` sends `country=in|us|ae` and ranks retailers from the active region first.
+- Content-addressed cache key is region-bucketed so IN and US searches on the same crop don't collide.
+- Legacy `_is_indian_retailer` kept as a thin backwards-compat shim.
+
+**User model / preferences:**
+- `SUPPORTED_REGIONS = ["IN", "US", "AE"]` (dropped "Global").
+- `_normalize_region()` migrates any legacy value in-flight ("India"→"IN", "Global"→"IN", "UAE"→"AE", garbage→"IN").
+- `GET /users/me/preferences` returns the normalised code.
+- `PUT /users/me/preferences` accepts both new codes and legacy aliases via `_REGION_LEGACY_ALIASES`.
+
+**Frontend:**
+- `Header.jsx` region toggle expanded from 2 to 3 buttons (IN / US / AE). Active region ↔ user preference PUT; backend reads it per-request.
+- 19 hardcoded India strings swept:
+  - **★ Founder's specific ask:** "Product discovery built for Indian interiors" → "**Product discovery built for local interiors**" ✅
+  - Landing.jsx: "India-first sourcing" → "Region-aware sourcing"; "curated Indian recommendations" → "curated regional recommendations"; "India-ready sourcing options" → "local sourcing options"; "Indian marketplaces" → "your active region's marketplaces".
+  - Dashboard.jsx: "Indian sourcing context" → "regional sourcing context"; "curated Indian options" → "curated regional options"; "India-first sourcing" (stat sub) → "Active search scope".
+  - Analysis.jsx: section title "Indian Sourcing Summary" → "Regional Sourcing Summary".
+  - MaterialLibrary.jsx: "Indian & global brands" → "regional supplier catalogues".
+  - MatchCard.jsx: `data-testid="match-indian-alt-*"` → `match-local-alt-*`; label "India alt:" → "Local alt:"; reads `local_alternative` first, falls back to legacy `indian_alternative`.
+  - RoomPresentation.jsx: section title "Recommended Indian Options" → "Recommended Local Options"; subtitle "India-first sourcing options" → "local sourcing options"; testids updated.
+  - MaterialsFirstSection.jsx: section title "Indian sourcing note" → "Local sourcing note"; reads `local_alternative` first.
+  - AdminAffiliates.jsx: heading now honest — "Curate the affiliate product database (currently India-focused; per-region tagging coming as new regions launch)".
+
+**Cross-region isolation proof (the critical rigor test):**
+- `tests/test_region_isolation.py` — 7 tests, ALL PASSING:
+  1. `_admin_index_partitioned_by_region` — canary records in IN/US/AE slices, no cross-contamination.
+  2. `_search_region_in_never_returns_us_or_ae_records`.
+  3. `_search_region_us_never_returns_in_or_ae_records` — proves US canary surfaces AND no IN/AE leak.
+  4. `_search_region_ae_never_returns_in_or_us_records` — same for AE.
+  5. `_seeded_catalogue_only_appears_in_region_in` — the 5-record built-in demo library is confined to IN.
+  6. `_region_normaliser_migrates_legacy_values` — "India"→"IN", "Global"→"IN", "UAE"→"AE", garbage→"IN".
+  7. `_serpapi_lens_country_and_retailer_lists_per_region` — Google Lens country codes wired, allow-lists per region, no host overlaps.
+
+**Live HTTP proof (founder's Bedroom2 real project, `POST /analyze`):**
+- `?region=IN`: 10 rows → **28 catalogue_matches** across rows (real Indian records surface).
+- `?region=US`: 10 rows → **0 catalogue_matches** (US catalogue empty apart from canaries in test; zero cross-region leak from IN's 352 records).
+- Same project, same rows, drastically different result set. This is the isolation guarantee the founder asked for.
+
+**Full test suite: 41 passing** (18 gate + 3 similar-endpoint + 13 material-group + 7 region-isolation).
+
+**Files created:**
+- `backend/scripts/migrate_regions.py`
+- `backend/tests/test_region_isolation.py`
+
+**Known-empty state (as the founder anticipated):** US & AE catalogues are empty apart from canary test records. New regions will show "no results" until the founder uploads real US/UAE PDFs via `POST /library/uploads?region=US` (or the admin equivalent). The pipeline is entirely region-scoped and ready to receive them.
+
+
 ## 2026-02-05 (round 5+6) — 150 MB user cap + product-vocab expansion + same-label spatial merge (partial) ⚠
 
 Three related accuracy fixes shipped after the founder tested a real kitchen image.
