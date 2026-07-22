@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Header from "@/components/Header";
 import { useAuth } from "@/context/AuthContext";
-import { ArrowRight, Check, Camera, Layers, BookOpen, ShoppingBag, ListChecks, PenSquare, PlayCircle, PauseCircle, X, ChevronRight, Focus, Search, Sparkles } from "lucide-react";
+import { ArrowRight, Check, Camera, Layers, BookOpen, ShoppingBag, ListChecks, PenSquare, PlayCircle, PauseCircle, X, ChevronRight, Focus, Search, Sparkles, Star } from "lucide-react";
 // Static asset — Unsplash-licensed kitchen photo used as the "Reference"
 // in the landing-page WorkflowVisual panel.  This IS the image the live
 // hybrid pipeline analysed to produce the Detected + Sourceable numbers
@@ -513,6 +513,19 @@ export default function Landing() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [demoOpen, setDemoOpen] = useState(false);
+  const [reviews, setReviews] = useState([]);
+
+  // Fetch public (approved) reviews for the testimonials band.
+  // Fully unauthenticated — safe to call from the marketing page.
+  useEffect(() => {
+    let mounted = true;
+    const url = `${process.env.REACT_APP_BACKEND_URL}/api/reviews/public`;
+    fetch(url)
+      .then((r) => (r.ok ? r.json() : { reviews: [] }))
+      .then((d) => { if (mounted) setReviews(d.reviews || []); })
+      .catch(() => {});
+    return () => { mounted = false; };
+  }, []);
 
   const openDemoModal = () => setDemoOpen(true);
   const openCreate = () => {
@@ -696,6 +709,68 @@ export default function Landing() {
           </div>
         </div>
       </section>
+
+      {/* TESTIMONIALS — hidden if none yet */}
+      {reviews.length > 0 && (
+        <section
+          className="max-w-6xl mx-auto px-6 py-20"
+          data-testid="testimonials-section"
+        >
+          <div className="max-w-2xl mb-12">
+            <div className="text-overline mb-3">What designers say</div>
+            <h2 className="font-display text-4xl sm:text-5xl font-bold tracking-tight text-charcoal">
+              Real feedback from<br />
+              <span className="text-warm-grey">early users.</span>
+            </h2>
+          </div>
+
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6 md:gap-8">
+            {reviews.slice(0, 6).map((r, i) => (
+              <article
+                key={r.id}
+                className="bg-white border border-stone-border-soft rounded-2xl p-8 shadow-soft hover:shadow-hover transition-all hover:-translate-y-1 duration-300 flex flex-col"
+                data-testid={`testimonial-card-${i}`}
+              >
+                <div
+                  className="flex items-center gap-0.5 mb-4"
+                  aria-label={`${r.rating} of 5 stars`}
+                  data-testid={`testimonial-rating-${i}`}
+                >
+                  {[1, 2, 3, 4, 5].map((n) => (
+                    <Star
+                      key={n}
+                      className={`w-4 h-4 ${n <= (r.rating || 0) ? "fill-ochre text-ochre" : "text-neutral-200"}`}
+                      strokeWidth={1.75}
+                    />
+                  ))}
+                </div>
+                <p
+                  className="text-sm text-charcoal leading-relaxed whitespace-pre-line flex-1"
+                  data-testid={`testimonial-comment-${i}`}
+                >
+                  “{r.comment}”
+                </p>
+                <div className="mt-6 pt-4 border-t border-stone-border-soft">
+                  <div
+                    className="font-semibold text-sm text-charcoal"
+                    data-testid={`testimonial-name-${i}`}
+                  >
+                    {r.user_name || "Anonymous"}
+                  </div>
+                  {r.role && (
+                    <div
+                      className="text-xs text-warm-grey mt-0.5"
+                      data-testid={`testimonial-role-${i}`}
+                    >
+                      {r.role}
+                    </div>
+                  )}
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* CLOSING CTA */}
       <section className="max-w-4xl mx-auto px-6 py-24 text-center">

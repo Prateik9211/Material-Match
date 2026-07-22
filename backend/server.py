@@ -5071,13 +5071,43 @@ async def submit_review(payload: ReviewSubmit,
         "role": role,
         "rating": int(payload.rating),
         "comment": comment,
-        "approved": False,   # default hidden; admin toggles later
+        # 2026-02-14: reviews now go LIVE immediately. The admin
+        # hide/approve toggle in AdminReviews.jsx is retained as a
+        # post-publish safety net (moderation-after-the-fact) rather
+        # than a pre-publish gate.
+        "approved": True,
         "created_at": datetime.now(timezone.utc),
     }
     await db.reviews.insert_one(doc)
     return {
         "id": doc["id"], "rating": doc["rating"], "comment": doc["comment"],
-        "role": doc["role"], "approved": False, "created_at": doc["created_at"].isoformat(),
+        "role": doc["role"], "approved": True, "created_at": doc["created_at"].isoformat(),
+    }
+
+
+@api_router.get("/reviews/public")
+async def list_public_reviews():
+    """Public endpoint (no auth) returning approved reviews only,
+    newest first. Powers the landing-page testimonials section."""
+    docs = await db.reviews.find({"approved": True}).sort("created_at", -1).to_list(100)
+    def _iso(v):
+        if not v: return None
+        if hasattr(v, "isoformat"): return v.isoformat()
+        return str(v)
+    return {
+        "reviews": [
+            {
+                "id": d["id"],
+                # Never leak email publicly — only display name + role.
+                "user_name": d.get("user_name"),
+                "role": d.get("role"),
+                "rating": d.get("rating"),
+                "comment": d.get("comment"),
+                "created_at": _iso(d.get("created_at")),
+            }
+            for d in docs
+        ],
+        "count": len(docs),
     }
 
 

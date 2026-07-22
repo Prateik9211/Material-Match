@@ -64,7 +64,7 @@ export default function LeaveReview() {
               Thank you.
             </div>
             <p className="text-sm text-warm-grey">
-              Your review has been submitted for review by our team.
+              Your review is now live on the landing page.
             </p>
           </div>
         ) : (

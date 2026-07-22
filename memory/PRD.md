@@ -1541,3 +1541,23 @@ z1 white subway backsplash · z2 walnut floating shelf · z3 shaker cabinet pain
 
 ### Freeze verdict
 Engine is READY for Sprint 9 (large-scale 30–50 image validation). The Sprint 8.2 delta is additive-only; no regressions introduced. Two HONEST_REJECT outcomes on Image #3 are engineering wins, not defects — the engine correctly declines to recommend visually incompatible or catalogue-absent candidates.
+
+## 2026-02-14 — Reviews go live instantly + public testimonials on landing ✅
+Founder wanted user reviews to appear on the landing page immediately upon submission (no admin pre-approval gate) while keeping the ability to hide inappropriate ones after the fact.
+
+**Changes:**
+1. `POST /api/reviews` now writes `approved: true` on insert (was `false`). Response also returns `approved: true`. Admin hide/approve toggle in `AdminReviews.jsx` now serves as a post-publish "remove from public view" safety net.
+2. New public endpoint `GET /api/reviews/public` (no auth) — returns only `approved: true` reviews, newest first, capped at 100. Only exposes `id, user_name, role, rating, comment, created_at` (never `user_email`).
+3. `Landing.jsx` now fetches `/api/reviews/public` on mount and renders a `"What designers say"` testimonials band between the Presentation-Coming-Soon and Closing CTA sections. Reuses existing workflow-card styling (rounded-2xl + shadow-soft + hover lift). Shows up to 6 cards (star rating, quoted comment, name, optional role). If zero approved reviews exist, the section is hidden entirely.
+4. `LeaveReview.jsx` thank-you copy updated to "Your review is now live on the landing page."
+5. `AdminReviews.jsx` copy + toggle label updated ("Public" / "Hidden") to reflect the safety-net semantics.
+
+**E2E verification (2026-02-14):**
+- Registered fresh user → submitted 5⭐ review → response `approved: true`.
+- `GET /api/reviews/public` (no auth headers) returned the new review immediately.
+- Admin PATCH `approved: false` → review disappeared from public endpoint.
+- Admin PATCH `approved: true` → review reappeared.
+- Landing page renders 6 testimonial cards (`data-testid="testimonials-section"`) with correct star ratings, quotes, and names.
+
+**Files touched:** `/app/backend/server.py` (submit_review default + new public endpoint), `/app/frontend/src/pages/Landing.jsx` (Star import, useEffect fetch, testimonials section), `/app/frontend/src/pages/LeaveReview.jsx` (thank-you copy), `/app/frontend/src/pages/AdminReviews.jsx` (helper copy + button label), `/app/backend/tests/test_reviews_and_admin_users.py` (assertion updated: `approved is True`).
+

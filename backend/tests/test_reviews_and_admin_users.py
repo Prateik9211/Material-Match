@@ -53,7 +53,7 @@ class TestPostReview:
                           timeout=15)
         assert r.status_code == 200, r.text
         d = r.json()
-        assert d["approved"] is False
+        assert d["approved"] is True
         assert d["rating"] == 5
         assert d["comment"] == "Great product from tester"
         assert d["role"] == "Interior Designer"

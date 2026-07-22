@@ -33,7 +33,7 @@ export default function AdminReviews() {
     setReviews((cur) => cur.map((x) => x.id === r.id ? { ...x, approved: next } : x));
     try {
       await api.patch(`/admin/reviews/${r.id}`, { approved: next });
-      toast.success(next ? "Review approved" : "Review hidden");
+      toast.success(next ? "Review shown on landing" : "Review hidden");
     } catch (err) {
       setReviews((cur) => cur.map((x) => x.id === r.id ? { ...x, approved: r.approved } : x));
       toast.error(formatApiError(err));
@@ -54,9 +54,10 @@ export default function AdminReviews() {
           Reviews
         </h1>
         <p className="text-warm-grey mb-8">
-          User-submitted testimonials, most recent first. Toggle
-          <span className="font-medium"> Approve</span> to mark a review as
-          eligible for future public display.
+          User-submitted testimonials, most recent first. Reviews go live
+          on the landing page immediately when submitted. Use the
+          <span className="font-medium"> Hide</span> toggle below to remove
+          any review from public view after the fact.
         </p>
 
         {loading ? (
@@ -94,7 +95,7 @@ export default function AdminReviews() {
                     }`}
                     data-testid={`review-toggle-${i}`}
                   >
-                    {r.approved ? <><Eye className="w-3.5 h-3.5" strokeWidth={2} /> Approved</>
+                    {r.approved ? <><Eye className="w-3.5 h-3.5" strokeWidth={2} /> Public</>
                                 : <><EyeOff className="w-3.5 h-3.5" strokeWidth={2} /> Hidden</>}
                   </button>
                 </div>
