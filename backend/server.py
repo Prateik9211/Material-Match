@@ -4958,6 +4958,16 @@ def _sanitize_kw_list(v) -> list:
     return [s.strip().lower() for s in v if isinstance(s, str) and s.strip()][:12]
 
 
+@api_router.get("/admin/stats")
+async def admin_stats(admin: dict = Depends(require_admin)):
+    """Lightweight admin metrics — currently just the total registered
+    user count. No charts, no history; just the current number."""
+    return {
+        "total_users": await db.users.count_documents({}),
+    }
+
+
+
 @api_router.get("/admin/affiliates")
 async def list_affiliates(admin: dict = Depends(require_admin)):
     cursor = db.affiliate_products.find({}).sort("created_at", -1)

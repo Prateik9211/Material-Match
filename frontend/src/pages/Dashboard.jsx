@@ -82,7 +82,9 @@ export default function Dashboard() {
   const [projects, setProjects] = useState([]);
   const [reports, setReports] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [adminStats, setAdminStats] = useState(null);
   const navigate = useNavigate();
+  const isAdmin = user?.role === "admin";
 
   const fetchData = useCallback(async () => {
     try {
@@ -100,6 +102,14 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  // Admin-only: pull the current registered-user count for the stat card.
+  useEffect(() => {
+    if (!isAdmin) return;
+    api.get("/admin/stats")
+      .then((r) => setAdminStats(r.data))
+      .catch(() => {/* silent — admin stats card just won't render */});
+  }, [isAdmin]);
 
   const projectRoute = (p) => `/projects/${p.id}/analysis`;
   const openDemo = () => navigate("/demo");
@@ -235,13 +245,21 @@ export default function Dashboard() {
         {hasProjects && (
           <>
             {/* Stat cards */}
-            <div className="grid sm:grid-cols-3 gap-6 mb-12">
+            <div className={`grid gap-6 mb-12 ${isAdmin ? "sm:grid-cols-2 lg:grid-cols-4" : "sm:grid-cols-3"}`}>
               {[
                 { label: "Active projects", value: projects.length, icon: Sparkles },
                 { label: "Completed reports", value: reports.length, icon: FileText },
                 { label: "Sourcing region", value: user?.preferred_region || "IN", icon: ArrowUpRight, sub: "Active search scope" },
+                // Admin-only: total registered users. Hidden for non-admins.
+                ...(isAdmin ? [{
+                  label: "Registered users",
+                  value: adminStats?.total_users ?? "—",
+                  icon: Sparkles,
+                  sub: "All-time signups",
+                  testid: "stat-card-admin-users",
+                }] : []),
               ].map((s, i) => (
-                <div key={s.label} className="bg-white border border-stone-border-soft rounded-2xl p-6 shadow-soft" data-testid={`stat-card-${i}`}>
+                <div key={s.label} className="bg-white border border-stone-border-soft rounded-2xl p-6 shadow-soft" data-testid={s.testid || `stat-card-${i}`}>
                   <div className="flex items-start justify-between mb-6">
                     <span className="text-overline">{s.label}</span>
                     <s.icon className="w-5 h-5 text-warm-grey" strokeWidth={1.25} />

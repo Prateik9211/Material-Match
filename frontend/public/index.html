@@ -24,6 +24,26 @@
         <title>Emergent | Fullstack App</title>
         <script>window.addEventListener("error",function(e){if(e.error instanceof DOMException&&e.error.name==="DataCloneError"&&e.message&&e.message.includes("PerformanceServerTiming")){e.stopImmediatePropagation();e.preventDefault()}},true);</script>
         <script src="https://assets.emergent.sh/scripts/emergent-main.js"></script>
+
+        <!--
+          Google Analytics 4 (GA4) — page view + basic event tracking.
+          ⚠️  FOUNDER ACTION REQUIRED: replace the placeholder Measurement
+          ID below (`G-XXXXXXXXXX`) with your real GA4 ID before this
+          reports any data. Steps:
+            1. Go to https://analytics.google.com/  → Admin → Create Property.
+            2. Pick "Web" as the platform, enter materialmatches.com.
+            3. Copy the "Measurement ID" (format: G-XXXXXXXXXX).
+            4. Replace BOTH occurrences of `G-XXXXXXXXXX` in this file
+               (the src URL and the `gtag('config', ...)` call).
+            5. Redeploy — analytics will start flowing within ~30 seconds.
+        -->
+        <script async src="https://www.googletagmanager.com/gtag/js?id=G-XXXXXXXXXX"></script>
+        <script>
+            window.dataLayer = window.dataLayer || [];
+            function gtag(){dataLayer.push(arguments);}
+            gtag('js', new Date());
+            gtag('config', 'G-XXXXXXXXXX');
+        </script>
     </head>
     <body>
         <noscript>You need to enable JavaScript to run this app.</noscript>
