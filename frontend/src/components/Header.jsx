@@ -104,8 +104,37 @@ export default function Header({ variant = "app" }) {
                     <Shield className="w-4 h-4" strokeWidth={1.5} />
                     Scene Test
                   </button>
+                  <button
+                    onClick={() => navigate("/admin/users")}
+                    className="hidden sm:inline-flex items-center gap-2 text-sm text-neutral-700 hover:text-black px-3 py-2"
+                    data-testid="nav-admin-users"
+                    title="Registered users (real signups only)"
+                  >
+                    <Shield className="w-4 h-4" strokeWidth={1.5} />
+                    Users
+                  </button>
+                  <button
+                    onClick={() => navigate("/admin/reviews")}
+                    className="hidden sm:inline-flex items-center gap-2 text-sm text-neutral-700 hover:text-black px-3 py-2"
+                    data-testid="nav-admin-reviews"
+                    title="Submitted reviews inbox"
+                  >
+                    <Shield className="w-4 h-4" strokeWidth={1.5} />
+                    Reviews
+                  </button>
                 </>
               )}
+
+              {/* Leave-a-review CTA for every logged-in user. */}
+              <button
+                onClick={() => navigate("/reviews/new")}
+                className="hidden sm:inline-flex items-center gap-2 text-sm text-neutral-700 hover:text-black px-3 py-2"
+                data-testid="nav-leave-review"
+                title="Share your feedback"
+              >
+                <BookOpen className="w-4 h-4" strokeWidth={1.5} />
+                Leave a review
+              </button>
 
               {/* Region search-scope selector — the ACTIVE region gates
                   every catalogue search + SerpApi similar-items call.

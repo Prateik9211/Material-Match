@@ -11,6 +11,9 @@ import Analysis from "@/pages/Analysis";
 import Match from "@/pages/Match";
 import AdminAffiliates from "@/pages/AdminAffiliates";
 import AdminKnowledgeEngine from "@/pages/AdminKnowledgeEngine";
+import AdminReviews from "@/pages/AdminReviews";
+import AdminUsers from "@/pages/AdminUsers";
+import LeaveReview from "@/pages/LeaveReview";
 import MaterialMatchStudio from "@/pages/MaterialMatchStudio";
 import ConceptWorkspace from "@/pages/ConceptWorkspace";
 import PublicRoom from "@/pages/PublicRoom";
@@ -64,6 +67,30 @@ function App() {
             element={
               <ProtectedRoute>
                 <AdminAffiliates />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/reviews"
+            element={
+              <ProtectedRoute>
+                <AdminReviews />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/users"
+            element={
+              <ProtectedRoute>
+                <AdminUsers />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/reviews/new"
+            element={
+              <ProtectedRoute>
+                <LeaveReview />
               </ProtectedRoute>
             }
           />

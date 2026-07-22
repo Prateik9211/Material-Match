@@ -4961,10 +4961,171 @@ def _sanitize_kw_list(v) -> list:
 @api_router.get("/admin/stats")
 async def admin_stats(admin: dict = Depends(require_admin)):
     """Lightweight admin metrics — currently just the total registered
-    user count. No charts, no history; just the current number."""
+    user count. No charts, no history; just the current number.
+
+    Two counts are returned:
+      * `total_users` — every row in the users collection (legacy, may
+        include test-account artefacts).
+      * `real_users` — filtered by `_TEST_EMAIL_REGEX` so obvious pytest
+        / Playwright / admin-harness accounts (`*@test.com`, `*@t.com`,
+        `*@materialmatch.ai`) don't inflate the number.
+    """
     return {
         "total_users": await db.users.count_documents({}),
+        "real_users": await db.users.count_documents(_REAL_USER_QUERY),
     }
+
+
+# ---------------------------------------------------------------------------
+# Real-user filter (2026-02-08 investigation, tightened after founder saw
+# `test_*@example.com` leaks).
+#
+# Excludes obvious test-account patterns identified in the audit:
+#   * `*@test.com` / `*@t.com` / `*@example.com` — pytest fixture domains.
+#   * `*@materialmatch.ai`                        — QA harness + admin bootstrap.
+#   * `test_*` / `uitest_*` / `sam3_*` / `sprint*` / `region_pref_*` /
+#     `other_*` / `empty_*` / `qa*` local-parts    — pytest fixture prefixes.
+# ---------------------------------------------------------------------------
+_REAL_USER_QUERY: dict = {
+    "$and": [
+        {"email": {"$not": {"$regex": r"@test\.com$",         "$options": "i"}}},
+        {"email": {"$not": {"$regex": r"@t\.com$",            "$options": "i"}}},
+        {"email": {"$not": {"$regex": r"@example\.com$",      "$options": "i"}}},
+        {"email": {"$not": {"$regex": r"@materialmatch\.ai$", "$options": "i"}}},
+        {"email": {"$not": {"$regex": r"^(test|uitest|sam3|sprint|region_pref|other|empty|qa)[_0-9]",
+                            "$options": "i"}}},
+    ]
+}
+
+
+@api_router.get("/admin/users")
+async def admin_users(admin: dict = Depends(require_admin)):
+    """Return real (non-test) users, most recent first.
+
+    Test-account filtering matches the investigation of 2026-02-08:
+    excludes `*@test.com`, `*@t.com`, and `*@materialmatch.ai`. Founder
+    can request the raw unfiltered list separately if ever needed
+    (kept out to prevent accidental exposure of internal accounts).
+    """
+    docs = await db.users.find(
+        _REAL_USER_QUERY,
+        {"email": 1, "name": 1, "role": 1, "created_at": 1,
+         "preferred_region": 1},
+    ).sort("created_at", -1).to_list(1000)
+    def _iso(v):
+        if not v:
+            return None
+        if hasattr(v, "isoformat"):
+            return v.isoformat()
+        return str(v)
+    return {
+        "users": [
+            {
+                "id": str(d["_id"]),
+                "email": d.get("email"),
+                "name": d.get("name"),
+                "role": d.get("role"),
+                "region": _normalize_region(d.get("preferred_region")),
+                "created_at": _iso(d.get("created_at")),
+            }
+            for d in docs
+        ],
+        "count": len(docs),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Reviews / testimonials (2026-02-08).
+#
+# Purpose: collect testimonials from early testers so the founder can
+# show judges and investors that real people use the product. Kept
+# intentionally minimal — no email notifications, no threaded replies,
+# no rich text. Just: authenticated submit → store → admin can toggle
+# whether each row is publicly approved.
+# ---------------------------------------------------------------------------
+class ReviewSubmit(BaseModel):
+    role: Optional[str] = None
+    rating: int
+    comment: str
+
+
+@api_router.post("/reviews")
+async def submit_review(payload: ReviewSubmit,
+                        user: dict = Depends(get_current_user)):
+    """Authenticated review submission. One row per submission — a user
+    may leave multiple reviews (founder can hide duplicates via the
+    approve toggle if needed)."""
+    if payload.rating < 1 or payload.rating > 5:
+        raise HTTPException(400, "rating must be 1-5")
+    comment = (payload.comment or "").strip()
+    if not comment:
+        raise HTTPException(400, "comment is required")
+    if len(comment) > 1000:
+        raise HTTPException(400, "comment must be under 1000 characters")
+    role = (payload.role or "").strip()[:120] or None
+    doc = {
+        "id": secrets.token_urlsafe(10),
+        "user_id": user["id"],
+        "user_email": user.get("email"),
+        "user_name": user.get("name") or (user.get("email") or "").split("@")[0],
+        "role": role,
+        "rating": int(payload.rating),
+        "comment": comment,
+        "approved": False,   # default hidden; admin toggles later
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.reviews.insert_one(doc)
+    return {
+        "id": doc["id"], "rating": doc["rating"], "comment": doc["comment"],
+        "role": doc["role"], "approved": False, "created_at": doc["created_at"].isoformat(),
+    }
+
+
+@api_router.get("/admin/reviews")
+async def admin_list_reviews(admin: dict = Depends(require_admin)):
+    """Return every review, most recent first."""
+    docs = await db.reviews.find({}).sort("created_at", -1).to_list(500)
+    def _iso(v):
+        if not v: return None
+        if hasattr(v, "isoformat"): return v.isoformat()
+        return str(v)
+    return {
+        "reviews": [
+            {
+                "id": d["id"],
+                "user_email": d.get("user_email"),
+                "user_name": d.get("user_name"),
+                "role": d.get("role"),
+                "rating": d.get("rating"),
+                "comment": d.get("comment"),
+                "approved": bool(d.get("approved")),
+                "created_at": _iso(d.get("created_at")),
+            }
+            for d in docs
+        ],
+        "count": len(docs),
+    }
+
+
+class ReviewApproveUpdate(BaseModel):
+    approved: bool
+
+
+@api_router.patch("/admin/reviews/{review_id}")
+async def admin_toggle_review(review_id: str,
+                              payload: ReviewApproveUpdate,
+                              admin: dict = Depends(require_admin)):
+    """Toggle a review's `approved` flag — nothing else is mutable via
+    this endpoint. Founder-only public-display gate."""
+    r = await db.reviews.update_one(
+        {"id": review_id},
+        {"$set": {"approved": bool(payload.approved),
+                  "updated_at": datetime.now(timezone.utc)}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(404, "review not found")
+    return {"id": review_id, "approved": bool(payload.approved)}
+
 
 
 
