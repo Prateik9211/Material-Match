@@ -4992,7 +4992,7 @@ _REAL_USER_QUERY: dict = {
         {"email": {"$not": {"$regex": r"@t\.com$",            "$options": "i"}}},
         {"email": {"$not": {"$regex": r"@example\.com$",      "$options": "i"}}},
         {"email": {"$not": {"$regex": r"@materialmatch\.ai$", "$options": "i"}}},
-        {"email": {"$not": {"$regex": r"^(test|uitest|sam3|sprint|region_pref|other|empty|qa)[_0-9]",
+        {"email": {"$not": {"$regex": r"^(test|uitest|sam3|sprint|region_pref|other|empty|qa)(_|[0-9]|$)",
                             "$options": "i"}}},
     ]
 }
