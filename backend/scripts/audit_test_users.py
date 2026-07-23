@@ -36,14 +36,22 @@ TEST_USER_QUERY: dict = {
     ]
 }
 
-# The founder-confirmed real accounts. NEVER delete these regardless
-# of any pattern match. `admin@materialmatch.ai` is the operational
-# admin login the founder actively uses — deleting it locks him out of
-# the admin panel, so it stays even though it matches the
-# `@materialmatch.ai` test-artefact pattern.
+# The founder-confirmed real accounts (2026-02-14 second pass).
+# NEVER delete these regardless of any pattern match. `admin@materialmatch.ai`
+# is the operational admin login the founder actively uses.
 PROTECTED_EMAILS = {
+    # Founder-supplied real signups (from live production /admin/users).
+    "earthersouldesignoffice@gmail.com",
+    "info@ladlab.in",
+    "ai.yashwarde@gmail.com",
+    "artistsneha23@gmail.com",
+    "akshaysangle90@gmail.com",
+    "neeru@vadehra.com",
     "pgirwalkar@gmail.com",
+    # Preview-only real signup — carried forward defensively so if she
+    # ever exists in either DB she is never removed.
     "ar.priyankasg@gmail.com",
+    # Operational admin login — do not touch.
     "admin@materialmatch.ai",
 }
 
