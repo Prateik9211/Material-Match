@@ -4998,6 +4998,161 @@ _REAL_USER_QUERY: dict = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Purge endpoint (2026-02-14). The `_REAL_USER_QUERY` above is READ-ONLY —
+# it just filters what /admin/users returns. To actually DELETE the test
+# artefacts (users + their orphan projects/reports/reviews/etc.) the founder
+# uses POST /admin/purge-test-users below.
+#
+# Safety layers:
+#   * Admin-only via `require_admin` dependency.
+#   * Whitelist of founder-confirmed real emails is ALWAYS excluded, even
+#     if a pattern accidentally matches (belt-and-braces).
+#   * Dry-run by default. Only `?confirm=true` actually deletes anything.
+#   * Response returns counts of everything that would/did get removed so
+#     the founder always has a full audit trail before + after.
+# ---------------------------------------------------------------------------
+PROTECTED_REAL_EMAILS: set[str] = {
+    # Founder-supplied real signups (from live production /admin/users).
+    "earthersouldesignoffice@gmail.com",
+    "info@ladlab.in",
+    "ai.yashwarde@gmail.com",
+    "artistsneha23@gmail.com",
+    "akshaysangle90@gmail.com",
+    "neeru@vadehra.com",
+    "pgirwalkar@gmail.com",
+    # Preview-only real signup — kept on the whitelist defensively in
+    # case she ever exists in either DB.
+    "ar.priyankasg@gmail.com",
+    # Operational admin login — MUST stay regardless of pattern match.
+    "admin@materialmatch.ai",
+}
+
+
+def _test_user_query() -> dict:
+    """Build the query that matches ONLY test/artefact accounts, with the
+    real-user whitelist forcibly excluded. Case-insensitive."""
+    return {
+        "$and": [
+            # At least one test-pattern matches.
+            {"$or": [
+                {"email": {"$regex": r"@test\.com$",         "$options": "i"}},
+                {"email": {"$regex": r"@t\.com$",            "$options": "i"}},
+                {"email": {"$regex": r"@example\.com$",      "$options": "i"}},
+                {"email": {"$regex": r"@materialmatch\.ai$", "$options": "i"}},
+                {"email": {"$regex": r"^(test|uitest|sam3|sprint|region_pref|other|empty|qa)(_|[0-9]|$)",
+                           "$options": "i"}},
+            ]},
+            # …AND email is NOT on the founder whitelist. Regex-anchor each
+            # protected email so partial matches never leak through.
+            {"$and": [
+                {"email": {"$not": {"$regex": f"^{re.escape(e)}$", "$options": "i"}}}
+                for e in PROTECTED_REAL_EMAILS
+            ]},
+        ]
+    }
+
+
+@api_router.post("/admin/purge-test-users")
+async def admin_purge_test_users(
+    confirm: bool = False,
+    admin: dict = Depends(require_admin),
+):
+    """Purge test/artefact user accounts and their orphan records.
+
+    Default is DRY-RUN — nothing is deleted unless the caller passes
+    `?confirm=true` explicitly. Even in confirm mode, the founder-whitelist
+    (`PROTECTED_REAL_EMAILS`) is always respected.
+
+    Returns a rich audit envelope: counts before, counts of associated
+    orphan records (projects / reports / rooms / reviews / usage_counters
+    / user-scope ke_records / ke_uploads), and — after a real delete —
+    counts of what was removed.
+    """
+    query = _test_user_query()
+
+    # Identify target users up-front so we have a stable ID set for the
+    # associated-record cleanup, even during a real delete.
+    docs = await db.users.find(query, {"email": 1}).to_list(10000)
+    target_ids = [str(d["_id"]) for d in docs]
+    target_emails = [d.get("email") for d in docs]
+
+    total_users = await db.users.count_documents({})
+    target_count = len(target_ids)
+
+    # Belt-and-braces: force-exclude anything on the whitelist from the
+    # delete set even if the mongo query somehow returned one.
+    protected_lc = {e.lower() for e in PROTECTED_REAL_EMAILS}
+    filtered_ids: list[str] = []
+    filtered_emails: list[str] = []
+    for uid, em in zip(target_ids, target_emails):
+        if (em or "").lower() in protected_lc:
+            continue
+        filtered_ids.append(uid)
+        filtered_emails.append(em)
+    target_ids = filtered_ids
+    target_emails = filtered_emails
+
+    # Count associated records for both dry-run and real-delete reporting.
+    def _in(ids: list[str]) -> dict:
+        return {"$in": ids}
+
+    assoc_counts = {
+        "projects":       await db.projects.count_documents({"user_id": _in(target_ids)}),
+        "reports":        await db.reports.count_documents({"user_id": _in(target_ids)}),
+        "rooms":          await db.rooms.count_documents({"user_id": _in(target_ids)}),
+        "reviews":        await db.reviews.count_documents({"user_id": _in(target_ids)}),
+        "usage_counters": await db.usage_counters.count_documents({"user_id": _in(target_ids)}),
+        "ke_records_user_scope": await db.ke_records.count_documents(
+            {"uploaded_by": _in(target_ids), "catalogue_scope": "user"}),
+        "ke_uploads":     await db.ke_uploads.count_documents({"uploaded_by": _in(target_ids)}),
+    }
+
+    envelope: dict = {
+        "confirm": bool(confirm),
+        "dry_run": not bool(confirm),
+        "total_users_before": total_users,
+        "target_users": len(target_ids),
+        "protected_whitelist": sorted(PROTECTED_REAL_EMAILS),
+        "sample_target_emails": target_emails[:15],
+        "associated_records": assoc_counts,
+    }
+
+    if not confirm:
+        envelope["message"] = ("DRY RUN — nothing deleted. Pass ?confirm=true to actually purge.")
+        return envelope
+
+    # ---------- REAL DELETE ----------
+    if not target_ids:
+        envelope["message"] = "Nothing to delete."
+        envelope["deleted"] = {"users": 0}
+        return envelope
+
+    deleted = {}
+    deleted["projects"] = (await db.projects.delete_many({"user_id": _in(target_ids)})).deleted_count
+    deleted["reports"] = (await db.reports.delete_many({"user_id": _in(target_ids)})).deleted_count
+    deleted["rooms"] = (await db.rooms.delete_many({"user_id": _in(target_ids)})).deleted_count
+    deleted["reviews"] = (await db.reviews.delete_many({"user_id": _in(target_ids)})).deleted_count
+    deleted["usage_counters"] = (await db.usage_counters.delete_many({"user_id": _in(target_ids)})).deleted_count
+    deleted["ke_records_user_scope"] = (await db.ke_records.delete_many(
+        {"uploaded_by": _in(target_ids), "catalogue_scope": "user"})).deleted_count
+    deleted["ke_uploads"] = (await db.ke_uploads.delete_many({"uploaded_by": _in(target_ids)})).deleted_count
+    # Users last, so if any associated delete fails we still have the
+    # user rows around to retry.
+    obj_ids = []
+    for uid in target_ids:
+        try:
+            obj_ids.append(ObjectId(uid))
+        except Exception:
+            pass
+    deleted["users"] = (await db.users.delete_many({"_id": {"$in": obj_ids}})).deleted_count
+
+    envelope["deleted"] = deleted
+    envelope["total_users_after"] = await db.users.count_documents({})
+    envelope["message"] = f"Purged {deleted['users']} test users and their orphan records."
+    return envelope
+
+
 @api_router.get("/admin/users")
 async def admin_users(admin: dict = Depends(require_admin)):
     """Return real (non-test) users, most recent first.

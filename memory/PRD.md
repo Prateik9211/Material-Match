@@ -1561,3 +1561,55 @@ Founder wanted user reviews to appear on the landing page immediately upon submi
 
 **Files touched:** `/app/backend/server.py` (submit_review default + new public endpoint), `/app/frontend/src/pages/Landing.jsx` (Star import, useEffect fetch, testimonials section), `/app/frontend/src/pages/LeaveReview.jsx` (thank-you copy), `/app/frontend/src/pages/AdminReviews.jsx` (helper copy + button label), `/app/backend/tests/test_reviews_and_admin_users.py` (assertion updated: `approved is True`).
 
+
+## 2026-02-14 — Admin nav cleanup + safe test-account purge endpoint ✅
+
+### #1 — Removed "Leave a review" nav link from admin sessions
+Submitting a testimonial doesn't belong in the admin nav. `Header.jsx`
+now hides the "Leave a review" button when `user.role === "admin"`.
+Regular signed-in users still see it and the route `/reviews/new` +
+`LeaveReview.jsx` remain fully intact.
+
+### #2 — Purge endpoint (POST /api/admin/purge-test-users)
+Reconciled a discrepancy between preview DB (348 users) and production
+DB (89 users per founder screenshot): the two are SEPARATE MongoDB
+clusters. Founder-supplied real users only exist on production;
+`ar.priyankasg@gmail.com` only exists on preview (never migrated).
+
+Built an admin-only endpoint that runs the purge server-side so it
+works on whichever DB the running server points to:
+
+* **Safety layers**: `require_admin` dep, DRY-RUN by default,
+  `?confirm=true` required for real delete, `PROTECTED_REAL_EMAILS`
+  whitelist forcibly excluded even if the pattern query matches, orphan
+  cleanup runs BEFORE the user delete so retries are safe, idempotent.
+* **Whitelist** (kept regardless): earthersouldesignoffice@gmail.com,
+  info@ladlab.in, ai.yashwarde@gmail.com, artistsneha23@gmail.com,
+  akshaysangle90@gmail.com, neeru@vadehra.com, pgirwalkar@gmail.com,
+  ar.priyankasg@gmail.com, admin@materialmatch.ai.
+* **Test-user identification**: same regex the `/admin/users` filter
+  already uses (`@test.com`, `@t.com`, `@example.com`,
+  `@materialmatch.ai`, plus `test_/uitest_/sam3_/sprint*/region_pref_/
+  other_/empty_/qa*` prefixes).
+* **Orphan cleanup**: projects, reports, rooms, reviews,
+  usage_counters, user-scope ke_records, ke_uploads — all keyed by
+  `user_id` or `uploaded_by`.
+* **UI**: "Purge test accounts" button in `AdminUsers.jsx` runs a
+  two-step flow (dry-run first, native confirm dialog with the exact
+  counts and whitelist, then real delete).
+
+**Preview execution result**: 348 → 3 users (rows deleted: 345 users +
+105 projects + 8 reviews + 1 report + 1 usage_counter). Second call
+returned "Nothing to delete" (idempotent). Admin login unaffected.
+
+**Production readiness**: endpoint ships with the next redeploy. Founder
+triggers it from `/admin/users` "Purge test accounts" button after
+deploy for the final production cleanup.
+
+**Files touched**: `/app/backend/server.py` (endpoint +
+`PROTECTED_REAL_EMAILS` + `_test_user_query`),
+`/app/frontend/src/pages/AdminUsers.jsx` (Trash2 button + confirm
+flow), `/app/frontend/src/components/Header.jsx` (hide "Leave a
+review" for admins), `/app/backend/scripts/audit_test_users.py`
+(9-email whitelist).
+
