@@ -125,16 +125,20 @@ export default function Header({ variant = "app" }) {
                 </>
               )}
 
-              {/* Leave-a-review CTA for every logged-in user. */}
-              <button
-                onClick={() => navigate("/reviews/new")}
-                className="hidden sm:inline-flex items-center gap-2 text-sm text-neutral-700 hover:text-black px-3 py-2"
-                data-testid="nav-leave-review"
-                title="Share your feedback"
-              >
-                <BookOpen className="w-4 h-4" strokeWidth={1.5} />
-                Leave a review
-              </button>
+              {/* Leave-a-review CTA — shown to regular signed-in users only.
+                  Admins have the AdminReviews management page instead;
+                  submitting a testimonial doesn't belong in the admin nav. */}
+              {user.role !== "admin" && (
+                <button
+                  onClick={() => navigate("/reviews/new")}
+                  className="hidden sm:inline-flex items-center gap-2 text-sm text-neutral-700 hover:text-black px-3 py-2"
+                  data-testid="nav-leave-review"
+                  title="Share your feedback"
+                >
+                  <BookOpen className="w-4 h-4" strokeWidth={1.5} />
+                  Leave a review
+                </button>
+              )}
 
               {/* Region search-scope selector — the ACTIVE region gates
                   every catalogue search + SerpApi similar-items call.
