@@ -1613,3 +1613,83 @@ flow), `/app/frontend/src/components/Header.jsx` (hide "Leave a
 review" for admins), `/app/backend/scripts/audit_test_users.py`
 (9-email whitelist).
 
+
+## 2026-02-14 — Material View feature (Nano Banana) ✅
+
+Founder-approved after the 2026-02-14 feasibility test proved Gemini Nano
+Banana (`gemini-3.1-flash-image-preview`) preserves catalogue fidelity while
+GPT-Image-1 hallucinated on unfamiliar materials (marble → stucco failure).
+
+### Backend
+* **`intelligence/material_view.py`** — thin `generate_material_view(rec,
+  swatch_b64)` helper. Uses Nano Banana with the real swatch as an
+  `ImageContent` reference and a DNA-grounded text prompt
+  (material_family, material_name, colour hex, finish, texture, pattern).
+  Returns raw PNG bytes or `None` on failure (never raises — batch keeps
+  running past individual failures).
+* **`_material_view_backfill()`** in `server.py`:
+  - Finds every `status == published` record with a `page_preview_b64`
+    but no cached `material_view_b64`, generates it, base64-encodes, and
+    stores at `material_view_b64` + `material_view_generated_at` +
+    `material_view_model` on the row.
+  - Concurrency capped at `Semaphore(2)` to respect Nano Banana rate
+    limits; single-run lock (`_MATERIAL_VIEW_BACKFILL_LOCK`) so parallel
+    triggers coalesce.
+  - Idempotent — safe to re-fire, only processes missing rows.
+  - Progress exposed via a `_MATERIAL_VIEW_PROGRESS` dict.
+* **Wired into publish paths** — every path that flips a ke_records row
+  to `status: published` also fires `_material_view_backfill()` alongside
+  the existing `_visual_dna_backfill`:
+    * `PATCH /admin/studio/records/bulk` (bulk admin publish)
+    * `POST /admin/studio/records/approve` (single approve)
+    * `POST /admin/studio/uploads/{upload_id}/publish` (whole-upload)
+    * User catalogue auto-publish path (via existing background scheduler)
+* **Admin endpoints (2026-02-14)**:
+    * `GET /api/admin/material-views/status` — coverage counts
+      (`published_with_swatch`, `with_material_view`, `missing`) plus
+      the live progress dict.
+    * `POST /api/admin/material-views/backfill` — kicks a fresh backfill
+      run, non-blocking; returns `{queued: false, reason: "already running"}`
+      when a run is in flight.
+* **`_studio_record_to_search_item`** now carries `material_view_b64`
+  onto every match card payload, so the analyze / analyze-region /
+  match responses expose it to the frontend without any extra call.
+
+### Frontend
+* **`MaterialsFirstSection.jsx`** — the existing swatch-preview lightbox
+  (`MatchPreviewButton`) now hosts a `Catalogue view / Material view`
+  segmented toggle when `match.material_view_b64` exists. Defaults to
+  material view. Toggle absent when the field is missing (no broken state).
+* **`ShortlistSection.jsx`** — same toggle in the shortlist swatch
+  lightbox. `Analysis.jsx` marshalls `material_view_b64` from match →
+  shortlist item so it survives the "Add to Shortlist" round-trip.
+* **Design reuse** — no new UI primitive: the toggle is a plain
+  `stone-panel` pill wrapper with an inner white pill for the active
+  option, matching the region toggle in Header.jsx.
+
+### Backfill execution (preview DB, 2026-02-14)
+* First run: 260 processed → 259 generated, 1 failed (single retry
+  succeeded on second call). Final coverage: **264/264 (100%)**.
+* Real per-image latency: ~7.5s average (matches feasibility numbers).
+* Real cost: estimated **~$10.30** total (264 × Nano Banana list ~$0.039).
+  Exact ECU deduction lands on the founder's key statement.
+* Spot-check: three cached rows (`Advance Décor Smoked Walnut HPL`,
+  `Advance Décor Ivory Cream Panel`, `Advance Décor Statuario Marble`)
+  decoded from Mongo and rendered — all photorealistic surface panels
+  under studio lighting, correct colour + finish, no props / labels.
+
+### Verification
+* `python -m pytest tests/test_material_views.py
+  tests/test_reviews_and_admin_users.py` → 17/17 pass.
+* End-to-end `POST /projects/{id}/analyze-region` returned 3 catalogue
+  matches, ALL 3 carried both `swatch_crop_b64` and `material_view_b64`.
+* Lint clean on all touched files.
+
+### Files touched
+* `/app/backend/intelligence/material_view.py` (created)
+* `/app/backend/server.py` (backfill fn, admin endpoints, match payload)
+* `/app/backend/tests/test_material_views.py` (created)
+* `/app/frontend/src/components/analysis/MaterialsFirstSection.jsx`
+* `/app/frontend/src/components/analysis/ShortlistSection.jsx`
+* `/app/frontend/src/pages/Analysis.jsx`
+

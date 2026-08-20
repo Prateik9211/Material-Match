@@ -7,9 +7,19 @@ import { ChevronDown, ChevronRight, MapPin, ListChecks, Check, Star, Layers, Sea
    uses.  No backend fallback logic — renders `match.swatch_crop_b64`
    if present, otherwise the hex block from `match.color_hex`.  This
    surfaces the same preview the founder confirmed already works, just
-   BEFORE the user commits to shortlisting a match.  No admin gate. */
+   BEFORE the user commits to shortlisting a match.  No admin gate.
+
+   2026-02-14 — lightbox now hosts a "Catalogue view / Material view"
+   toggle when `match.material_view_b64` is present. Material View is
+   a Nano-Banana-generated photorealistic render of the physical
+   material, cached on the ke_records row at publish time. Absence of
+   the field simply hides the toggle — never breaks the preview. */
 function MatchPreviewButton({ match, index, testid, size = "sm" }) {
   const [open, setOpen] = useState(false);
+  const hasMaterialView = !!match?.material_view_b64;
+  // Material view is the more convincing render; default to it when
+  // available so the founder's "closer to physical" pitch lands first.
+  const [view, setView] = useState(hasMaterialView ? "material" : "catalogue");
 
   useEffect(() => {
     if (!open) return;
@@ -18,11 +28,18 @@ function MatchPreviewButton({ match, index, testid, size = "sm" }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
 
-  const src = match?.swatch_crop_b64
-    ? (match.swatch_crop_b64.startsWith("data:")
-        ? match.swatch_crop_b64
-        : `data:image/jpeg;base64,${match.swatch_crop_b64}`)
-    : null;
+  // Re-sync default view when a fresh match flows in.
+  useEffect(() => {
+    setView(hasMaterialView ? "material" : "catalogue");
+  }, [hasMaterialView, match?.material_view_b64]);
+
+  const asDataUrl = (b64) => {
+    if (!b64) return null;
+    return b64.startsWith("data:") ? b64 : `data:image/jpeg;base64,${b64}`;
+  };
+  const catalogueSrc = asDataUrl(match?.swatch_crop_b64);
+  const materialSrc = asDataUrl(match?.material_view_b64);
+  const src = view === "material" && materialSrc ? materialSrc : catalogueSrc;
 
   const btnSizeClasses = size === "lg"
     ? "text-xs px-3.5 py-1.5 gap-1.5"
@@ -59,14 +76,57 @@ function MatchPreviewButton({ match, index, testid, size = "sm" }) {
               </button>
             </div>
             <div className="p-6">
+              {hasMaterialView && (
+                <div
+                  className="mb-4 inline-flex items-center gap-0.5 p-0.5 bg-stone-panel rounded-full text-[11px] font-medium"
+                  role="tablist"
+                  aria-label="Preview mode"
+                  data-testid="material-view-toggle"
+                >
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={view === "catalogue"}
+                    onClick={() => setView("catalogue")}
+                    className={`px-3 py-1.5 rounded-full transition-colors ${
+                      view === "catalogue"
+                        ? "bg-white text-charcoal shadow-soft"
+                        : "text-warm-grey hover:text-charcoal"
+                    }`}
+                    data-testid="toggle-catalogue-view"
+                  >
+                    Catalogue view
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={view === "material"}
+                    onClick={() => setView("material")}
+                    className={`px-3 py-1.5 rounded-full transition-colors ${
+                      view === "material"
+                        ? "bg-white text-charcoal shadow-soft"
+                        : "text-warm-grey hover:text-charcoal"
+                    }`}
+                    title="Photorealistic render of the physical material"
+                    data-testid="toggle-material-view"
+                  >
+                    Material view
+                  </button>
+                </div>
+              )}
               {src ? (
                 <img src={src} alt={match.material_name}
                   className="w-full aspect-square object-cover rounded-2xl border border-stone-border-soft"
-                  data-testid="catalogue-preview-image" />
+                  data-testid={view === "material" ? "material-view-image" : "catalogue-preview-image"} />
               ) : (
                 <div className="w-full aspect-square rounded-2xl border border-stone-border-soft"
                   style={{ backgroundColor: match.color_hex || "#f5f2ec" }}
                   data-testid="catalogue-preview-hex" />
+              )}
+              {hasMaterialView && view === "material" && (
+                <div className="mt-2 text-[10px] uppercase tracking-widest text-warm-grey/70">
+                  AI-rendered from the catalogue swatch
+                </div>
               )}
               <div className="mt-4 space-y-1">
                 <div className="font-display text-xl font-semibold text-charcoal leading-tight">

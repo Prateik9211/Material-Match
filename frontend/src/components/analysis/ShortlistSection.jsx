@@ -24,7 +24,11 @@ export default function ShortlistSection({ items, onRemove }) {
   // Round 8 — click-to-enlarge lightbox for shortlisted swatch previews.
   // Users wanted a proper preview before trusting a thumbnail; opens on
   // click, dismisses on backdrop / X / ESC.
-  const [preview, setPreview] = useState(null);  // { src, name, hex, code }
+  // 2026-02-14 — lightbox now also carries `material_src` (Nano Banana
+  // photorealistic render). When present, a "Catalogue view / Material
+  // view" toggle appears; absence quietly falls back to catalogue view.
+  const [preview, setPreview] = useState(null);  // { src, material_src, name, hex, code }
+  const [view, setView] = useState("catalogue");
 
   useEffect(() => {
     if (!preview) return;
@@ -94,14 +98,25 @@ export default function ShortlistSection({ items, onRemove }) {
                         ? it.swatch_crop_b64
                         : `data:image/jpeg;base64,${it.swatch_crop_b64}`)
                     : null;
+                  const materialSrc = it.material_view_b64
+                    ? (it.material_view_b64.startsWith("data:")
+                        ? it.material_view_b64
+                        : `data:image/jpeg;base64,${it.material_view_b64}`)
+                    : null;
                   const canEnlarge = !!(swatchSrc || it.color_hex);
-                  const onOpen = () => canEnlarge && setPreview({
-                    src: swatchSrc, name: it.name,
-                    hex: it.color_hex || null,
-                    code: it.material_code || null,
-                    zone: it.zone || null,
-                    match_percent: typeof it.match_percent === "number" ? it.match_percent : null,
-                  });
+                  const onOpen = () => {
+                    if (!canEnlarge) return;
+                    setView(materialSrc ? "material" : "catalogue");
+                    setPreview({
+                      src: swatchSrc,
+                      material_src: materialSrc,
+                      name: it.name,
+                      hex: it.color_hex || null,
+                      code: it.material_code || null,
+                      zone: it.zone || null,
+                      match_percent: typeof it.match_percent === "number" ? it.match_percent : null,
+                    });
+                  };
                   if (swatchSrc) {
                     return (
                       <button type="button" onClick={onOpen}
@@ -206,7 +221,49 @@ export default function ShortlistSection({ items, onRemove }) {
               </button>
             </div>
             <div className="p-6">
-              {preview.src ? (
+              {preview.material_src && (
+                <div
+                  className="mb-4 inline-flex items-center gap-0.5 p-0.5 bg-stone-panel rounded-full text-[11px] font-medium"
+                  role="tablist"
+                  aria-label="Preview mode"
+                  data-testid="shortlist-material-view-toggle"
+                >
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={view === "catalogue"}
+                    onClick={() => setView("catalogue")}
+                    className={`px-3 py-1.5 rounded-full transition-colors ${
+                      view === "catalogue"
+                        ? "bg-white text-charcoal shadow-soft"
+                        : "text-warm-grey hover:text-charcoal"
+                    }`}
+                    data-testid="shortlist-toggle-catalogue-view"
+                  >
+                    Catalogue view
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={view === "material"}
+                    onClick={() => setView("material")}
+                    className={`px-3 py-1.5 rounded-full transition-colors ${
+                      view === "material"
+                        ? "bg-white text-charcoal shadow-soft"
+                        : "text-warm-grey hover:text-charcoal"
+                    }`}
+                    title="Photorealistic render of the physical material"
+                    data-testid="shortlist-toggle-material-view"
+                  >
+                    Material view
+                  </button>
+                </div>
+              )}
+              {(view === "material" && preview.material_src) ? (
+                <img src={preview.material_src} alt={preview.name}
+                  className="w-full aspect-square object-cover rounded-2xl border border-stone-border-soft"
+                  data-testid="shortlist-lightbox-material-image" />
+              ) : preview.src ? (
                 <img src={preview.src} alt={preview.name}
                   className="w-full aspect-square object-cover rounded-2xl border border-stone-border-soft"
                   data-testid="shortlist-lightbox-image" />
@@ -214,6 +271,11 @@ export default function ShortlistSection({ items, onRemove }) {
                 <div className="w-full aspect-square rounded-2xl border border-stone-border-soft"
                   style={{ backgroundColor: preview.hex || "#f5f2ec" }}
                   data-testid="shortlist-lightbox-hex" />
+              )}
+              {preview.material_src && view === "material" && (
+                <div className="mt-2 text-[10px] uppercase tracking-widest text-warm-grey/70">
+                  AI-rendered from the catalogue swatch
+                </div>
               )}
               <div className="mt-4 space-y-1">
                 <div className="font-display text-xl font-semibold text-charcoal leading-tight">

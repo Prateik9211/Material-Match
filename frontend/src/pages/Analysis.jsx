@@ -217,6 +217,7 @@ export default function Analysis() {
     // click-to-enlarge preview instead of the founder-reported "too
     // small to trust before shortlisting" thumbnail.
     swatch_crop_b64: match.swatch_crop_b64 || null,
+    material_view_b64: match.material_view_b64 || null,
     color_hex: match.color_hex || null,
     material_code: match.material_code || null,
     match_percent: match.match_percent || null,
