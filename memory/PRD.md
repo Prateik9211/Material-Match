@@ -1,5 +1,13 @@
 # MaterialMatch AI - Product Requirements Document
 
+> **⚠ Read `/app/memory/STRATEGY_AND_ROADMAP.md` FIRST.** That file holds
+> the current product strategy, the 2026-02-14 pivot (from
+> single-material match → technique-taxonomy + cost ranges + vendor
+> connect), the technique-taxonomy work-in-progress, upcoming priorities
+> (including the **Aug 30 Emergent contest deadline**), and the
+> longer-term roadmap. This PRD.md remains the sprint-by-sprint
+> execution log.
+
 ## Original Problem Statement
 Build a modern AI SaaS web application called "MaterialMatch AI" that helps architects and interior designers analyze inspiration images and match them with similar materials/products from uploaded catalogues. The app focuses on material analysis, visual similarity matching, and material sourcing workflows. NO rendering, 3D editing, vendor scraping, marketplace, or CAD integrations.
 
@@ -1692,4 +1700,18 @@ GPT-Image-1 hallucinated on unfamiliar materials (marble → stucco failure).
 * `/app/frontend/src/components/analysis/MaterialsFirstSection.jsx`
 * `/app/frontend/src/components/analysis/ShortlistSection.jsx`
 * `/app/frontend/src/pages/Analysis.jsx`
+
+
+## 2026-02-14 — Strategic pivot + session summary → moved to `/app/memory/STRATEGY_AND_ROADMAP.md`
+
+A comprehensive session summary covering the hybrid detection pipeline,
+region expansion, Material View, admin/product hygiene, plus the KEY
+STRATEGIC PIVOT (detect finish → show technique options + cost ranges →
+connect to vendor coverage), the collaborative technique taxonomy work
+(wall/lime finishes, wood-look finishes, flooring — in progress), the
+Aug 30 Emergent contest deadline, upcoming priorities, longer-term
+roadmap and open backlog is stored in `/app/memory/STRATEGY_AND_ROADMAP.md`.
+
+**Future sessions**: read that file before making any UX / matching /
+prioritization decisions.
 
